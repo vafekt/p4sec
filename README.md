@@ -1,4 +1,4 @@
-# P4 PCA Decision Tree Traffic Classifier
+# PCA with Decision Tree Traffic Classifier in P4 Switch
 
 A complete pipeline for extracting network traffic features from PCAP files or live capture, training a decision tree classifier using PCA-reduced dimensions, and deploying classification rules in P4 behavioral model switches for real-time in-network inference.
 
