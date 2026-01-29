@@ -159,7 +159,7 @@ sudo make run
 
 # Terminal 2: Start controller (AFTER Mininet is running)
 cd /tutorials/exercises/p4-pca-dt/control_plane
-python3 5_controller.py
+python3 6_controller.py
 ```
 
 ---
@@ -184,7 +184,7 @@ sudo make run
 
 # Terminal 2: Start controller (new terminal)
 cd /tutorials/exercises/p4-pca-dt/control_plane
-python3 5_controller.py
+python3 6_controller.py
 ```
 
 ### Live Capture Pipeline
