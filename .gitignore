@@ -26,14 +26,6 @@ basic.p4info
 
 # Data outputs
 control_plane/dataset/*.csv
-control_plane/tables/*.txt
-control_plane/tables/*.json
-control_plane/tables/*.csv
-control_plane/model/*.model
-control_plane/logs/*.csv
-
-# PCAP captures
-control_plane/pcaps/*.pcap
 
 # Mininet / runtime
 *.pcapng
