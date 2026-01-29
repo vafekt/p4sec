@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+*.egg
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Build artifacts
+basic.json
+basic.p4info
+*.log
+
+# Data outputs
+control_plane/dataset/*.csv
+control_plane/tables/*.txt
+control_plane/tables/*.json
+control_plane/tables/*.csv
+control_plane/model/*.model
+control_plane/logs/*.csv
+
+# PCAP captures
+control_plane/pcaps/*.pcap
+
+# Mininet / runtime
+*.pcapng
+*.swp
