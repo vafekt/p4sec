@@ -43,13 +43,13 @@ Live Classification & Monitoring
 ```bash
 # Clone or move the repository to the correct location
 cd /tutorials/exercises/
-git clone <repository-url> p4-DT
+git clone <repository-url> p4-pca-dt
 # OR move existing directory:
-mv /path/to/p4-DT /tutorials/exercises/p4-DT
+mv /path/to/p4-pca-dt /tutorials/exercises/p4-pca-dt
 
 # Verify location
 pwd
-# Should output: /tutorials/exercises/p4-DT
+# Should output: /tutorials/exercises/p4-pca-dt
 ```
 
 ### P4 Development Environment
@@ -96,19 +96,9 @@ pwd
    ```
 
 2. **Required Python Libraries**:
-   ```bash
-   # Data processing and ML
-   pip install pandas numpy scikit-learn scipy
-   
-   # Network capture and analysis
-   pip install pyshark scapy
-   
-   # P4 Runtime (gRPC)
-   pip install grpcio protobuf p4runtime
-   
-   # Visualization (optional)
-   pip install matplotlib seaborn
-   ```
+    ```bash
+    pip install -r requirements.txt
+    ```
 
 3. **System Dependencies**:
    ```bash
@@ -357,7 +347,7 @@ python3 5_generating_p4_code.py --output ../custom.p4
 **Compile P4 Code:**
 
 ```bash
-cd /tutorials/exercises/p4-DT
+cd /tutorials/exercises/p4-pca-dt
 
 # Clean previous build
 make clean
@@ -373,7 +363,7 @@ p4c-bm2-ss --p4v 16 --p4runtime-files basic.p4info --o basic.json basic.p4
 
 ```bash
 # IMPORTANT: Start Mininet FIRST before running the controller
-cd /tutorials/exercises/p4-DT
+cd /tutorials/exercises/p4-pca-dt
 
 # Clean and start Mininet with P4 topology
 make clean
@@ -397,7 +387,7 @@ sudo make run
 
 ```bash
 # Open a NEW terminal (Terminal 2)
-cd /tutorials/exercises/p4-DT/control_plane
+cd /tutorials/exercises/p4-pca-dt/control_plane
 
 # Start controller (connects to running Mininet switch)
 python3 5_controller.py
@@ -424,7 +414,7 @@ python3 5_controller.py --grpc-addr localhost:9559
 
 ```bash
 # Navigate to project directory (must be in /tutorials/exercises/)
-cd /tutorials/exercises/p4-DT/control_plane
+cd /tutorials/exercises/p4-pca-dt/control_plane
 
 # Step 1: Extract features from all PCAP files
 python3 1_data_extraction.py --mode pcap --pcap-dir pcaps --output dataset/dataset.csv
@@ -452,7 +442,7 @@ sudo make run
 
 # Step 8: In a NEW terminal (Terminal 2), run controller
 # Open new terminal, then:
-cd /tutorials/exercises/p4-DT/control_plane
+cd /tutorials/exercises/p4-pca-dt/control_plane
 python3 5_controller.py
 ```
 
@@ -501,91 +491,11 @@ python3 5_generating_p4_code.py
 grep "pca_component" ../basic.p4
 ```
 
-### Example 4: Complete Workflow with Validation
-
-```bash
-#!/bin/bash
-# complete_pipeline.sh
-
-cd /home/vafekt/Desktop/tutorials/exercises/p4-DT/control_plane
-
-echo "=== Step 1: Feature Extraction ==="
-python3 1_data_extraction.py --mode pcap --pcap-dir pcaps --output dataset/dataset.csv
-if [ ! -f dataset/dataset.csv ]; then
-    echo "Error: dataset.csv not created"
-    exit 1
-fi
-echo "✓ Features extracted: $(wc -l < dataset/dataset.csv) rows"
-
-echo -e "\n=== Step 2: PCA Training ==="
-python3 2_pca_generating_entries.py --dataset dataset/dataset.csv
-if [ ! -f tables/pca_encoding_params.json ]; then
-    echo "Error: PCA params not created"
-    exit 1
-fi
-N_COMPONENTS=$(grep -oP '"n_components":\s*\K\d+' tables/pca_encoding_params.json)
-echo "✓ PCA trained with $N_COMPONENTS components"
-
-echo -e "\n=== Step 3: Decision Tree Training ==="
-python3 3_dt_training_model.py
-if [ ! -f model/dt.model ]; then
-    echo "Error: DT model not created"
-    exit 1
-fi
-echo "✓ Decision tree trained"
-
-echo -e "\n=== Step 4: Generate DT Entries ==="
-python3 4_dt_generating_entries.py
-DT_ENTRIES=$(wc -l < tables/dt_commands.txt)
-echo "✓ Generated $DT_ENTRIES DT table entries"
-
-echo -e "\n=== Step 5: Generate P4 Code ==="
-python3 5_generating_p4_code.py
-if [ ! -f ../basic.p4 ]; then
-    echo "Error: basic.p4 not created"
-    exit 1
-fi
-echo "✓ P4 code generated"
-
-echo -e "\n=== Step 6: Compile P4 ==="
-cd ..
-make clean
-make
-if [ ! -f basic.json ]; then
-    echo "Error: P4 compilation failed"
-    exit 1
-fi
-echo "✓ P4 program compiled"
-
-echo -e "\n=== Pipeline Complete! ==="
-echo "Next steps:"
-echo "  Terminal 1: sudo make run         (start Mininet)"
-echo "  Terminal 2: cd control_plane && python3 5_controller.py"
-```
-
----
-
-## Running All Steps at Once
-
-### Automated Script
-
-Create a script to run the entire pipeline:
-
-```bash
-cd /home/vafekt/Desktop/tutorials/exercises/p4-DT
-
-# Make script executable
-chmod +x complete_pipeline.sh
-
-# Run pipeline
-./complete_pipeline.sh
-```
-
 ### Manual Sequential Execution
 
 ```bash
 # Ensure you're in the correct directory
-cd /tutorials/exercises/p4-DT/control_plane
+cd /tutorials/exercises/p4-pca-dt/control_plane
 
 # Extract → PCA → DT → Generate → Compile
 python3 1_data_extraction.py --mode pcap --pcap-dir pcaps --output dataset/dataset.csv && \
@@ -605,7 +515,7 @@ ls -lh basic.p4 basic.json
 sudo make run
 
 # Terminal 2 (new terminal): Start controller
-cd /tutorials/exercises/p4-DT/control_plane
+cd /tutorials/exercises/p4-pca-dt/control_plane
 python3 5_controller.py
 ```
 
@@ -614,7 +524,7 @@ python3 5_controller.py
 ## Project Structure
 
 ```
-p4-DT/
+p4-pca-dt/
 ├── control_plane/                    # Main pipeline directory
 │   ├── 1_data_extraction.py          # Feature extraction (PCAP/live)
 │   ├── 2_pca_generating_entries.py   # PCA training & P4 entry generation
@@ -820,175 +730,6 @@ struct metadata {
 
 ---
 
-## Troubleshooting
-
-### Feature Extraction Issues
-
-**Problem**: No PCAP files found
-```
-Solution: Ensure .pcap files are in control_plane/pcaps/ directory
-Check: ls control_plane/pcaps/*.pcap
-```
-
-**Problem**: "Permission denied" for live capture
-```
-Solution: Live capture requires root privileges
-Fix: Use sudo: sudo python3 1_data_extraction.py --mode live --interface eth0
-```
-
-**Problem**: "tshark not found" or pyshark errors
-```
-Solution: Install tshark and wireshark
-Fix: sudo apt-get install tshark wireshark
-     pip install pyshark
-```
-
-**Problem**: Interface not found
-```
-Solution: List available interfaces
-Fix: ip link show
-     # Then use: --interface <name> (e.g., eth0, wlan0)
-```
-
-### PCA Training Issues
-
-**Problem**: `FileNotFoundError: dataset.csv`
-```
-Solution: Ensure Step 1 (data extraction) completed successfully
-Check: ls -lh control_plane/dataset/dataset.csv
-Fix: Run 1_data_extraction.py first
-```
-
-**Problem**: "Not enough variance" or PCA warning
-```
-Solution: Features may be too correlated or insufficient
-Fix: Increase --n-components manually
-     python3 2_pca_generating_entries.py --n-components 2
-```
-
-**Problem**: Too many PCA components selected
-```
-Solution: Reduce variance threshold
-Fix: Edit 2_pca_generating_entries.py:
-     Change variance_target from 0.95 to 0.90
-```
-
-### Decision Tree Issues
-
-**Problem**: Low classification accuracy
-```
-Solution: May need more training data or different features
-Check: cat control_plane/tables/dt_metrics.json
-Fix: 
-  - Collect more diverse PCAP files
-  - Adjust tree parameters (max_depth, min_samples_split)
-  - Try different n_components for PCA
-```
-
-**Problem**: Model file not found
-```
-Solution: Ensure Step 3 completed successfully
-Check: ls -lh control_plane/model/dt.model
-Fix: Run 3_dt_training_model.py
-```
-
-### P4 Compilation Issues
-
-**Problem**: `p4c: command not found`
-```
-Solution: P4 compiler not installed
-Fix: Install p4c from https://github.com/p4lang/p4c
-     sudo make install
-```
-
-**Problem**: Compilation errors in basic.p4
-```
-Solution: Check generated P4 code syntax
-Fix: 
-  - Re-run 5_generating_p4_code.py
-  - Check for matching n_components between Step 2 and Step 5
-  - Verify: grep "n_components" control_plane/tables/pca_encoding_params.json
-```
-
-**Problem**: "Table key mismatch" errors
-```
-Solution: Number of PCA components doesn't match
-Fix: 
-  - Ensure steps 2-5 use same n_components
-  - Delete old files and regenerate:
-    rm control_plane/tables/*.txt control_plane/tables/*.json
-    Re-run steps 2-5
-```
-
-### Runtime Issues
-
-**Problem**: Mininet won't start
-```
-Solution: Check if Mininet is installed and no conflicts
-Fix: 
-  - sudo mn -c  (cleanup old Mininet state)
-  - sudo make run
-```
-
-**Problem**: "Table not found" when loading entries
-```
-Solution: P4 program not loaded correctly
-Fix:
-  - Verify basic.json exists: ls -lh basic.json
-  - Check table names match: grep "table " basic.p4
-  - Reload P4 program in Mininet
-```
-
-**Problem**: No packets classified
-```
-Solution: Check if traffic matches expected patterns
-Fix:
-  - Verify features are within trained ranges
-  - Check digest output in controller logs
-  - Inspect: cat control_plane/logs/predictions.csv
-```
-
-### Memory Issues
-
-**Problem**: "MemoryError" during PCA training
-```
-Solution: Large dataset may exceed available RAM
-Fix:
-  - Reduce dataset size: Use fewer PCAP files
-  - Sample data: Take every Nth row
-  - Use smaller --count in live capture
-```
-
-**Problem**: P4 switch crash or slow performance
-```
-Solution: Too many table entries
-Fix:
-  - Prune decision tree: Reduce max_depth in 3_dt_training_model.py
-  - Reduce PCA components
-  - Increase min_samples_leaf to reduce tree size
-```
-
----
-
-## Performance Optimization
-
-### Training Speed
-- **Dataset size**: Use representative sample (1000-10000 samples) for fast iteration
-- **PCA components**: Fewer components = faster training (try 2-3 first)
-- **Tree depth**: Limit max_depth to 10-15 for faster inference
-
-### P4 Switch Performance
-- **Table size**: Keep total entries < 8192 per table (NB_ENTRIES constant)
-- **Range matching**: P4 TCAM can handle ranges efficiently
-- **Priority ordering**: Lower priority numbers evaluated first
-
-### Data Collection
-- **Live capture**: Use `--count` limit to avoid excessive data
-- **PCAP processing**: Process in batches if files are very large
-- **Feature storage**: CSV format is human-readable but large; consider binary for production
-
----
-
 ## Advanced Usage
 
 ### Custom Feature Engineering
@@ -1065,19 +806,7 @@ timeout 60 sudo tcpdump -i eth0 -w control_plane/pcaps/sample.v1.pcap
 
 **Python Packages:**
 ```bash
-# Core data science
-pip install numpy>=1.21.0
-pip install pandas>=1.3.0
-pip install scikit-learn>=1.0.0
-pip install scipy>=1.7.0
-
-# Network analysis
-pip install pyshark>=0.4.5
-pip install scapy>=2.4.5
-
-# P4 Runtime (gRPC)
-pip install grpcio>=1.40.0
-pip install protobuf>=3.18.0
+pip install -r requirements.txt
 ```
 
 **System Packages:**
@@ -1188,7 +917,7 @@ python3 5_generating_p4_code.py --output ../basic.p4
 
 ```bash
 # Ensure correct directory
-cd /tutorials/exercises/p4-DT
+cd /tutorials/exercises/p4-pca-dt
 
 # Clean build
 make clean
@@ -1200,7 +929,7 @@ make
 sudo make run
 
 # Terminal 2: Run controller (start AFTER Mininet is running)
-cd /tutorials/exercises/p4-DT/control_plane
+cd /tutorials/exercises/p4-pca-dt/control_plane
 python3 5_controller.py
 
 # Alternative: Load table entries manually via CLI
