@@ -111,45 +111,45 @@
     ]
   },
   "quantized_codes": {
-    "accuracy": 0.9678615574783683,
+    "accuracy": 1.0,
     "classification_report": {
       "skype": {
-        "precision": 0.994750656167979,
-        "recall": 0.9475,
-        "f1-score": 0.970550576184379,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
         "support": 400.0
       },
       "webex": {
-        "precision": 0.9811320754716981,
+        "precision": 1.0,
         "recall": 1.0,
-        "f1-score": 0.9904761904761905,
+        "f1-score": 1.0,
         "support": 156.0
       },
       "whasapp": {
-        "precision": 0.9219330855018587,
-        "recall": 0.9802371541501976,
-        "f1-score": 0.9501915708812261,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
         "support": 253.0
       },
-      "accuracy": 0.9678615574783683,
+      "accuracy": 1.0,
       "macro avg": {
-        "precision": 0.9659386057138453,
-        "recall": 0.9759123847167325,
-        "f1-score": 0.9704061125139319,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
         "support": 809.0
       },
       "weighted avg": {
-        "precision": 0.9693522087425793,
-        "recall": 0.9678615574783683,
-        "f1-score": 0.9680259377268078,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
         "support": 809.0
       }
     },
     "confusion_matrix": [
       [
-        379,
+        400,
         0,
-        21
+        0
       ],
       [
         0,
@@ -157,52 +157,52 @@
         0
       ],
       [
-        2,
-        3,
-        248
+        0,
+        0,
+        253
       ]
     ]
   },
   "tree_approx_codes": {
-    "accuracy": 0.9678615574783683,
+    "accuracy": 0.9987639060568603,
     "classification_report": {
       "skype": {
-        "precision": 0.994750656167979,
-        "recall": 0.9475,
-        "f1-score": 0.970550576184379,
+        "precision": 0.9975062344139651,
+        "recall": 1.0,
+        "f1-score": 0.9987515605493134,
         "support": 400.0
       },
       "webex": {
-        "precision": 0.9811320754716981,
+        "precision": 1.0,
         "recall": 1.0,
-        "f1-score": 0.9904761904761905,
+        "f1-score": 1.0,
         "support": 156.0
       },
       "whasapp": {
-        "precision": 0.9219330855018587,
-        "recall": 0.9802371541501976,
-        "f1-score": 0.9501915708812261,
+        "precision": 1.0,
+        "recall": 0.9960474308300395,
+        "f1-score": 0.998019801980198,
         "support": 253.0
       },
-      "accuracy": 0.9678615574783683,
+      "accuracy": 0.9987639060568603,
       "macro avg": {
-        "precision": 0.9659386057138453,
-        "recall": 0.9759123847167325,
-        "f1-score": 0.9704061125139319,
+        "precision": 0.999168744804655,
+        "recall": 0.9986824769433466,
+        "f1-score": 0.998923787509837,
         "support": 809.0
       },
       "weighted avg": {
-        "precision": 0.9693522087425793,
-        "recall": 0.9678615574783683,
-        "f1-score": 0.9680259377268078,
+        "precision": 0.9987669885853968,
+        "recall": 0.9987639060568603,
+        "f1-score": 0.9987634537956928,
         "support": 809.0
       }
     },
     "confusion_matrix": [
       [
-        379,
+        400,
         0,
-        21
+        0
       ],
       [
         0,
@@ -210,9 +210,9 @@
         0
       ],
       [
-        2,
-        3,
-        248
+        1,
+        0,
+        252
       ]
     ]
   }

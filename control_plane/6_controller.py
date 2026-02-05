@@ -14,6 +14,7 @@ import sys
 import time
 import grpc
 import subprocess
+import json
 from time import sleep
 from queue import Queue, Empty
 from threading import Thread
@@ -197,6 +198,25 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path):
     print(f"BMv2 JSON: {bmv2_file_path}")
     print(f"Runtime CLI: {runtime_cli_path}\n")
 
+    # Load PCA configuration to determine number of components
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    pca_config_path = os.path.join(script_dir, 'tables/pca_encoding_params.json')
+    try:
+        with open(pca_config_path, 'r') as f:
+            pca_config = json.load(f)
+            n_components = pca_config.get('n_components', 2)
+            pca_bits = pca_config.get('bits', 16)
+    except FileNotFoundError:
+        print(f"WARNING: PCA config not found at {pca_config_path}, defaulting to 2 components")
+        n_components = 2
+        pca_bits = 16
+    except json.JSONDecodeError:
+        print(f"WARNING: Invalid JSON in {pca_config_path}, defaulting to 2 components")
+        n_components = 2
+        pca_bits = 16
+    
+    print(f"PCA Components: {n_components} (bits={pca_bits})\n")
+
     # Create logs directory
     os.makedirs('logs', exist_ok=True)
 
@@ -229,7 +249,9 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path):
     try:
         os.makedirs('logs', exist_ok=True)
         with open("logs/predictions.csv", "w") as out:
-            out.write("src_ip,src_port,dst_ip,dst_port,proto,iat,pkt_len,diff_len,class_id,class_label\n")
+            # Build CSV header dynamically based on number of PCA components
+            pca_headers = ','.join([f'pc{i}_code' for i in range(1, n_components + 1)])
+            out.write(f"src_ip,src_port,dst_ip,dst_port,proto,iat,pkt_len,diff_len,{pca_headers},class_id,class_label\n")
             packet_id = 0
             
             while True:
@@ -253,17 +275,30 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path):
                     iat = bytes_to_int(st[5].bitstring)
                     pkt_len = bytes_to_int(st[6].bitstring)
                     diff_len = bytes_to_int(st[7].bitstring)
-                    class_id = bytes_to_int(st[8].bitstring)
+                    
+                    # Extract PCA component codes dynamically
+                    pca_codes = []
+                    for i in range(n_components):
+                        pca_codes.append(bytes_to_int(st[8 + i].bitstring))
+                    
+                    # Class ID is at position 8 + n_components
+                    class_id = bytes_to_int(st[8 + n_components].bitstring)
 
                     packet_id += 1
                     class_label = CLASS_LABELS.get(class_id, "unknown")
                     
-                    print(f"[{packet_id}] {src_ip}:{src_port} -> {dst_ip}:{dst_port} | "
-                          f"IAT={iat} Len={pkt_len} DiffLen={diff_len} | "
+                    # Build PCA display string and CSV values
+                    pca_width = len(str((1 << pca_bits) - 1))
+                    pca_display = ' '.join([f'PCA{i+1}={pca_codes[i]:<{pca_width}}' for i in range(n_components)])
+                    pca_csv = ','.join([str(code) for code in pca_codes])
+                    
+                    print(f"[{packet_id:<4}] {src_ip:>15}:{src_port:<5} -> {dst_ip:>15}:{dst_port:<5} | "
+                          f"IAT={iat:<12} Len={pkt_len:<4} DiffLen={diff_len:<5} | "
+                          f"{pca_display} | "
                           f"Class={class_label}({class_id})")
                     
                     out.write(f"{src_ip},{src_port},{dst_ip},{dst_port},{proto},"
-                              f"{iat},{pkt_len},{diff_len},{class_id},{class_label}\n")
+                              f"{iat},{pkt_len},{diff_len},{pca_csv},{class_id},{class_label}\n")
                     out.flush()
     except KeyboardInterrupt:
         print("\nShutting down...")

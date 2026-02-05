@@ -15,8 +15,9 @@ logger = logging.getLogger(__name__)
 
 
 class P4CodeGenerator:
-    def __init__(self, n_components=2, output_file='basic.p4'):
+    def __init__(self, n_components=2, bits=16, output_file='basic.p4'):
         self.n_components = n_components
+        self.bits = bits
         self.output_file = output_file
         
     def generate_header(self):
@@ -47,7 +48,7 @@ typedef bit<32> ip4Addr_t;
 typedef bit<64> feature1_t;       // IAT (inter-arrival time)
 typedef bit<16> feature2_t;       // packet length
 typedef bit<32> feature3_t;       // diff of packet length
-typedef bit<16> pca_code_t;       // PCA component code (quantized)
+typedef bit<''' + str(self.bits) + '''> pca_code_t;       // PCA component code (quantized)
 typedef bit<8>  inference_result_t; // DT classification result
 
 header ethernet_t {
@@ -136,7 +137,12 @@ struct digest_t {
     feature1_t iat;
     feature2_t len;
     feature3_t diffLen;
-    inference_result_t class_value; //class of traffic in this flow
+'''
+        # Add PCA component codes to digest
+        for i in range(1, self.n_components + 1):
+            code += f'    pca_code_t pc{i}_code; // PCA component {i}\n'
+        
+        code += '''    inference_result_t class_value; //class of traffic in this flow
 }
 '''
         return code
@@ -359,7 +365,12 @@ control MyIngress(inout headers hdr,
                 meta.iat,
                 meta.pkt_len,
                 meta.diffLen,
-                meta.ml_result
+'''
+        # Add PCA component codes to digest call
+        for i in range(1, self.n_components + 1):
+            code += f'                meta.pc{i}_code,\n'
+        
+        code += '''                meta.ml_result
             });
             
             // Forward packet based on destination IP
@@ -478,9 +489,10 @@ def detect_n_components(params_file='tables/pca_encoding_params.json',
             with open(params_file, 'r') as f:
                 params = json.load(f)
                 n_components = params.get('n_components')
+                bits = params.get('bits', 16)
                 if n_components:
-                    logger.info(f"Detected {n_components} PCA components from {params_file}")
-                    return n_components
+                    logger.info(f"Detected {n_components} PCA components with {bits} bits from {params_file}")
+                    return n_components, bits
         except Exception as e:
             logger.warning(f"Could not read {params_file}: {e}")
     
@@ -503,13 +515,13 @@ def detect_n_components(params_file='tables/pca_encoding_params.json',
                 
                 if component_tables:
                     n_components = max(component_tables)
-                    logger.info(f"Detected {n_components} PCA components from {commands_file}")
-                    return n_components
+                    logger.info(f"Detected {n_components} PCA components from {commands_file} (bits defaulting to 16)")
+                    return n_components, 16
         except Exception as e:
             logger.warning(f"Could not parse {commands_file}: {e}")
     
-    logger.warning("Could not auto-detect number of PCA components, defaulting to 2")
-    return 2
+    logger.warning("Could not auto-detect number of PCA components, defaulting to 2 components with 16 bits")
+    return 2, 16
 
 
 def main():
@@ -534,11 +546,11 @@ def main():
     
     args = parser.parse_args()
     
-    # Always auto-detect number of components
-    n_components = detect_n_components(args.params_file, args.commands_file)
+    # Always auto-detect number of components and bits
+    n_components, bits = detect_n_components(args.params_file, args.commands_file)
     
     # Generate P4 code
-    generator = P4CodeGenerator(n_components=n_components, output_file=args.output)
+    generator = P4CodeGenerator(n_components=n_components, bits=bits, output_file=args.output)
     generator.write_to_file()
     
     logger.info("\nGeneration complete!")

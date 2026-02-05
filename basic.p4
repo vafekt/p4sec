@@ -24,7 +24,7 @@ typedef bit<32> ip4Addr_t;
 typedef bit<64> feature1_t;       // IAT (inter-arrival time)
 typedef bit<16> feature2_t;       // packet length
 typedef bit<32> feature3_t;       // diff of packet length
-typedef bit<16> pca_code_t;       // PCA component code (quantized)
+typedef bit<32> pca_code_t;       // PCA component code (quantized)
 typedef bit<8>  inference_result_t; // DT classification result
 
 header ethernet_t {
@@ -106,6 +106,8 @@ struct digest_t {
     feature1_t iat;
     feature2_t len;
     feature3_t diffLen;
+    pca_code_t pc1_code; // PCA component 1
+    pca_code_t pc2_code; // PCA component 2
     inference_result_t class_value; //class of traffic in this flow
 }
 
@@ -311,6 +313,8 @@ control MyIngress(inout headers hdr,
                 meta.iat,
                 meta.pkt_len,
                 meta.diffLen,
+                meta.pc1_code,
+                meta.pc2_code,
                 meta.ml_result
             });
             
