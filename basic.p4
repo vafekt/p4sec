@@ -24,7 +24,7 @@ typedef bit<32> ip4Addr_t;
 typedef bit<64> feature1_t;       // IAT (inter-arrival time)
 typedef bit<16> feature2_t;       // packet length
 typedef bit<32> feature3_t;       // diff of packet length
-typedef bit<32> pca_code_t;       // PCA component code (quantized)
+typedef bit<16> pca_code_t;       // PCA component code (quantized)
 typedef bit<8>  inference_result_t; // DT classification result
 
 header ethernet_t {
