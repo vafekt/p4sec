@@ -28,5 +28,4 @@ basic.p4info
 control_plane/dataset/*.csv
 
 # Mininet / runtime
-*.pcapng
 *.swp
