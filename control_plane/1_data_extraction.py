@@ -144,18 +144,20 @@ def process_single_pcap(pcap_path, output_csv, label=None):
 
 
 def process_pcap_folder(folder_path, output_csv):
-    """Process all .pcap files in a folder and write combined labeled CSV."""
+    """Process all .pcap and .pcapng files in a folder and write combined labeled CSV."""
     pcap_files = sorted(glob.glob(os.path.join(folder_path, "*.pcap")))
+    pcapng_files = sorted(glob.glob(os.path.join(folder_path, "*.pcapng")))
+    all_files = pcap_files + pcapng_files
     
-    if not pcap_files:
-        logger.warning(f"No .pcap files found in {folder_path}")
+    if not all_files:
+        logger.warning(f"No .pcap or .pcapng files found in {folder_path}")
         return
     
-    logger.info(f"Found {len(pcap_files)} PCAP files in {folder_path}")
+    logger.info(f"Found {len(all_files)} capture files in {folder_path} ({len(pcap_files)} .pcap, {len(pcapng_files)} .pcapng)")
     
     header_written = False
     
-    for pcap_path in pcap_files:
+    for pcap_path in all_files:
         # Use filename (without extension and version suffix) as label
         filename = os.path.basename(pcap_path)
         label = extract_base_label(filename)
@@ -168,7 +170,7 @@ def process_pcap_folder(folder_path, output_csv):
         write_to_csv(features, output_csv, mode=mode, write_header=not header_written)
         header_written = True
     
-    logger.info(f"Finished processing all PCAP files. Output: {output_csv}")
+    logger.info(f"Finished processing all capture files. Output: {output_csv}")
 
 
 def extract_features_from_interface(interface, output_csv, label=None, packet_count=1000, duration=None):
@@ -274,7 +276,7 @@ def extract_features_from_interface(interface, output_csv, label=None, packet_co
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Extract IAT, Packet Length, and Diff Length features from PCAP files or live capture'
+        description='Extract IAT, Packet Length, and Diff Length features from PCAP/PCAPNG files or live capture'
     )
     parser.add_argument(
         '--mode',
@@ -289,7 +291,7 @@ def main():
     parser.add_argument(
         '--pcap-dir',
         default='pcaps',
-        help='Directory containing PCAP files (default: pcaps)'
+        help='Directory containing PCAP/PCAPNG files (default: pcaps)'
     )
     parser.add_argument(
         '--interface',

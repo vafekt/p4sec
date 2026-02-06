@@ -15,6 +15,8 @@ import time
 import grpc
 import subprocess
 import json
+import pandas as pd
+import pickle
 from time import sleep
 from queue import Queue, Empty
 from threading import Thread
@@ -27,12 +29,8 @@ import p4runtime_lib.helper
 from p4runtime_lib.switch import ShutdownAllSwitchConnections
 from p4.v1 import p4runtime_pb2, p4runtime_pb2_grpc
 
-# Traffic class label mapping (matches training labels, unknown as fallback)
-CLASS_LABELS = {
-    0: "skype",
-    1: "webex",
-    2: "whasapp"
-}
+# Traffic class label mapping will be loaded dynamically from model
+CLASS_LABELS = {}
 
 def load_switch_cli(sw, runtime_cli, thrift_port=9090):
     """Load P4 table rules via simple_switch_CLI."""
@@ -86,6 +84,35 @@ def bytes_to_int(bb):
 def bytes_to_ip(bb):
     """Convert byte array to IPv4 address string."""
     return '.'.join(str(b) for b in bb)
+
+def load_class_labels(model_path):
+    """Load class labels from trained DecisionTree model.
+    
+    Dynamically extracts class labels from the model to support flexible
+    training with any number of classes or different label names.
+    
+    Args:
+        model_path: Path to the pickled DecisionTree model file
+        
+    Returns:
+        Dictionary mapping class_id (int) to class_label (str)
+    """
+    try:
+        dt = pd.read_pickle(model_path)
+        label_mapping = {idx: label for idx, label in enumerate(dt.classes_)}
+        print("=== Class Label Mapping (from model) ===")
+        for class_id, label in sorted(label_mapping.items()):
+            print(f"  {class_id}: {label}")
+        print()
+        return label_mapping
+    except FileNotFoundError:
+        print(f"WARNING: Model file not found at {model_path}")
+        print("Using empty label mapping - will default to 'unknown' for all classes")
+        return {}
+    except Exception as e:
+        print(f"WARNING: Error loading model from {model_path}: {e}")
+        print("Using empty label mapping - will default to 'unknown' for all classes")
+        return {}
 
 class DigestClient:
     """Dedicated P4Runtime client for receiving digest messages from the switch.
@@ -216,6 +243,11 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path):
         pca_bits = 16
     
     print(f"PCA Components: {n_components} (bits={pca_bits})\n")
+
+    # Load class labels dynamically from trained model
+    model_path = os.path.join(script_dir, 'model/dt.model')
+    global CLASS_LABELS
+    CLASS_LABELS = load_class_labels(model_path)
 
     # Create logs directory
     os.makedirs('logs', exist_ok=True)
