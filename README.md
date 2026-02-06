@@ -191,27 +191,6 @@ cd /tutorials/exercises/p4-pca-dt/control_plane
 python3 6_controller.py
 ```
 
-### Live Capture Pipeline
-
-```bash
-cd /tutorials/exercises/p4-pca-dt/control_plane
-
-# Capture different traffic types
-sudo python3 1_data_extraction.py --mode live --interface eth0 --count 1000 --label skype --output dataset/skype.csv
-sudo python3 1_data_extraction.py --mode live --interface eth0 --count 1000 --label webex --output dataset/webex.csv
-sudo python3 1_data_extraction.py --mode live --interface eth0 --count 1000 --label whatsapp --output dataset/whatsapp.csv
-
-# Combine datasets
-cat dataset/skype.csv dataset/webex.csv dataset/whatsapp.csv > dataset/combined.csv
-
-# Train pipeline on combined data
-python3 2_pca_generating_entries.py --dataset dataset/combined.csv && \
-python3 3_dt_training_model.py && \
-python3 4_dt_generating_entries.py && \
-python3 5_generating_p4_code.py && \
-cd .. && make clean && make
-```
-
 ### Custom PCA Components
 
 ```bash
