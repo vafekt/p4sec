@@ -21,7 +21,6 @@ Thumbs.db
 
 # Build artifacts
 basic.json
-basic.p4info
 *.log
 
 # Data outputs
