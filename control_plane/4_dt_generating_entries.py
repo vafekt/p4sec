@@ -72,15 +72,9 @@ def write_entry(f, domain, classification):
     total_width = 0  # Calculate specificity as total range width
 
     for fe in FEATURE_NAMES:
-        if fe not in domain:
-            continue
-        val = domain[fe]
+        val = domain.get(fe, {"min": None, "max": None})
         lo = val["min"]
         hi = val["max"]
-
-        # Skip unconstrained feature
-        if lo is None and hi is None:
-            continue
 
         # Defaults for missing bounds
         if lo is None:
