@@ -82,7 +82,7 @@ pwd  # Should output: /tutorials/exercises/p4-pca-dt
 ```bash
 cd /tutorials/exercises/p4-pca-dt/control_plane
 
-# From PCAP files
+# From PCAP/PCAPNG files
 python3 1_data_extraction.py --mode pcap --pcap-dir pcaps --output dataset/dataset.csv
 
 # From live capture (requires sudo)
@@ -90,6 +90,8 @@ sudo python3 1_data_extraction.py --mode live --interface eth0 --count 1000 --la
 ```
 
 **Extracts:** IAT (Inter-Arrival Time), Packet Length, Diff Length
+
+**Note:** The feature extractor automatically supports both `.pcap` and `.pcapng` file formats. Labels are auto-extracted from filenames (format: `<label>.v<version>.pcap` or `.pcapng`)
 
 ---
 
@@ -162,6 +164,8 @@ cd /tutorials/exercises/p4-pca-dt/control_plane
 python3 6_controller.py
 ```
 
+**Note:** The controller automatically loads class labels from the trained model (`model/dt.model`), making it flexible to any dataset labels without code modifications.
+
 ---
 
 ## Complete Pipeline Examples
@@ -224,4 +228,45 @@ python3 3_dt_training_model.py && \
 python3 4_dt_generating_entries.py && \
 python3 5_generating_p4_code.py && \
 cd .. && make clean && make
+```
+
+---
+
+## Recent Improvements
+
+### Flexible Label Support
+- **Controller (6_controller.py)** now dynamically loads class labels from the trained model instead of hardcoding them
+- The `load_class_labels()` function extracts labels from `model/dt.model` at runtime
+- **Benefit:** No code modifications needed when changing dataset labels - any classification labels work automatically
+
+### Multi-Format Capture Support
+- **Feature Extractor (1_data_extraction.py)** now supports both `.pcap` and `.pcapng` file formats
+- Automatically globs for both formats when processing directories
+- **Benefit:** Works with any modern packet capture format without reconfiguration
+
+---
+
+## File Structure
+
+```
+p4-pca-dt/
+├── README.md                           # This file
+├── LICENSE
+├── Makefile                            # P4 compilation
+├── requirements.txt                    # Python dependencies
+├── basic.p4                            # Generated P4 program
+├── basic.p4info                        # P4 program metadata
+├── control_plane/
+│   ├── 1_data_extraction.py           # Feature extraction (PCAP/PCAPNG, live capture)
+│   ├── 2_pca_generating_entries.py    # PCA training & encoding
+│   ├── 3_dt_training_model.py         # Decision tree training
+│   ├── 4_dt_generating_entries.py     # DT table generation
+│   ├── 5_generating_p4_code.py        # P4 code generation
+│   ├── 6_controller.py                # Runtime controller
+│   ├── pcaps/                         # PCAP/PCAPNG files
+│   ├── dataset/                       # Extracted features
+│   ├── model/                         # Trained models
+│   ├── tables/                        # Generated rules & configs
+│   └── logs/                          # Runtime logs & predictions
+└── build/                             # P4 compiler output
 ```
