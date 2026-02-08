@@ -32,6 +32,49 @@ from p4.v1 import p4runtime_pb2, p4runtime_pb2_grpc
 # Traffic class label mapping will be loaded dynamically from model
 CLASS_LABELS = {}
 
+class FlowAggregator:
+    """Aggregate per-packet digests into flow-level outputs."""
+    def __init__(self, timeout_s=5.0):
+        self.timeout_s = timeout_s
+        self.flows = {}
+
+    def update(self, key, features, pca_codes, class_id, class_label, flags):
+        now = time.time()
+        entry = self.flows.get(key)
+        if entry is None:
+            entry = {
+                "last_seen": now,
+                "features": features,
+                "pca_codes": pca_codes,
+                "class_id": class_id,
+                "class_label": class_label,
+                "flags": flags,
+            }
+            self.flows[key] = entry
+        else:
+            entry["last_seen"] = now
+            entry["features"] = features
+            entry["pca_codes"] = pca_codes
+            entry["class_id"] = class_id
+            entry["class_label"] = class_label
+            entry["flags"] = flags
+
+        # If FIN/RST seen, flush immediately
+        if flags.get("fin") == 1 or flags.get("rst") == 1:
+            self.flows.pop(key, None)
+            return [entry]
+
+        return []
+
+    def flush_expired(self):
+        now = time.time()
+        expired = []
+        for key, entry in list(self.flows.items()):
+            if (now - entry["last_seen"]) >= self.timeout_s:
+                expired.append(entry)
+                del self.flows[key]
+        return expired
+
 def load_switch_cli(sw, runtime_cli, thrift_port=9090):
     """Load P4 table rules via simple_switch_CLI."""
     print(f"Loading P4 rules from {runtime_cli}...")
@@ -215,7 +258,7 @@ class DigestClient:
         except Exception:
             pass
 
-def main(p4info_file_path, bmv2_file_path, runtime_cli_path):
+def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
     """Main controller logic: load rules, listen for digests, record predictions."""
     p4info_helper = p4runtime_lib.helper.P4InfoHelper(p4info_file_path)
     digest_name = "digest_t"
@@ -228,6 +271,8 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path):
     # Load PCA configuration to determine number of components
     script_dir = os.path.dirname(os.path.abspath(__file__))
     pca_config_path = os.path.join(script_dir, 'tables/pca_encoding_params.json')
+    flow_aggregator = FlowAggregator(timeout_s=flow_timeout_s)
+
     try:
         with open(pca_config_path, 'r') as f:
             pca_config = json.load(f)
@@ -283,12 +328,32 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path):
         with open("logs/predictions.csv", "w") as out:
             # Build CSV header dynamically based on number of PCA components
             pca_headers = ','.join([f'pc{i}_code' for i in range(1, n_components + 1)])
-            out.write(f"src_ip,src_port,dst_ip,dst_port,proto,iat,pkt_len,diff_len,{pca_headers},class_id,class_label\n")
+            out.write(f"src_ip,src_port,dst_ip,dst_port,proto,iat,duration,total_bytes,flags_syn,flags_ack,flags_fin,flags_rst,{pca_headers},class_id,class_label\n")
             packet_id = 0
             
             while True:
                 msg = dclient.get_digest(timeout=0.5)
                 if msg is None:
+                    # Periodically flush expired flows
+                    for entry in flow_aggregator.flush_expired():
+                        packet_id += 1
+                        pca_width = len(str((1 << pca_bits) - 1))
+                        pca_display = ' '.join([f'PCA{i+1}={entry["pca_codes"][i]:<{pca_width}}' for i in range(n_components)])
+                        f = entry["features"]
+                        flags = entry["flags"]
+                        class_id = entry["class_id"]
+                        class_label = entry["class_label"]
+
+                        print(f"[{packet_id:<4}] {f['src_ip']:>15}:{f['src_port']:<5} -> {f['dst_ip']:>15}:{f['dst_port']:<5} | "
+                              f"IAT={f['iat']:<12} Dur={f['duration']:<12} Bytes={f['total_bytes']:<8} | "
+                              f"Flags(S/A/F/R)={flags['syn']}/{flags['ack']}/{flags['fin']}/{flags['rst']} | "
+                              f"{pca_display} | "
+                              f"Class={class_label}({class_id})")
+
+                        out.write(f"{f['src_ip']},{f['src_port']},{f['dst_ip']},{f['dst_port']},{f['proto']},"
+                                  f"{f['iat']},{f['duration']},{f['total_bytes']},{flags['syn']},{flags['ack']},{flags['fin']},{flags['rst']},"
+                                  f"{','.join([str(code) for code in entry['pca_codes']])},{class_id},{class_label}\n")
+                        out.flush()
                     continue
 
                 digest = msg.digest
@@ -304,34 +369,69 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path):
                     src_port = bytes_to_int(st[2].bitstring)
                     dst_port = bytes_to_int(st[3].bitstring)
                     proto = bytes_to_int(st[4].bitstring)
-                    iat = bytes_to_int(st[5].bitstring)
-                    pkt_len = bytes_to_int(st[6].bitstring)
-                    diff_len = bytes_to_int(st[7].bitstring)
+                    
+                    # Extract flow-based features
+                    iat = bytes_to_int(st[5].bitstring)           # Inter-Arrival Time
+                    duration = bytes_to_int(st[6].bitstring)      # Flow duration
+                    total_bytes = bytes_to_int(st[7].bitstring)   # Total bytes
+                    flags_syn = bytes_to_int(st[8].bitstring)     # SYN flag
+                    flags_ack = bytes_to_int(st[9].bitstring)     # ACK flag
+                    flags_fin = bytes_to_int(st[10].bitstring)    # FIN flag
+                    flags_rst = bytes_to_int(st[11].bitstring)    # RST flag
                     
                     # Extract PCA component codes dynamically
                     pca_codes = []
                     for i in range(n_components):
-                        pca_codes.append(bytes_to_int(st[8 + i].bitstring))
+                        pca_codes.append(bytes_to_int(st[12 + i].bitstring))
                     
-                    # Class ID is at position 8 + n_components
-                    class_id = bytes_to_int(st[8 + n_components].bitstring)
+                    # Class ID is at position 12 + n_components
+                    class_id = bytes_to_int(st[12 + n_components].bitstring)
 
-                    packet_id += 1
                     class_label = CLASS_LABELS.get(class_id, "unknown")
-                    
-                    # Build PCA display string and CSV values
-                    pca_width = len(str((1 << pca_bits) - 1))
-                    pca_display = ' '.join([f'PCA{i+1}={pca_codes[i]:<{pca_width}}' for i in range(n_components)])
-                    pca_csv = ','.join([str(code) for code in pca_codes])
-                    
-                    print(f"[{packet_id:<4}] {src_ip:>15}:{src_port:<5} -> {dst_ip:>15}:{dst_port:<5} | "
-                          f"IAT={iat:<12} Len={pkt_len:<4} DiffLen={diff_len:<5} | "
-                          f"{pca_display} | "
-                          f"Class={class_label}({class_id})")
-                    
-                    out.write(f"{src_ip},{src_port},{dst_ip},{dst_port},{proto},"
-                              f"{iat},{pkt_len},{diff_len},{pca_csv},{class_id},{class_label}\n")
-                    out.flush()
+
+                    features = {
+                        "src_ip": src_ip,
+                        "dst_ip": dst_ip,
+                        "src_port": src_port,
+                        "dst_port": dst_port,
+                        "proto": proto,
+                        "iat": iat,
+                        "duration": duration,
+                        "total_bytes": total_bytes,
+                    }
+                    flags = {
+                        "syn": flags_syn,
+                        "ack": flags_ack,
+                        "fin": flags_fin,
+                        "rst": flags_rst,
+                    }
+
+                    for entry in flow_aggregator.update(
+                        (src_ip, dst_ip, src_port, dst_port, proto),
+                        features,
+                        pca_codes,
+                        class_id,
+                        class_label,
+                        flags,
+                    ):
+                        packet_id += 1
+                        pca_width = len(str((1 << pca_bits) - 1))
+                        pca_display = ' '.join([f'PCA{i+1}={entry["pca_codes"][i]:<{pca_width}}' for i in range(n_components)])
+                        f = entry["features"]
+                        flags = entry["flags"]
+                        class_id = entry["class_id"]
+                        class_label = entry["class_label"]
+
+                        print(f"[{packet_id:<4}] {f['src_ip']:>15}:{f['src_port']:<5} -> {f['dst_ip']:>15}:{f['dst_port']:<5} | "
+                              f"IAT={f['iat']:<12} Dur={f['duration']:<12} Bytes={f['total_bytes']:<8} | "
+                              f"Flags(S/A/F/R)={flags['syn']}/{flags['ack']}/{flags['fin']}/{flags['rst']} | "
+                              f"{pca_display} | "
+                              f"Class={class_label}({class_id})")
+
+                        out.write(f"{f['src_ip']},{f['src_port']},{f['dst_ip']},{f['dst_port']},{f['proto']},"
+                                  f"{f['iat']},{f['duration']},{f['total_bytes']},{flags['syn']},{flags['ack']},{flags['fin']},{flags['rst']},"
+                                  f"{','.join([str(code) for code in entry['pca_codes']])},{class_id},{class_label}\n")
+                        out.flush()
     except KeyboardInterrupt:
         print("\nShutting down...")
     except Exception as e:
@@ -356,6 +456,8 @@ if __name__ == '__main__':
                         help=f'Path to BMv2 JSON file (default: {default_bmv2_json})')
     parser.add_argument('--runtime-cli', type=str, default=default_runtime_cli,
                         help=f'Path to P4 table_add commands file (default: {default_runtime_cli})')
+    parser.add_argument('--flow-timeout', type=float, default=5.0,
+                        help='Flow inactivity timeout in seconds before printing a flow summary (default: 5.0)')
     args = parser.parse_args()
 
     # Validate input files
@@ -367,7 +469,7 @@ if __name__ == '__main__':
             sys.exit(1)
 
     try:
-        main(args.p4info, args.bmv2_json, args.runtime_cli)
+        main(args.p4info, args.bmv2_json, args.runtime_cli, args.flow_timeout)
     except Exception as e:
         print(f"FATAL ERROR: {e}")
         sys.exit(1)

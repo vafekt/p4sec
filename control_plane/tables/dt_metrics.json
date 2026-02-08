@@ -5,75 +5,81 @@
     "Discovery",
     "Evasion"
   ],
-  "accuracy": 0.9624913971094288,
+  "accuracy": 1.0,
   "confusion_matrix": [
     [
-      490,
-      12,
-      82,
-      0
-    ],
-    [
-      4,
-      3084,
-      6,
-      0
-    ],
-    [
-      84,
-      26,
-      1962,
-      0
-    ],
-    [
-      2,
+      64,
       0,
-      2,
-      58
+      0,
+      0
+    ],
+    [
+      0,
+      18,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      56,
+      0
+    ],
+    [
+      0,
+      0,
+      0,
+      8
     ]
   ],
   "classification_report": {
     "Access": {
-      "precision": 0.8448275862068966,
-      "recall": 0.839041095890411,
-      "f1-score": 0.8419243986254296,
-      "support": 584.0
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1-score": 1.0,
+      "support": 64.0
     },
     "CC": {
-      "precision": 0.9878283151825753,
-      "recall": 0.9967679379444085,
-      "f1-score": 0.9922779922779923,
-      "support": 3094.0
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1-score": 1.0,
+      "support": 18.0
     },
     "Discovery": {
-      "precision": 0.956140350877193,
-      "recall": 0.946911196911197,
-      "f1-score": 0.9515033947623667,
-      "support": 2072.0
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1-score": 1.0,
+      "support": 56.0
     },
     "Evasion": {
       "precision": 1.0,
-      "recall": 0.9354838709677419,
-      "f1-score": 0.9666666666666667,
-      "support": 62.0
+      "recall": 1.0,
+      "f1-score": 1.0,
+      "support": 8.0
     },
-    "accuracy": 0.9624913971094288,
+    "accuracy": 1.0,
     "macro avg": {
-      "precision": 0.9471990630666662,
-      "recall": 0.9295510254284396,
-      "f1-score": 0.9380931130831138,
-      "support": 5812.0
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1-score": 1.0,
+      "support": 146.0
     },
     "weighted avg": {
-      "precision": 0.9622923132376564,
-      "recall": 0.9624913971094288,
-      "f1-score": 0.9623606889515341,
-      "support": 5812.0
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1-score": 1.0,
+      "support": 146.0
     }
   },
   "feature_names": [
     "PC1_code",
-    "PC2_code"
+    "PC2_code",
+    "PC3_code",
+    "PC4_code",
+    "PC5_code",
+    "PC6_code",
+    "PC7_code",
+    "PC8_code"
   ],
   "random_state": 42,
   "max_depth": null,

@@ -183,8 +183,12 @@ for j, r2 in enumerate(r2_quant, 1):
 # ==========================================================
 # 5. Train DecisionTreeRegressor for mapping RAW features -> PCA codes (multi-output)
 #    Both PCA and tree use RAW features, so P4 rules will work correctly
+#    Use deeper tree for better PCA approximation
 # ==========================================================
 tree = DecisionTreeRegressor(
+    max_depth=12,          # Deeper tree for better resolution
+    min_samples_split=2,   # Allow more splits
+    min_samples_leaf=1,    # Allow single-sample leaves for precision
     random_state=42
 )
 
@@ -373,7 +377,7 @@ print(f"Encoding parameters saved to: {params_path}")
 
 # ==========================================================
 # 12. Export P4 table_add commands for PCA transformation
-#     Maps 3 raw features (iat, totalLen, diffLen) ranges to each PCA component code
+#     Maps raw feature ranges to each PCA component code
 #     Generates separate commands for each PCA component (scalable design)
 # ==========================================================
 def minimize(path):
@@ -389,37 +393,78 @@ def minimize(path):
             val["min"] = threshold
     return domain
 
-def format_feature_ranges(domain, feature_names, max_val):
-    """Format feature constraints as P4 range match clauses.
+def format_feature_ranges(domain, feature_names, feature_max_map):
+    """Format feature constraints as P4 match clauses.
     IMPORTANT: All features MUST be present, in the correct order!
-    Unconstrained features get full range (0->MAX_VAL)"""
+    - All features use RANGE match syntax (lo->hi)
+    - For flag fields: 0->0 (only 0), 1->1 (only 1), 0->1 (wildcard/both)
+    - For numeric features: standard range matching
+    Unconstrained range features get full range (0->FEATURE_MAX)
+    Unconstrained flag features get wildcard (0->1)"""
     clauses = []
     
+    # Define which features are flags (binary, 0 or 1)
+    flag_features = {"FlagsSyn", "FlagsAck", "FlagsFin", "FlagsRst"}
+    
     for feat_name in feature_names:
+        is_flag = feat_name in flag_features
+        
         if feat_name not in domain:
-            # Feature not constrained - use full range
-            clauses.append(f"0->{max_val}")
+            # Feature not constrained
+            if is_flag:
+                # For flags: unconstrained means wildcard (both 0 and 1)
+                clauses.append("0->1")
+            else:
+                # For numeric: unconstrained means full range
+                feature_max = feature_max_map.get(feat_name, MAX_VAL)
+                clauses.append(f"0->{feature_max}")
             continue
             
         val = domain[feat_name]
         lo = val["min"]
         hi = val["max"]
         
-        # Defaults for missing bounds
-        if lo is None:
-            lo = -1  # will become 0 after +1
-        if hi is None:
-            hi = max_val
-        
-        # Decision tree uses (lo, hi]; convert to [lo+1, hi]
-        lo = int(lo) + 1
-        hi = int(hi)
-        
-        clauses.append(f"{lo}->{hi}")
+        if is_flag:
+            # For binary flags: thresholds are typically 0.5
+            # lo=None, hi=0.5 means feature <= 0.5, so value is 0 (range: 0->0)
+            # lo=0.5, hi=None means feature > 0.5, so value is 1 (range: 1->1)
+            # Both bounds set shouldn't happen for binary features
+            
+            if lo is None and hi is not None:
+                # Feature <= threshold (value is 0)
+                clauses.append("0->0")
+            elif lo is not None and hi is None:
+                # Feature > threshold (value is 1)
+                clauses.append("1->1")
+            else:
+                # Unconstrained or both bounds (shouldn't happen)
+                clauses.append("0->1")
+        else:
+            # For numeric features, standard range conversion
+            feature_max = feature_max_map.get(feat_name)
+            if feature_max is None:
+                feature_max = int(np.nanmax(X_df[feat_name])) if feat_name in X_df.columns else MAX_VAL
+
+            if lo is None:
+                lo = -1  # will become 0 after +1
+            if hi is None:
+                hi = feature_max
+
+            # Decision tree uses (lo, hi]; convert to [lo+1, hi]
+            lo = int(lo) + 1
+            hi = int(hi)
+
+            # Clamp to feature range
+            if lo < 0:
+                lo = 0
+            if hi > feature_max:
+                hi = feature_max
+
+            clauses.append(f"{lo}->{hi}")
     
     return clauses
 
-def write_pca_p4_commands(dt, feature_names, leaf_to_codes, k, max_val, filename):
+def write_pca_p4_commands(dt, feature_names, leaf_to_codes, k, max_val, feature_max_map, filename):
     """
     Generate P4 table_add commands for PCA transformation tables.
     Creates one command per PCA component per leaf node.
@@ -448,7 +493,7 @@ def write_pca_p4_commands(dt, feature_names, leaf_to_codes, k, max_val, filename
                 new_path.append((feat_name, sign, thr))
 
             clause = minimize(new_path)
-            clauses = format_feature_ranges(clause, feature_names, max_val)
+            clauses = format_feature_ranges(clause, feature_names, feature_max_map)
             codes = leaf_to_codes[node_id]  # shape (k,)
             
             # Generate one table_add per PCA component
@@ -473,9 +518,29 @@ def write_pca_p4_commands(dt, feature_names, leaf_to_codes, k, max_val, filename
     with open(filename, "w") as f:
         dfs(0, [])
 
+# Build feature max values based on P4 field widths (fallback to dataset max)
+FEATURE_MAX_DEFAULTS = {
+    "IAT": (2**48 - 1),
+    "Duration": (2**48 - 1),
+    "SrcPort": (2**16 - 1),
+    "DstPort": (2**16 - 1),
+    "TotalBytes": (2**32 - 1),
+    "FlagsSyn": 1,
+    "FlagsAck": 1,
+    "FlagsFin": 1,
+    "FlagsRst": 1,
+}
+
+feature_max_map = {}
+for feat in feature_cols:
+    if feat in FEATURE_MAX_DEFAULTS:
+        feature_max_map[feat] = FEATURE_MAX_DEFAULTS[feat]
+    else:
+        feature_max_map[feat] = int(np.nanmax(X_df[feat])) if feat in X_df.columns else MAX_VAL
+
 # Generate P4 commands for PCA transformation
 pca_commands_path = os.path.join(TABLES_DIR, "s1-commands.txt")
-write_pca_p4_commands(tree, feature_cols, leaf_to_codes, k, MAX_VAL, pca_commands_path)
+write_pca_p4_commands(tree, feature_cols, leaf_to_codes, k, MAX_VAL, feature_max_map, pca_commands_path)
 print(f"P4 table_add commands for PCA components saved to: {pca_commands_path}")
 
 # Also keep IF rules for human readability

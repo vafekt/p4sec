@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 """
-Simplified Network Traffic Feature Extractor
-Extracts 3 simple features from PCAP files or live network capture:
-  1. IAT (Inter Arrival Time) - time difference between consecutive packets (nanoseconds)
-  2. Packet Length - size of current packet
-  3. Diff Length - difference between current and previous packet length
+Network Traffic Flow Feature Extractor
+Extracts flow-based features from PCAP files or live network capture:
+  1. IAT - Average Inter-Arrival Time within a flow (nanoseconds)
+  2. Duration - Total duration of the flow (nanoseconds)
+  3. Source Port - Source port of the flow
+  4. Destination Port - Destination port of the flow
+  5. Total Bytes - Total bytes transferred in the flow
+  6. Flags - TCP flags (SYN, ACK, FIN, RST) aggregated over the flow
 
 Supports both PCAP file processing and live interface capture.
+Aggregates packets into flows using 5-tuple (src_ip, dst_ip, src_port, dst_port, protocol).
 """
 
 import os
@@ -16,86 +20,157 @@ import csv
 import argparse
 import logging
 import time
+from collections import defaultdict
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+FLOW_TIMEOUT = 30  # seconds - timeout for inactive flows
+
 
 def extract_features_from_pcap(pcap_path, label=None):
     """
-    Extract IAT, packet length, and diff length from a PCAP file.
+    Extract flow-based features from a PCAP file.
     
-    For each packet:
-      - IAT: Inter Arrival Time (nanoseconds) between consecutive packets
-      - PacketLength: Size of the current packet
-      - DiffLength: Difference in packet length from previous packet
+    Aggregates packets into flows using 5-tuple (src_ip, dst_ip, src_port, dst_port, protocol).
+    For each flow, extracts:
+      - IAT: Average Inter-Arrival Time between packets in the flow
+      - Duration: Time from first to last packet in flow
+      - SrcPort: Source port
+      - DstPort: Destination port
+      - TotalBytes: Total bytes in the flow
+      - Flags: Aggregated TCP flags (SYN, ACK, FIN, RST)
     
-    Returns list of feature dictionaries.
+    Returns list of feature dictionaries (one per flow).
     """
     features_list = []
     cap = pyshark.FileCapture(pcap_path)
     
-    last_ts = 0
-    last_len = 0
+    # Dictionary to store flow state: flow_key -> {packets_info}
+    flows = defaultdict()
+    flow_count = 0
     packet_count = 0
     
     try:
         for packet in cap:
             try:
-                # Get timestamp and packet length
+                # Extract IP layer information
+                if not hasattr(packet, 'ip'):
+                    continue
+                
+                src_ip = packet.ip.src
+                dst_ip = packet.ip.dst
+                protocol = int(packet.ip.proto)
+                
+                # Extract port information (TCP/UDP only)
+                if protocol == 6:  # TCP
+                    src_port = int(packet.tcp.srcport)
+                    dst_port = int(packet.tcp.dstport)
+                    tcp_flags_syn = int(packet.tcp.flags_syn) if hasattr(packet.tcp, 'flags_syn') else 0
+                    tcp_flags_ack = int(packet.tcp.flags_ack) if hasattr(packet.tcp, 'flags_ack') else 0
+                    tcp_flags_fin = int(packet.tcp.flags_fin) if hasattr(packet.tcp, 'flags_fin') else 0
+                    tcp_flags_rst = int(packet.tcp.flags_reset) if hasattr(packet.tcp, 'flags_reset') else 0
+                elif protocol == 17:  # UDP
+                    src_port = int(packet.udp.srcport)
+                    dst_port = int(packet.udp.dstport)
+                    tcp_flags_syn = 0
+                    tcp_flags_ack = 0
+                    tcp_flags_fin = 0
+                    tcp_flags_rst = 0
+                else:
+                    continue
+                
+                # Create flow key (5-tuple)
+                flow_key = (src_ip, dst_ip, src_port, dst_port, protocol)
+                
+                # Get packet timestamp and length
                 ts = float(packet.sniff_timestamp)
-                ip_len = int(packet.length)
+                pkt_len = int(packet.length)
                 
-                # Convert timestamp to nanoseconds
-                ts_ns = int(ts * 1000000 * 1000)
+                # Initialize or update flow
+                if flow_key not in flows:
+                    flows[flow_key] = {
+                        'packets': [],
+                        'timestamps': [],
+                        'lengths': [],
+                        'flags_syn': 0,
+                        'flags_ack': 0,
+                        'flags_fin': 0,
+                        'flags_rst': 0,
+                    }
+                    flow_count += 1
                 
-                # First packet - initialize baseline
-                if last_ts == 0:
-                    last_ts = ts_ns
-                    last_len = ip_len
-                    packet_count += 1
-                    continue
+                flows[flow_key]['packets'].append(pkt_len)
+                flows[flow_key]['timestamps'].append(ts)
+                flows[flow_key]['lengths'].append(pkt_len)
+                flows[flow_key]['flags_syn'] = max(flows[flow_key]['flags_syn'], tcp_flags_syn)
+                flows[flow_key]['flags_ack'] = max(flows[flow_key]['flags_ack'], tcp_flags_ack)
+                flows[flow_key]['flags_fin'] = max(flows[flow_key]['flags_fin'], tcp_flags_fin)
+                flows[flow_key]['flags_rst'] = max(flows[flow_key]['flags_rst'], tcp_flags_rst)
                 
-                # Calculate IAT (Inter Arrival Time)
-                iat = ts_ns - last_ts
-                
-                # Skip packets with negative IAT (out of order)
-                if iat < 0:
-                    logger.warning(f"Ignoring unordered packet at {ts}")
-                    continue
-                
-                # Calculate diff length: difference from previous packet
-                diff_len = ip_len - last_len
-                diff_len += 0xFFFF  # Avoid negative values (add 65535)
-                
-                # Create feature record
-                feature = {
-                    "IAT": iat,
-                    "PacketLength": ip_len,
-                    "DiffLength": diff_len
-                }
-                
-                if label is not None:
-                    feature["Label"] = label
-                
-                features_list.append(feature)
-                
-                # Update for next iteration
-                last_ts = ts_ns
-                last_len = ip_len
                 packet_count += 1
-                
                 if packet_count % 1000 == 0:
-                    logger.info(f"Processed {packet_count} packets from {os.path.basename(pcap_path)}")
+                    logger.info(f"Processed {packet_count} packets, {len(flows)} flows from {os.path.basename(pcap_path)}")
                     
             except Exception as e:
-                logger.warning(f"Error processing packet: {e}")
+                logger.debug(f"Error processing packet: {e}")
                 continue
     finally:
         cap.close()
     
-    logger.info(f"Extracted {len(features_list)} features from {pcap_path}")
+    # Convert flows to feature records
+    for flow_key, flow_data in flows.items():
+        src_ip, dst_ip, src_port, dst_port, protocol = flow_key
+        
+        if len(flow_data['timestamps']) < 2:
+            # Skip flows with only one packet
+            continue
+        
+        # Calculate features
+        timestamps = flow_data['timestamps']
+        lengths = flow_data['lengths']
+        
+        # Duration: time from first to last packet (in nanoseconds)
+        duration_sec = timestamps[-1] - timestamps[0]
+        duration_ns = int(duration_sec * 1000000 * 1000)
+        
+        # IAT: sum of inter-arrival times >> 2 (matches P4 calculation)
+        # P4 cannot do division, so it approximates avg IAT as: sum_iat >> 2
+        if len(timestamps) > 1:
+            inter_arrival_times = []
+            for i in range(1, len(timestamps)):
+                iat = timestamps[i] - timestamps[i-1]
+                inter_arrival_times.append(iat)
+            sum_iat_sec = sum(inter_arrival_times)
+            sum_iat_ns = int(sum_iat_sec * 1000000 * 1000)
+            # Right-shift by 2 to match P4 approximation
+            approx_iat_ns = sum_iat_ns >> 2
+        else:
+            approx_iat_ns = 0
+        
+        # Total bytes (subtract Ethernet header from first packet)
+        total_bytes = sum(lengths) - 14
+        
+        # Create feature record
+        feature = {
+            "IAT": approx_iat_ns,
+            "Duration": duration_ns,
+            "SrcPort": src_port,
+            "DstPort": dst_port,
+            "TotalBytes": total_bytes,
+            "FlagsSyn": flow_data['flags_syn'],
+            "FlagsAck": flow_data['flags_ack'],
+            "FlagsFin": flow_data['flags_fin'],
+            "FlagsRst": flow_data['flags_rst'],
+        }
+        
+        if label is not None:
+            feature["Label"] = label
+        
+        features_list.append(feature)
+    
+    logger.info(f"Extracted {len(features_list)} flows from {packet_count} packets in {pcap_path}")
     return features_list
 
 
@@ -121,6 +196,18 @@ def write_to_csv(features_list, output_path, mode='w', write_header=True):
         writer.writerows(features_list)
     
     logger.info(f"Wrote {len(features_list)} rows to {output_path}")
+
+
+def extract_base_label(filename):
+    """Extract base label from filename, removing version suffixes like .v1, .v2, etc."""
+    base = os.path.splitext(filename)[0]  # Remove .pcap extension
+    # Remove version suffix (.v1, .v2, etc.)
+    parts = base.split('.')
+    # Keep only the part before the version (v followed by digits)
+    for i, part in enumerate(parts):
+        if part.startswith('v') and part[1:].isdigit():
+            return '.'.join(parts[:i])
+    return base
 
 
 def extract_base_label(filename):
@@ -175,23 +262,21 @@ def process_pcap_folder(folder_path, output_csv):
 
 def extract_features_from_interface(interface, output_csv, label=None, packet_count=1000, duration=None):
     """
-    Extract features from live network capture on specified interface.
+    Extract flow-based features from live network capture on specified interface.
     
     Args:
         interface: Network interface name (e.g., 'eth0', 'wlan0')
         output_csv: Output CSV file path
-        label: Optional label for captured packets
+        label: Optional label for captured flows
         packet_count: Number of packets to capture (default: 1000)
         duration: Optional time limit in seconds (default: None - use packet_count)
     """
     logger.info(f"Starting live capture on interface: {interface}")
     logger.info(f"Target packets: {packet_count}, Duration: {duration if duration else 'unlimited'}")
     
-    features_list = []
+    flows = defaultdict()
     cap = pyshark.LiveCapture(interface=interface)
     
-    last_ts = 0
-    last_len = 0
     captured = 0
     start_time = time.time()
     
@@ -208,54 +293,66 @@ def extract_features_from_interface(interface, output_csv, label=None, packet_co
                     logger.info(f"Captured {captured} packets")
                     break
                 
-                # Get timestamp and packet length
+                # Extract IP layer information
+                if not hasattr(packet, 'ip'):
+                    continue
+                
+                src_ip = packet.ip.src
+                dst_ip = packet.ip.dst
+                protocol = int(packet.ip.proto)
+                
+                # Extract port information (TCP/UDP only)
+                if protocol == 6:  # TCP
+                    src_port = int(packet.tcp.srcport)
+                    dst_port = int(packet.tcp.dstport)
+                    tcp_flags_syn = int(packet.tcp.flags_syn) if hasattr(packet.tcp, 'flags_syn') else 0
+                    tcp_flags_ack = int(packet.tcp.flags_ack) if hasattr(packet.tcp, 'flags_ack') else 0
+                    tcp_flags_fin = int(packet.tcp.flags_fin) if hasattr(packet.tcp, 'flags_fin') else 0
+                    tcp_flags_rst = int(packet.tcp.flags_reset) if hasattr(packet.tcp, 'flags_reset') else 0
+                elif protocol == 17:  # UDP
+                    src_port = int(packet.udp.srcport)
+                    dst_port = int(packet.udp.dstport)
+                    tcp_flags_syn = 0
+                    tcp_flags_ack = 0
+                    tcp_flags_fin = 0
+                    tcp_flags_rst = 0
+                else:
+                    continue
+                
+                # Create flow key (5-tuple)
+                flow_key = (src_ip, dst_ip, src_port, dst_port, protocol)
+                
+                # Get packet timestamp and length
                 ts = float(packet.sniff_timestamp)
-                ip_len = int(packet.length)
+                pkt_len = int(packet.length)
                 
-                # Convert timestamp to nanoseconds
-                ts_ns = int(ts * 1000000 * 1000)
+                # Initialize or update flow
+                if flow_key not in flows:
+                    flows[flow_key] = {
+                        'packets': [],
+                        'timestamps': [],
+                        'lengths': [],
+                        'flags_syn': 0,
+                        'flags_ack': 0,
+                        'flags_fin': 0,
+                        'flags_rst': 0,
+                    }
                 
-                # First packet - initialize baseline
-                if last_ts == 0:
-                    last_ts = ts_ns
-                    last_len = ip_len
-                    captured += 1
-                    continue
+                flows[flow_key]['packets'].append(pkt_len)
+                flows[flow_key]['timestamps'].append(ts)
+                flows[flow_key]['lengths'].append(pkt_len)
+                flows[flow_key]['flags_syn'] = max(flows[flow_key]['flags_syn'], tcp_flags_syn)
+                flows[flow_key]['flags_ack'] = max(flows[flow_key]['flags_ack'], tcp_flags_ack)
+                flows[flow_key]['flags_fin'] = max(flows[flow_key]['flags_fin'], tcp_flags_fin)
+                flows[flow_key]['flags_rst'] = max(flows[flow_key]['flags_rst'], tcp_flags_rst)
                 
-                # Calculate IAT (Inter Arrival Time)
-                iat = ts_ns - last_ts
-                
-                # Skip packets with negative IAT (out of order)
-                if iat < 0:
-                    logger.warning(f"Ignoring unordered packet at {ts}")
-                    continue
-                
-                # Calculate diff length: difference from previous packet
-                diff_len = ip_len - last_len
-                diff_len += 0xFFFF  # Avoid negative values (add 65535)
-                
-                # Create feature record
-                feature = {
-                    "IAT": iat,
-                    "PacketLength": ip_len,
-                    "DiffLength": diff_len
-                }
-                
-                if label is not None:
-                    feature["Label"] = label
-                
-                features_list.append(feature)
-                
-                # Update for next iteration
-                last_ts = ts_ns
-                last_len = ip_len
                 captured += 1
                 
                 if captured % 100 == 0:
-                    logger.info(f"Captured {captured} packets...")
+                    logger.info(f"Captured {captured} packets, {len(flows)} flows...")
                     
             except Exception as e:
-                logger.warning(f"Error processing packet: {e}")
+                logger.debug(f"Error processing packet: {e}")
                 continue
                 
     except KeyboardInterrupt:
@@ -263,20 +360,65 @@ def extract_features_from_interface(interface, output_csv, label=None, packet_co
     finally:
         cap.close()
     
-    logger.info(f"Extracted {len(features_list)} features from live capture")
+    # Convert flows to feature records
+    features_list = []
+    for flow_key, flow_data in flows.items():
+        src_ip, dst_ip, src_port, dst_port, protocol = flow_key
+        
+        if len(flow_data['timestamps']) < 2:
+            continue
+        
+        timestamps = flow_data['timestamps']
+        lengths = flow_data['lengths']
+        
+        duration_sec = timestamps[-1] - timestamps[0]
+        duration_ns = int(duration_sec * 1000000 * 1000)
+        
+        if len(timestamps) > 1:
+            inter_arrival_times = []
+            for i in range(1, len(timestamps)):
+                iat = timestamps[i] - timestamps[i-1]
+                inter_arrival_times.append(iat)
+            sum_iat_sec = sum(inter_arrival_times)
+            sum_iat_ns = int(sum_iat_sec * 1000000 * 1000)
+            # Right-shift by 2 to match P4 approximation
+            approx_iat_ns = sum_iat_ns >> 2
+        else:
+            approx_iat_ns = 0
+        
+        total_bytes = sum(lengths) - 14
+        
+        feature = {
+            "IAT": approx_iat_ns,
+            "Duration": duration_ns,
+            "SrcPort": src_port,
+            "DstPort": dst_port,
+            "TotalBytes": total_bytes,
+            "FlagsSyn": flow_data['flags_syn'],
+            "FlagsAck": flow_data['flags_ack'],
+            "FlagsFin": flow_data['flags_fin'],
+            "FlagsRst": flow_data['flags_rst'],
+        }
+        
+        if label is not None:
+            feature["Label"] = label
+        
+        features_list.append(feature)
+    
+    logger.info(f"Extracted {len(features_list)} flows from {captured} packets")
     
     # Write to CSV
     if features_list:
         write_to_csv(features_list, output_csv, mode='w', write_header=True)
     else:
-        logger.warning("No features captured")
+        logger.warning("No flows captured")
     
     return features_list
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Extract IAT, Packet Length, and Diff Length features from PCAP/PCAPNG files or live capture'
+        description='Extract flow-based features from PCAP/PCAPNG files or live capture'
     )
     parser.add_argument(
         '--mode',
@@ -310,7 +452,7 @@ def main():
     )
     parser.add_argument(
         '--label',
-        help='Label for captured packets in live mode'
+        help='Label for captured flows in live mode'
     )
     parser.add_argument(
         '--output',
@@ -324,7 +466,8 @@ def main():
         if args.input:
             # Single PCAP file
             label = os.path.splitext(os.path.basename(args.input))[0]
-            process_single_pcap(args.input, args.output, label=label)
+            features = extract_features_from_pcap(args.input, label=label)
+            write_to_csv(features, args.output, mode='w', write_header=True)
         else:
             # Folder of PCAP files
             process_pcap_folder(args.pcap_dir, args.output)
