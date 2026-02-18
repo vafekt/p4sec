@@ -7,7 +7,7 @@ Extracts flow-based features from PCAP files or live network capture:
   3. Source Port - Source port of the flow
   4. Destination Port - Destination port of the flow
   5. Total Bytes - Total bytes transferred in the flow
-  6. Flags - TCP flags (SYN, ACK, FIN, RST) aggregated over the flow
+  6. Flags - TCP flags (SYN, ACK, FIN, RST) aggregated over the flow. Each flag is represented as one feature (0 or 1).
 
 Supports both PCAP file processing and live interface capture.
 Aggregates packets into flows using 5-tuple (src_ip, dst_ip, src_port, dst_port, protocol).

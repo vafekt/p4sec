@@ -37,7 +37,7 @@ typedef bit<48> duration_t;     // Flow duration (nanoseconds)
 typedef bit<16> port_t;         // Port number
 typedef bit<32> bytes_t;        // Byte count
 typedef bit<1>  flags_t;        // TCP flags
-typedef bit<16> pca_code_t;   // PCA component code (quantized)
+typedef bit<32> pca_code_t;   // PCA component code (quantized)
 typedef bit<8>  inference_result_t; // DT classification result
 
 header ethernet_t {
@@ -289,7 +289,8 @@ control MyIngress(inout headers hdr,
 
     // Helper to update flow state
     action update_flow_state() {
-        bit<48> current_time = standard_metadata.ingress_global_timestamp;
+        bit<48> current_time_us = standard_metadata.ingress_global_timestamp;  // in microseconds
+        bit<48> current_time = current_time_us * 1000;  // convert to nanoseconds
         bit<48> time_first;
         bit<48> time_last;
         bit<32> pkt_count;

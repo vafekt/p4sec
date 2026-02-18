@@ -334,7 +334,8 @@ control MyIngress(inout headers hdr,
 
     // Helper to update flow state
     action update_flow_state() {
-        bit<48> current_time = standard_metadata.ingress_global_timestamp;
+        bit<48> current_time_us = standard_metadata.ingress_global_timestamp;  // in microseconds
+        bit<48> current_time = current_time_us * 1000;  // convert to nanoseconds
         bit<48> time_first;
         bit<48> time_last;
         bit<32> pkt_count;
