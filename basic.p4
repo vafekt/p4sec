@@ -16,7 +16,7 @@ const bit<32> MAX_REGISTER_ENTRIES = 8192;
 
 // Bloom filter for flow detection
 #define BLOOM_FILTER_BIT_WIDTH 32
-#define FLOW_TIMEOUT 15000000  // 15 seconds in microseconds
+#define FLOW_TIMEOUT 120000000000  // 120 seconds in nanoseconds
 
 // Macros for register operations
 #define FIRST_INDEX ((bit<32>)0)
@@ -37,7 +37,7 @@ typedef bit<48> duration_t;     // Flow duration (nanoseconds)
 typedef bit<16> port_t;         // Port number
 typedef bit<32> bytes_t;        // Byte count
 typedef bit<1>  flags_t;        // TCP flags
-typedef bit<32> pca_code_t;   // PCA component code (quantized)
+typedef bit<16> pca_code_t;   // PCA component code (quantized)
 typedef bit<8>  inference_result_t; // DT classification result
 
 header ethernet_t {
@@ -100,6 +100,7 @@ struct metadata {
     iat_t iat;
     duration_t duration;
     bytes_t total_bytes;
+    bit<32> pkt_count;
     flags_t flags_syn;
     flags_t flags_ack;
     flags_t flags_fin;
@@ -141,6 +142,7 @@ struct digest_t {
     iat_t iat;
     duration_t duration;
     bytes_t total_bytes;
+    bit<32> pkt_count;
     flags_t flags_syn;
     flags_t flags_ack;
     flags_t flags_fin;
@@ -304,7 +306,24 @@ control MyIngress(inout headers hdr,
         reg_pkt_count.read(pkt_count, meta.flow_hash);
         reg_sum_iat.read(sum_iat, meta.flow_hash);
         
-        if (time_first == 0) {
+        if (time_last != 0 && (current_time - time_last) > FLOW_TIMEOUT) {
+            // Flow timeout: reset state and start a new flow
+            meta.is_first_packet = 1;
+            meta.iat = 0;
+            meta.duration = 0;
+            meta.total_bytes = (bytes_t)standard_metadata.packet_length;
+            meta.pkt_count = 1;
+
+            reg_time_first_pkt.write(meta.flow_hash, current_time);
+            reg_time_last_pkt.write(meta.flow_hash, current_time);
+            reg_pkt_count.write(meta.flow_hash, 1);
+            reg_sum_iat.write(meta.flow_hash, 0);
+            reg_total_bytes.write(meta.flow_hash, meta.total_bytes);
+            reg_flags_syn.write(meta.flow_hash, 0);
+            reg_flags_ack.write(meta.flow_hash, 0);
+            reg_flags_fin.write(meta.flow_hash, 0);
+            reg_flags_rst.write(meta.flow_hash, 0);
+        } else if (time_first == 0) {
             // First packet of flow
             meta.is_first_packet = 1;
             reg_time_first_pkt.write(meta.flow_hash, current_time);
@@ -312,6 +331,8 @@ control MyIngress(inout headers hdr,
             meta.iat = 0;
             meta.duration = 0;
             meta.total_bytes = (bytes_t)standard_metadata.packet_length;
+            meta.pkt_count = 1;
+            reg_total_bytes.write(meta.flow_hash, meta.total_bytes);
         } else {
             // Subsequent packet
             meta.is_first_packet = 0;
@@ -337,6 +358,7 @@ control MyIngress(inout headers hdr,
             // Write updated state
             reg_pkt_count.write(meta.flow_hash, pkt_count + 1);
             reg_total_bytes.write(meta.flow_hash, total_bytes);
+            meta.pkt_count = pkt_count + 1;
         }
         
         // Always update last packet time and flags
@@ -617,6 +639,7 @@ control MyIngress(inout headers hdr,
                 meta.iat,
                 meta.duration,
                 meta.total_bytes,
+                meta.pkt_count,
                 meta.flags_syn,
                 meta.flags_ack,
                 meta.flags_fin,

@@ -328,7 +328,7 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
         with open("logs/predictions.csv", "w") as out:
             # Build CSV header dynamically based on number of PCA components
             pca_headers = ','.join([f'pc{i}_code' for i in range(1, n_components + 1)])
-            out.write(f"src_ip,src_port,dst_ip,dst_port,proto,iat,duration,total_bytes,flags_syn,flags_ack,flags_fin,flags_rst,{pca_headers},class_id,class_label\n")
+            out.write(f"src_ip,src_port,dst_ip,dst_port,proto,iat,duration,total_bytes,pkt_count,flags_syn,flags_ack,flags_fin,flags_rst,{pca_headers},class_id,class_label\n")
             packet_id = 0
             
             while True:
@@ -336,6 +336,10 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
                 if msg is None:
                     # Periodically flush expired flows
                     for entry in flow_aggregator.flush_expired():
+                        # Only output flows with 2+ packets (match offline extraction)
+                        if entry["features"]["pkt_count"] < 2:
+                            continue
+                        
                         packet_id += 1
                         pca_width = len(str((1 << pca_bits) - 1))
                         pca_display = ' '.join([f'PCA{i+1}={entry["pca_codes"][i]:<{pca_width}}' for i in range(n_components)])
@@ -345,13 +349,13 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
                         class_label = entry["class_label"]
 
                         print(f"[{packet_id:<4}] {f['src_ip']:>15}:{f['src_port']:<5} -> {f['dst_ip']:>15}:{f['dst_port']:<5} | "
-                              f"IAT={f['iat']:<12} Dur={f['duration']:<12} Bytes={f['total_bytes']:<8} | "
+                              f"IAT={f['iat']:<12} Dur={f['duration']:<12} Bytes={f['total_bytes']:<8} Pkts={f['pkt_count']:<4} | "
                               f"Flags(S/A/F/R)={flags['syn']}/{flags['ack']}/{flags['fin']}/{flags['rst']} | "
                               f"{pca_display} | "
                               f"Class={class_label}({class_id})")
 
                         out.write(f"{f['src_ip']},{f['src_port']},{f['dst_ip']},{f['dst_port']},{f['proto']},"
-                                  f"{f['iat']},{f['duration']},{f['total_bytes']},{flags['syn']},{flags['ack']},{flags['fin']},{flags['rst']},"
+                                  f"{f['iat']},{f['duration']},{f['total_bytes']},{f['pkt_count']},{flags['syn']},{flags['ack']},{flags['fin']},{flags['rst']},"
                                   f"{','.join([str(code) for code in entry['pca_codes']])},{class_id},{class_label}\n")
                         out.flush()
                     continue
@@ -374,18 +378,19 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
                     iat = bytes_to_int(st[5].bitstring)           # Inter-Arrival Time
                     duration = bytes_to_int(st[6].bitstring)      # Flow duration
                     total_bytes = bytes_to_int(st[7].bitstring)   # Total bytes
-                    flags_syn = bytes_to_int(st[8].bitstring)     # SYN flag
-                    flags_ack = bytes_to_int(st[9].bitstring)     # ACK flag
-                    flags_fin = bytes_to_int(st[10].bitstring)    # FIN flag
-                    flags_rst = bytes_to_int(st[11].bitstring)    # RST flag
+                    pkt_count = bytes_to_int(st[8].bitstring)     # Packet count
+                    flags_syn = bytes_to_int(st[9].bitstring)     # SYN flag
+                    flags_ack = bytes_to_int(st[10].bitstring)    # ACK flag
+                    flags_fin = bytes_to_int(st[11].bitstring)    # FIN flag
+                    flags_rst = bytes_to_int(st[12].bitstring)    # RST flag
                     
                     # Extract PCA component codes dynamically
                     pca_codes = []
                     for i in range(n_components):
-                        pca_codes.append(bytes_to_int(st[12 + i].bitstring))
+                        pca_codes.append(bytes_to_int(st[13 + i].bitstring))
                     
                     # Class ID is at position 12 + n_components
-                    class_id = bytes_to_int(st[12 + n_components].bitstring)
+                    class_id = bytes_to_int(st[13 + n_components].bitstring)
 
                     class_label = CLASS_LABELS.get(class_id, "unknown")
 
@@ -398,6 +403,7 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
                         "iat": iat,
                         "duration": duration,
                         "total_bytes": total_bytes,
+                        "pkt_count": pkt_count,
                     }
                     flags = {
                         "syn": flags_syn,
@@ -414,6 +420,9 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
                         class_label,
                         flags,
                     ):
+                        # Only output flows with 2+ packets (match offline extraction)
+                        if entry["features"]["pkt_count"] < 2:
+                            continue
                         packet_id += 1
                         pca_width = len(str((1 << pca_bits) - 1))
                         pca_display = ' '.join([f'PCA{i+1}={entry["pca_codes"][i]:<{pca_width}}' for i in range(n_components)])
@@ -423,13 +432,13 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
                         class_label = entry["class_label"]
 
                         print(f"[{packet_id:<4}] {f['src_ip']:>15}:{f['src_port']:<5} -> {f['dst_ip']:>15}:{f['dst_port']:<5} | "
-                              f"IAT={f['iat']:<12} Dur={f['duration']:<12} Bytes={f['total_bytes']:<8} | "
+                              f"IAT={f['iat']:<12} Dur={f['duration']:<12} Bytes={f['total_bytes']:<8} Pkts={f['pkt_count']:<4} | "
                               f"Flags(S/A/F/R)={flags['syn']}/{flags['ack']}/{flags['fin']}/{flags['rst']} | "
                               f"{pca_display} | "
                               f"Class={class_label}({class_id})")
 
                         out.write(f"{f['src_ip']},{f['src_port']},{f['dst_ip']},{f['dst_port']},{f['proto']},"
-                                  f"{f['iat']},{f['duration']},{f['total_bytes']},{flags['syn']},{flags['ack']},{flags['fin']},{flags['rst']},"
+                                  f"{f['iat']},{f['duration']},{f['total_bytes']},{f['pkt_count']},{flags['syn']},{flags['ack']},{flags['fin']},{flags['rst']},"
                                   f"{','.join([str(code) for code in entry['pca_codes']])},{class_id},{class_label}\n")
                         out.flush()
     except KeyboardInterrupt:

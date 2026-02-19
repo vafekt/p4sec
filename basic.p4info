@@ -607,49 +607,49 @@ tables {
   match_fields {
     id: 1
     name: "meta.pc1_code"
-    bitwidth: 32
+    bitwidth: 16
     match_type: RANGE
   }
   match_fields {
     id: 2
     name: "meta.pc2_code"
-    bitwidth: 32
+    bitwidth: 16
     match_type: RANGE
   }
   match_fields {
     id: 3
     name: "meta.pc3_code"
-    bitwidth: 32
+    bitwidth: 16
     match_type: RANGE
   }
   match_fields {
     id: 4
     name: "meta.pc4_code"
-    bitwidth: 32
+    bitwidth: 16
     match_type: RANGE
   }
   match_fields {
     id: 5
     name: "meta.pc5_code"
-    bitwidth: 32
+    bitwidth: 16
     match_type: RANGE
   }
   match_fields {
     id: 6
     name: "meta.pc6_code"
-    bitwidth: 32
+    bitwidth: 16
     match_type: RANGE
   }
   match_fields {
     id: 7
     name: "meta.pc7_code"
-    bitwidth: 32
+    bitwidth: 16
     match_type: RANGE
   }
   match_fields {
     id: 8
     name: "meta.pc8_code"
-    bitwidth: 32
+    bitwidth: 16
     match_type: RANGE
   }
   action_refs {
@@ -732,7 +732,7 @@ actions {
   params {
     id: 1
     name: "code"
-    bitwidth: 32
+    bitwidth: 16
   }
 }
 actions {
@@ -744,7 +744,7 @@ actions {
   params {
     id: 1
     name: "code"
-    bitwidth: 32
+    bitwidth: 16
   }
 }
 actions {
@@ -756,7 +756,7 @@ actions {
   params {
     id: 1
     name: "code"
-    bitwidth: 32
+    bitwidth: 16
   }
 }
 actions {
@@ -768,7 +768,7 @@ actions {
   params {
     id: 1
     name: "code"
-    bitwidth: 32
+    bitwidth: 16
   }
 }
 actions {
@@ -780,7 +780,7 @@ actions {
   params {
     id: 1
     name: "code"
-    bitwidth: 32
+    bitwidth: 16
   }
 }
 actions {
@@ -792,7 +792,7 @@ actions {
   params {
     id: 1
     name: "code"
-    bitwidth: 32
+    bitwidth: 16
   }
 }
 actions {
@@ -804,7 +804,7 @@ actions {
   params {
     id: 1
     name: "code"
-    bitwidth: 32
+    bitwidth: 16
   }
 }
 actions {
@@ -816,7 +816,7 @@ actions {
   params {
     id: 1
     name: "code"
-    bitwidth: 32
+    bitwidth: 16
   }
 }
 actions {
@@ -1078,6 +1078,16 @@ type_info {
         }
       }
       members {
+        name: "pkt_count"
+        type_spec {
+          bitstring {
+            bit {
+              bitwidth: 32
+            }
+          }
+        }
+      }
+      members {
         name: "flags_syn"
         type_spec {
           bitstring {
@@ -1122,7 +1132,7 @@ type_info {
         type_spec {
           bitstring {
             bit {
-              bitwidth: 32
+              bitwidth: 16
             }
           }
         }
@@ -1132,7 +1142,7 @@ type_info {
         type_spec {
           bitstring {
             bit {
-              bitwidth: 32
+              bitwidth: 16
             }
           }
         }
@@ -1142,7 +1152,7 @@ type_info {
         type_spec {
           bitstring {
             bit {
-              bitwidth: 32
+              bitwidth: 16
             }
           }
         }
@@ -1152,7 +1162,7 @@ type_info {
         type_spec {
           bitstring {
             bit {
-              bitwidth: 32
+              bitwidth: 16
             }
           }
         }
@@ -1162,7 +1172,7 @@ type_info {
         type_spec {
           bitstring {
             bit {
-              bitwidth: 32
+              bitwidth: 16
             }
           }
         }
@@ -1172,7 +1182,7 @@ type_info {
         type_spec {
           bitstring {
             bit {
-              bitwidth: 32
+              bitwidth: 16
             }
           }
         }
@@ -1182,7 +1192,7 @@ type_info {
         type_spec {
           bitstring {
             bit {
-              bitwidth: 32
+              bitwidth: 16
             }
           }
         }
@@ -1192,7 +1202,7 @@ type_info {
         type_spec {
           bitstring {
             bit {
-              bitwidth: 32
+              bitwidth: 16
             }
           }
         }
