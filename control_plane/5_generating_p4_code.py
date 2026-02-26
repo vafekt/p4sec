@@ -1,8 +1,17 @@
 #!/usr/bin/env python3
 """
 P4 Code Generator for Scalable PCA-based ML Classification with Flow-Based Features
-Automatically generates basic.p4 with support for N PCA components
-Extracts flow-based features: IAT, Duration, SrcPort, DstPort, TotalBytes, TCP Flags
+Automatically generates basic.p4 with support for N PCA components and three
+classifier back-ends:
+
+  --model-type dt   DecisionTree   (default)   single ml_code table
+  --model-type rf   RandomForest               N rf_tree_i tables + rf_vote_classify
+  --model-type xgb  XGBoost                    N*K xgb_tree_i tables + xgb_classify
+
+Reads model parameters from:
+  tables/pca_encoding_params.json   (PCA metadata — always required)
+  tables/rf_params.json             (RF  metadata — for --model-type rf)
+  tables/xgb_params.json            (XGB metadata — for --model-type xgb)
 """
 
 import json
@@ -29,10 +38,14 @@ FLOW_FEATURES = [
 ]
 
 class P4CodeGenerator:
-    def __init__(self, n_components=2, bits=16, output_file='basic.p4'):
+    def __init__(self, n_components=2, bits=16, output_file='basic.p4',
+                 model_type='dt', rf_params=None, xgb_params=None):
         self.n_components = n_components
-        self.bits = bits
-        self.output_file = output_file
+        self.bits         = bits
+        self.output_file  = output_file
+        self.model_type   = model_type          # 'dt' | 'rf' | 'xgb'
+        self.rf_params    = rf_params  or {}    # from rf_params.json
+        self.xgb_params   = xgb_params or {}    # from xgb_params.json
         
     def generate_header(self):
         """Generate P4 file header with includes and constants."""
@@ -125,13 +138,21 @@ header udp_t {
         """Generate metadata struct with dynamic PCA component codes."""
         code = '''
 struct metadata {
-    // Flow identification (5-tuple)
+    // Flow identification (5-tuple) — raw, as parsed from headers
     ip4Addr_t src_ip;
     ip4Addr_t dst_ip;
     port_t src_port;
     port_t dst_port;
     bit<8>  protocol;
-    
+
+    // Canonical (direction-normalized) bidirectional flow key.
+    // compute_flow_hash() fills these so A->B and B->A map to the same slot.
+    ip4Addr_t canon_src_ip;
+    ip4Addr_t canon_dst_ip;
+    port_t    canon_src_port;
+    port_t    canon_dst_port;
+    bit<1>    is_reverse_dir;   // 1 = packet in reverse direction
+
     // Flow state tracking
     bit<32> flow_hash;
     bit<32> flow_hash_2;
@@ -160,7 +181,23 @@ struct metadata {
     
     // Timestamp
     bit<48> ingress_timestamp;
-}
+'''
+        # ---- RF packed vote field ----
+        if self.model_type == 'rf':
+            n_est        = self.rf_params.get('n_estimators', 8)
+            vote_bits    = self.rf_params.get('vote_bits',    2)
+            total_v_bits = n_est * vote_bits
+            code += f'\n    // RF packed vote field ({n_est} trees x {vote_bits} bits)\n'
+            code += f'    bit<{total_v_bits}> rf_votes;\n'
+
+        # ---- XGB per-class score accumulators ----
+        if self.model_type == 'xgb':
+            n_cls = self.xgb_params.get('n_classes', 2)
+            code += f'\n    // XGB per-class score accumulators (16-bit, bias=128)\n'
+            for c in range(n_cls):
+                code += f'    bit<16> xgb_score_c{c};\n'
+
+        code += '''}
 
 struct headers {
     ethernet_t   ethernet;
@@ -192,6 +229,12 @@ struct digest_t {
         # Add PCA component codes to digest
         for i in range(1, self.n_components + 1):
             code += f'    pca_code_t pc{i}_code;\n'
+        
+        # Add XGB scores if model_type is 'xgb'
+        if self.model_type == 'xgb':
+            n_cls = self.xgb_params.get('n_classes', 2)
+            for c in range(n_cls):
+                code += f'    bit<16> xgb_score_c{c};\n'
         
         code += '''    
     // Classification result
@@ -310,24 +353,51 @@ control MyIngress(inout headers hdr,
         default_action = drop();
     }
 
-    // Helper action to compute flow hash
+    // Bidirectional canonical flow hash.
+    // Normalises direction so A->B and B->A map to the same register slot.
     action compute_flow_hash() {
-        hash(meta.flow_hash, HashAlgorithm.crc16, (bit<16>)0, 
-            {meta.src_ip, meta.dst_ip, meta.src_port, meta.dst_port, meta.protocol},
+        if (meta.src_ip < meta.dst_ip) {
+            meta.canon_src_ip   = meta.src_ip;
+            meta.canon_dst_ip   = meta.dst_ip;
+            meta.canon_src_port = meta.src_port;
+            meta.canon_dst_port = meta.dst_port;
+            meta.is_reverse_dir = 1w0;
+        } else if (meta.src_ip > meta.dst_ip) {
+            meta.canon_src_ip   = meta.dst_ip;
+            meta.canon_dst_ip   = meta.src_ip;
+            meta.canon_src_port = meta.dst_port;
+            meta.canon_dst_port = meta.src_port;
+            meta.is_reverse_dir = 1w1;
+        } else {
+            if (meta.src_port <= meta.dst_port) {
+                meta.canon_src_ip   = meta.src_ip;
+                meta.canon_dst_ip   = meta.dst_ip;
+                meta.canon_src_port = meta.src_port;
+                meta.canon_dst_port = meta.dst_port;
+                meta.is_reverse_dir = 1w0;
+            } else {
+                meta.canon_src_ip   = meta.dst_ip;
+                meta.canon_dst_ip   = meta.src_ip;
+                meta.canon_src_port = meta.dst_port;
+                meta.canon_dst_port = meta.src_port;
+                meta.is_reverse_dir = 1w1;
+            }
+        }
+        hash(meta.flow_hash, HashAlgorithm.crc16, (bit<16>)0,
+            {meta.canon_src_ip, meta.canon_dst_ip,
+             meta.canon_src_port, meta.canon_dst_port, meta.protocol},
             (bit<32>)MAX_REGISTER_ENTRIES);
-        
         hash(meta.flow_hash_2, HashAlgorithm.crc32, (bit<16>)0,
-            {meta.src_ip, meta.dst_ip, meta.src_port, meta.dst_port, meta.protocol},
+            {meta.canon_src_ip, meta.canon_dst_ip,
+             meta.canon_src_port, meta.canon_dst_port, meta.protocol},
             (bit<32>)MAX_REGISTER_ENTRIES);
-        
-        // Mark in bloom filter
-        bloom_filter.write(meta.flow_hash, 1);
+        bloom_filter.write(meta.flow_hash, 1w1);
     }
 
     // Helper to extract TCP flags
     action extract_tcp_flags() {
         if (meta.protocol == TYPE_TCP) {
-            meta.flags_syn = hdr.tcp.ctrl[5:5];   // SYN bit
+            meta.flags_syn = hdr.tcp.ctrl[1:1];   // SYN bit (bit 1 of ctrl; bit 5 is URG)
             meta.flags_ack = hdr.tcp.ctrl[4:4];   // ACK bit
             meta.flags_fin = hdr.tcp.ctrl[0:0];   // FIN bit
             meta.flags_rst = hdr.tcp.ctrl[2:2];   // RST bit
@@ -353,7 +423,7 @@ control MyIngress(inout headers hdr,
         
         if (time_last != 0 && (current_time - time_last) > FLOW_TIMEOUT) {
             // Flow timeout: reset state and start a new flow
-            meta.is_first_packet = 1;
+            meta.is_first_packet = 1w1;
             meta.iat = 0;
             meta.duration = 0;
             meta.total_bytes = (bytes_t)standard_metadata.packet_length;
@@ -364,13 +434,13 @@ control MyIngress(inout headers hdr,
             reg_pkt_count.write(meta.flow_hash, 1);
             reg_sum_iat.write(meta.flow_hash, 0);
             reg_total_bytes.write(meta.flow_hash, meta.total_bytes);
-            reg_flags_syn.write(meta.flow_hash, 0);
-            reg_flags_ack.write(meta.flow_hash, 0);
-            reg_flags_fin.write(meta.flow_hash, 0);
-            reg_flags_rst.write(meta.flow_hash, 0);
+            reg_flags_syn.write(meta.flow_hash, 1w0);
+            reg_flags_ack.write(meta.flow_hash, 1w0);
+            reg_flags_fin.write(meta.flow_hash, 1w0);
+            reg_flags_rst.write(meta.flow_hash, 1w0);
         } else if (time_first == 0) {
             // First packet of flow
-            meta.is_first_packet = 1;
+            meta.is_first_packet = 1w1;
             reg_time_first_pkt.write(meta.flow_hash, current_time);
             reg_pkt_count.write(meta.flow_hash, 1);
             meta.iat = 0;
@@ -380,7 +450,7 @@ control MyIngress(inout headers hdr,
             reg_total_bytes.write(meta.flow_hash, meta.total_bytes);
         } else {
             // Subsequent packet
-            meta.is_first_packet = 0;
+            meta.is_first_packet = 1w0;
             
             // Calculate IAT (inter-arrival time)
             iat_t current_iat = current_time - time_last;
@@ -411,16 +481,16 @@ control MyIngress(inout headers hdr,
         
         // Update TCP flags (use bitwise OR to aggregate)
         if (meta.flags_syn == 1) {
-            reg_flags_syn.write(meta.flow_hash, 1);
+            reg_flags_syn.write(meta.flow_hash, 1w1);
         }
         if (meta.flags_ack == 1) {
-            reg_flags_ack.write(meta.flow_hash, 1);
+            reg_flags_ack.write(meta.flow_hash, 1w1);
         }
         if (meta.flags_fin == 1) {
-            reg_flags_fin.write(meta.flow_hash, 1);
+            reg_flags_fin.write(meta.flow_hash, 1w1);
         }
         if (meta.flags_rst == 1) {
-            reg_flags_rst.write(meta.flow_hash, 1);
+            reg_flags_rst.write(meta.flow_hash, 1w1);
         }
     }
 
@@ -443,15 +513,16 @@ control MyIngress(inout headers hdr,
 
     table pca_component{i} {{
         key = {{
-            meta.iat         : range;
-            meta.duration    : range;
-            meta.src_port    : range;
-            meta.dst_port    : range;
-            meta.total_bytes : range;
-            meta.flags_syn   : range;
-            meta.flags_ack   : range;
-            meta.flags_fin   : range;
-            meta.flags_rst   : range;
+            meta.iat             : range;
+            meta.duration        : range;
+            meta.pkt_count       : range;
+            meta.canon_src_port  : range;
+            meta.canon_dst_port  : range;
+            meta.total_bytes     : range;
+            meta.flags_syn       : range;
+            meta.flags_ack       : range;
+            meta.flags_fin       : range;
+            meta.flags_rst       : range;
         }}
         actions = {{
             set_pc{i}_code;
@@ -461,30 +532,136 @@ control MyIngress(inout headers hdr,
     }}
 '''
 
-        # Add ML classification table
+        # -------------------------------------------------------------------------
+        # Classification tables — model-type specific
+        # -------------------------------------------------------------------------
+
+        # Shared set_result action (used by all model types)
         code += '''
-    // Decision Tree classification using PCA components
+    // Shared classification result action
     action set_result(inference_result_t val) {
         meta.ml_result = val;
     }
+'''
 
+        if self.model_type == 'dt':
+            # ---- DT: single ml_code range-match table ----
+            code += '''
+    // Decision Tree classification using PCA component codes
     table ml_code {
         key = {
 '''
-        for i in range(1, self.n_components + 1):
-            code += f'            meta.pc{i}_code : range;\n'
-        
-        code += '''        }
+            for i in range(1, self.n_components + 1):
+                code += f'            meta.pc{i}_code : range;\n'
+            code += '''        }
         actions = {
             set_result;
             NoAction;
         }
         size = NB_ENTRIES;
     }
+'''
 
+        elif self.model_type == 'rf':
+            # ---- RF: one table per tree + vote aggregation table ----
+            n_est     = self.rf_params.get('n_estimators', 8)
+            vote_bits = self.rf_params.get('vote_bits',    2)
+
+            for i in range(n_est):
+                lo_bit = i * vote_bits
+                hi_bit = lo_bit + vote_bits - 1
+                code += f'''
+    // RF tree {i} — range match on PCA codes, output vote to rf_votes[{hi_bit}:{lo_bit}]
+    action set_rf_tree_{i}_vote(bit<{vote_bits}> vote) {{
+        meta.rf_votes[{hi_bit}:{lo_bit}] = vote;
+    }}
+
+    table rf_tree_{i} {{
+        key = {{
+'''
+                for j in range(1, self.n_components + 1):
+                    code += f'            meta.pc{j}_code : range;\n'
+                code += f'''        }}
+        actions = {{
+            set_rf_tree_{i}_vote;
+            NoAction;
+        }}
+        size = NB_ENTRIES;
+    }}
+'''
+
+            total_vote_bits = n_est * vote_bits
+            code += f'''
+    // RF vote aggregation — exact match on packed vote field ({total_vote_bits} bits)
+    table rf_vote_classify {{
+        key = {{
+            meta.rf_votes : exact;
+        }}
+        actions = {{
+            set_result;
+            NoAction;
+        }}
+        size = {2**total_vote_bits};
+    }}
+'''
+
+        elif self.model_type == 'xgb':
+            # ---- XGB: one table per tree accumulates class scores ----
+            total_trees = self.xgb_params.get('total_trees', 0)
+            n_cls       = self.xgb_params.get('n_classes',   2)
+
+            # Define all class score accumulator actions once (not repeated per tree)
+            for class_idx in range(n_cls):
+                code += f'''
+    // XGB accumulator action for class {class_idx}
+    action add_xgb_score_c{class_idx}(bit<8> delta) {{
+        meta.xgb_score_c{class_idx} = meta.xgb_score_c{class_idx} + (bit<16>)delta;
+    }}
+'''
+
+            # Generate one table per tree
+            for tree_idx in range(total_trees):
+                class_idx = tree_idx % n_cls
+                code += f'''
+    // XGB tree {tree_idx} (class {class_idx}) — adds quantised leaf delta to score accumulator
+    table xgb_tree_{tree_idx} {{
+        key = {{
+'''
+                for j in range(1, self.n_components + 1):
+                    code += f'            meta.pc{j}_code : range;\n'
+                code += f'''        }}
+        actions = {{
+            add_xgb_score_c{class_idx};
+            NoAction;
+        }}
+        size = NB_ENTRIES;
+    }}
+'''
+
+            # Final proxy-DT classify table — range match on accumulated scores
+            code += '''
+    // XGB final classification — range match on per-class accumulated scores
+    table xgb_classify {
+        key = {
+'''
+            for c in range(n_cls):
+                code += f'            meta.xgb_score_c{c} : range;\n'
+            code += '''        }
+        actions = {
+            set_result;
+            NoAction;
+        }
+        size = NB_ENTRIES;
+    }
+'''
+
+        # -------------------------------------------------------------------------
+        # Apply block
+        # -------------------------------------------------------------------------
+        code += '''
     apply {
         if (hdr.ipv4.isValid() && (meta.protocol == TYPE_TCP || meta.protocol == TYPE_UDP)) {
-            // Step 1: Compute flow hash
+            // Step 1: Compute bidirectional flow hash (canonical direction)
             compute_flow_hash();
             
             // Step 2: Extract TCP flags (if TCP)
@@ -500,17 +677,38 @@ control MyIngress(inout headers hdr,
 '''
         for i in range(1, self.n_components + 1):
             code += f'            pca_component{i}.apply();\n'
-        
-        code += '''            
-            // Step 6: Apply Decision Tree classification
-            ml_code.apply();
-            
+
+        code += '\n            // Step 6: Apply classifier\n'
+
+        if self.model_type == 'dt':
+            code += '            ml_code.apply();\n'
+
+        elif self.model_type == 'rf':
+            n_est = self.rf_params.get('n_estimators', 8)
+            code += '            // Initialize packed vote field\n'
+            total_vote_bits = self.rf_params.get('n_estimators', 8) * self.rf_params.get('vote_bits', 2)
+            code += f'            meta.rf_votes = {total_vote_bits}w0;\n'
+            for i in range(n_est):
+                code += f'            rf_tree_{i}.apply();\n'
+            code += '            rf_vote_classify.apply();\n'
+
+        elif self.model_type == 'xgb':
+            total_trees = self.xgb_params.get('total_trees', 0)
+            n_cls       = self.xgb_params.get('n_classes',   2)
+            code += '            // Initialize per-class score accumulators\n'
+            for c in range(n_cls):
+                code += f'            meta.xgb_score_c{c} = 16w0;\n'
+            for tree_idx in range(total_trees):
+                code += f'            xgb_tree_{tree_idx}.apply();\n'
+            code += '            xgb_classify.apply();\n'
+
+        code += '''
             // Step 7: Send digest with flow features and classification result
             digest<digest_t>(1, {
-                meta.src_ip,
-                meta.dst_ip,
-                meta.src_port,
-                meta.dst_port,
+                meta.canon_src_ip,
+                meta.canon_dst_ip,
+                meta.canon_src_port,
+                meta.canon_dst_port,
                 meta.protocol,
                 meta.iat,
                 meta.duration,
@@ -524,6 +722,12 @@ control MyIngress(inout headers hdr,
         for i in range(1, self.n_components + 1):
             code += f'                meta.pc{i}_code,\n'
         
+        # Add XGB scores if model_type is 'xgb'
+        if self.model_type == 'xgb':
+            n_cls = self.xgb_params.get('n_classes', 2)
+            for c in range(n_cls):
+                code += f'                meta.xgb_score_c{c},\n'
+
         code += '''                meta.ml_result
             });
             
@@ -602,115 +806,148 @@ V1Switch(
 
     def generate(self):
         """Generate complete P4 code."""
-        logger.info(f"Generating P4 code with {self.n_components} PCA components for flow-based features")
-        
+        logger.info(f"Generating P4 code: model_type={self.model_type}, "
+                    f"{self.n_components} PCA components, {self.bits}-bit codes")
+
         code = self.generate_header()
         code += self.generate_metadata()
         code += self.generate_parser()
         code += self.generate_ingress_forwarding()
         code += self.generate_egress_and_tail()
-        
         return code
 
     def write_to_file(self):
         """Write generated P4 code to file."""
         code = self.generate()
-        
         with open(self.output_file, 'w') as f:
             f.write(code)
-        
+
         logger.info(f"Successfully generated {self.output_file}")
-        logger.info(f"  - Flow-based features: {len(FLOW_FEATURES)} features")
-        logger.info(f"  - Features: {', '.join(FLOW_FEATURES)}")
-        logger.info(f"  - PCA components: {self.n_components}")
-        logger.info(f"  - PCA tables: pca_component1 to pca_component{self.n_components}")
-        logger.info(f"  - ML table keys: pc1_code to pc{self.n_components}_code")
+        logger.info(f"  Model type   : {self.model_type}")
+        logger.info(f"  PCA components: {self.n_components}")
+        logger.info(f"  Quantization  : {self.bits}-bit codes")
+        if self.model_type == 'rf':
+            logger.info(f"  RF trees      : {self.rf_params.get('n_estimators')}")
+            logger.info(f"  Vote bits     : {self.rf_params.get('vote_bits')}")
+        elif self.model_type == 'xgb':
+            logger.info(f"  XGB trees     : {self.xgb_params.get('total_trees')}")
+            logger.info(f"  XGB classes   : {self.xgb_params.get('n_classes')}")
 
 
 
-def detect_n_components(params_file='tables/pca_encoding_params.json', 
+def detect_n_components(params_file='tables/pca_encoding_params.json',
                         commands_file='tables/s1-commands.txt'):
     """
-    Automatically detect the number of PCA components from existing files.
-    
-    Priority:
-    1. Read from pca_encoding_params.json if exists
-    2. Parse s1-commands.txt to count pca_component tables
+    Detect PCA component count and bit-width from saved parameter files.
+    Priority: pca_encoding_params.json → s1-commands.txt heuristic → default.
     """
-    # Try reading from JSON params file
     if os.path.exists(params_file):
         try:
             with open(params_file, 'r') as f:
                 params = json.load(f)
-                n_components = params.get('n_components')
-                bits = params.get('bits', 16)
-                if n_components:
-                    logger.info(f"Detected {n_components} PCA components with {bits} bits from {params_file}")
-                    return n_components, bits
+            n_components = params.get('n_components')
+            bits         = params.get('bits', 16)
+            if n_components:
+                logger.info(f"Detected {n_components} PCA components ({bits}-bit) from {params_file}")
+                return n_components, bits
         except Exception as e:
             logger.warning(f"Could not read {params_file}: {e}")
-    
-    # Try parsing s1-commands.txt to count pca_component tables
+
     if os.path.exists(commands_file):
         try:
             with open(commands_file, 'r') as f:
-                component_tables = set()
+                tables = set()
                 for line in f:
-                    if 'pca_component' in line:
-                        # Extract table name like "MyIngress.pca_component1"
-                        parts = line.split()
-                        for part in parts:
-                            if 'pca_component' in part:
-                                # Extract number from pca_componentN
-                                import re
-                                match = re.search(r'pca_component(\d+)', part)
-                                if match:
-                                    component_tables.add(int(match.group(1)))
-                
-                if component_tables:
-                    n_components = max(component_tables)
-                    logger.info(f"Detected {n_components} PCA components from {commands_file} (bits defaulting to 16)")
-                    return n_components, 16
+                    m = re.search(r'pca_component(\d+)', line)
+                    if m:
+                        tables.add(int(m.group(1)))
+            if tables:
+                n = max(tables)
+                logger.info(f"Detected {n} PCA components from {commands_file}")
+                return n, 16
         except Exception as e:
             logger.warning(f"Could not parse {commands_file}: {e}")
-    
-    logger.warning("Could not auto-detect number of PCA components, defaulting to 2 components with 16 bits")
+
+    logger.warning("Could not auto-detect PCA components — defaulting to 2 (16-bit)")
     return 2, 16
+
+
+def load_rf_params(rf_params_file='tables/rf_params.json'):
+    """Load RF deployment parameters saved by 3_rf_training_model.py."""
+    if os.path.exists(rf_params_file):
+        try:
+            with open(rf_params_file) as f:
+                params = json.load(f)
+            logger.info(f"Loaded RF params: n_estimators={params.get('n_estimators')}, "
+                        f"vote_bits={params.get('vote_bits')}, "
+                        f"n_classes={params.get('n_classes')}")
+            return params
+        except Exception as e:
+            logger.warning(f"Could not read {rf_params_file}: {e}")
+    logger.warning("RF params file not found — using defaults (8 estimators, 2 vote_bits)")
+    return {"n_estimators": 8, "vote_bits": 2, "n_classes": 4}
+
+
+def load_xgb_params(xgb_params_file='tables/xgb_params.json'):
+    """Load XGB deployment parameters saved by 3_xgb_training_model.py."""
+    if os.path.exists(xgb_params_file):
+        try:
+            with open(xgb_params_file) as f:
+                params = json.load(f)
+            logger.info(f"Loaded XGB params: total_trees={params.get('total_trees')}, "
+                        f"n_classes={params.get('n_classes')}")
+            return params
+        except Exception as e:
+            logger.warning(f"Could not read {xgb_params_file}: {e}")
+    logger.warning("XGB params file not found — using defaults")
+    return {"total_trees": 16, "n_classes": 2, "n_estimators": 8}
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Generate scalable P4 code for PCA-based ML classification'
-    )
-    parser.add_argument(
-        '--output',
-        default='../basic.p4',
-        help='Output P4 file path (default: ../basic.p4)'
-    )
-    parser.add_argument(
-        '--params-file',
-        default='tables/pca_encoding_params.json',
-        help='PCA encoding parameters file for auto-detection'
-    )
-    parser.add_argument(
-        '--commands-file',
-        default='tables/s1-commands.txt',
-        help='S1 commands file for auto-detection'
-    )
-    
+        description='Generate P4 code for PCA + ML classification (DT / RF / XGB)')
+    parser.add_argument('--output', default='../basic.p4',
+                        help='Output P4 file path (default: ../basic.p4)')
+    parser.add_argument('--params-file', default='tables/pca_encoding_params.json',
+                        help='PCA encoding parameters JSON')
+    parser.add_argument('--commands-file', default='tables/s1-commands.txt',
+                        help='S1 commands file (fallback for component detection)')
+    parser.add_argument('--model-type', default='dt',
+                        choices=['dt', 'rf', 'xgb'],
+                        help='Classifier back-end: dt (default) | rf | xgb')
+    parser.add_argument('--rf-params',  default='tables/rf_params.json',
+                        help='RF params JSON (used when --model-type rf)')
+    parser.add_argument('--xgb-params', default='tables/xgb_params.json',
+                        help='XGB params JSON (used when --model-type xgb)')
+
     args = parser.parse_args()
-    
-    # Always auto-detect number of components and bits
+
+    # Auto-detect PCA config
     n_components, bits = detect_n_components(args.params_file, args.commands_file)
-    
-    # Generate P4 code
-    generator = P4CodeGenerator(n_components=n_components, bits=bits, output_file=args.output)
+
+    # Load model-specific params
+    rf_params  = load_rf_params(args.rf_params)   if args.model_type == 'rf'  else {}
+    xgb_params = load_xgb_params(args.xgb_params) if args.model_type == 'xgb' else {}
+
+    generator = P4CodeGenerator(
+        n_components=n_components,
+        bits=bits,
+        output_file=args.output,
+        model_type=args.model_type,
+        rf_params=rf_params,
+        xgb_params=xgb_params,
+    )
     generator.write_to_file()
-    
+
     logger.info("\nGeneration complete!")
-    logger.info("PCA components were auto-detected from existing files.")
-    logger.info("To compile: make")
-    logger.info(f"To view generated file: cat {args.output}")
+    logger.info(f"Model type : {args.model_type.upper()}")
+    if args.model_type == 'dt':
+        logger.info("Entry gen  : run 4_dt_generating_entries.py to populate tables/s1-commands.txt")
+    elif args.model_type == 'rf':
+        logger.info("Entry gen  : run 4_rf_generating_entries.py to populate tables/s1-commands.txt")
+    elif args.model_type == 'xgb':
+        logger.info("Entry gen  : run 4_xgb_generating_entries.py to populate tables/s1-commands.txt")
+    logger.info(f"To compile : make")
 
 
 if __name__ == '__main__':

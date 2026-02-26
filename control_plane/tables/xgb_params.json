@@ -1,0 +1,28 @@
+{
+  "model_type": "xgb",
+  "n_estimators": 8,
+  "n_classes": 4,
+  "trees_per_class": 8,
+  "total_trees": 32,
+  "classes": [
+    "Access",
+    "CC",
+    "Discovery",
+    "Evasion"
+  ],
+  "feature_names": [
+    "PC1_code",
+    "PC2_code",
+    "PC3_code",
+    "PC4_code",
+    "PC5_code",
+    "PC6_code",
+    "PC7_code",
+    "PC8_code",
+    "PC9_code"
+  ],
+  "objective": "multi:softmax",
+  "max_depth": 3,
+  "delta_bits": 8,
+  "accum_bits": 16
+}

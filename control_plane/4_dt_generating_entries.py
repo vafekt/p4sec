@@ -48,6 +48,23 @@ tree_out_dir = os.path.dirname(tree_output)
 if tree_out_dir:
     os.makedirs(tree_out_dir, exist_ok=True)
 
+MODEL_RULE_PREFIXES = (
+    "table_add MyIngress.ml_code",
+)
+
+def load_base_lines(path, drop_prefixes):
+    """Load existing commands while removing old model rules."""
+    if not os.path.exists(path):
+        return []
+    base_lines = []
+    with open(path, "r") as f:
+        for line in f:
+            line_strip = line.lstrip()
+            if line_strip.startswith(drop_prefixes):
+                continue
+            base_lines.append(line)
+    return base_lines
+
 
 def minimize(path):
     """Aggregate min/max constraints for each feature along a path."""
@@ -210,12 +227,16 @@ visit_commands(dt, 0, features, None)
 # Narrower ranges = higher specificity  
 rules_list.sort(key=lambda x: x[0], reverse=True)
 
-# Write rules with assigned priorities
-with open(outputfile, "a") as f:
+# Preserve non-model commands (e.g., PCA) and rewrite file
+base_lines = load_base_lines(outputfile, MODEL_RULE_PREFIXES)
+with open(outputfile, "w") as f:
+    for line in base_lines:
+        f.write(line)
     for priority_num, (specificity, rule_str) in enumerate(rules_list, 1):
         f.write(f"{rule_str} {priority_num}\n")
 
 # Also emit a human-readable tree with thresholds and class labels
 print("write tree structure to", tree_output)
-with open(tree_output, "a") as f:
+
+with open(tree_output, "w") as f:
     visit_tree_text(dt, 0, features, thresholds, f)

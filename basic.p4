@@ -83,13 +83,21 @@ header udp_t {
 }
 
 struct metadata {
-    // Flow identification (5-tuple)
+    // Flow identification (5-tuple) — raw, as parsed from headers
     ip4Addr_t src_ip;
     ip4Addr_t dst_ip;
     port_t src_port;
     port_t dst_port;
     bit<8>  protocol;
-    
+
+    // Canonical (direction-normalized) bidirectional flow key.
+    // compute_flow_hash() fills these so A->B and B->A map to the same slot.
+    ip4Addr_t canon_src_ip;
+    ip4Addr_t canon_dst_ip;
+    port_t    canon_src_port;
+    port_t    canon_dst_port;
+    bit<1>    is_reverse_dir;   // 1 = packet in reverse direction
+
     // Flow state tracking
     bit<32> flow_hash;
     bit<32> flow_hash_2;
@@ -115,12 +123,16 @@ struct metadata {
     pca_code_t pc6_code;
     pca_code_t pc7_code;
     pca_code_t pc8_code;
+    pca_code_t pc9_code;
     
     // Classification result
     inference_result_t ml_result;
     
     // Timestamp
     bit<48> ingress_timestamp;
+
+    // RF packed vote field (8 trees x 2 bits)
+    bit<16> rf_votes;
 }
 
 struct headers {
@@ -157,6 +169,7 @@ struct digest_t {
     pca_code_t pc6_code;
     pca_code_t pc7_code;
     pca_code_t pc8_code;
+    pca_code_t pc9_code;
     
     // Classification result
     inference_result_t ml_result;
@@ -265,24 +278,51 @@ control MyIngress(inout headers hdr,
         default_action = drop();
     }
 
-    // Helper action to compute flow hash
+    // Bidirectional canonical flow hash.
+    // Normalises direction so A->B and B->A map to the same register slot.
     action compute_flow_hash() {
-        hash(meta.flow_hash, HashAlgorithm.crc16, (bit<16>)0, 
-            {meta.src_ip, meta.dst_ip, meta.src_port, meta.dst_port, meta.protocol},
+        if (meta.src_ip < meta.dst_ip) {
+            meta.canon_src_ip   = meta.src_ip;
+            meta.canon_dst_ip   = meta.dst_ip;
+            meta.canon_src_port = meta.src_port;
+            meta.canon_dst_port = meta.dst_port;
+            meta.is_reverse_dir = 1w0;
+        } else if (meta.src_ip > meta.dst_ip) {
+            meta.canon_src_ip   = meta.dst_ip;
+            meta.canon_dst_ip   = meta.src_ip;
+            meta.canon_src_port = meta.dst_port;
+            meta.canon_dst_port = meta.src_port;
+            meta.is_reverse_dir = 1w1;
+        } else {
+            if (meta.src_port <= meta.dst_port) {
+                meta.canon_src_ip   = meta.src_ip;
+                meta.canon_dst_ip   = meta.dst_ip;
+                meta.canon_src_port = meta.src_port;
+                meta.canon_dst_port = meta.dst_port;
+                meta.is_reverse_dir = 1w0;
+            } else {
+                meta.canon_src_ip   = meta.dst_ip;
+                meta.canon_dst_ip   = meta.src_ip;
+                meta.canon_src_port = meta.dst_port;
+                meta.canon_dst_port = meta.src_port;
+                meta.is_reverse_dir = 1w1;
+            }
+        }
+        hash(meta.flow_hash, HashAlgorithm.crc16, (bit<16>)0,
+            {meta.canon_src_ip, meta.canon_dst_ip,
+             meta.canon_src_port, meta.canon_dst_port, meta.protocol},
             (bit<32>)MAX_REGISTER_ENTRIES);
-        
         hash(meta.flow_hash_2, HashAlgorithm.crc32, (bit<16>)0,
-            {meta.src_ip, meta.dst_ip, meta.src_port, meta.dst_port, meta.protocol},
+            {meta.canon_src_ip, meta.canon_dst_ip,
+             meta.canon_src_port, meta.canon_dst_port, meta.protocol},
             (bit<32>)MAX_REGISTER_ENTRIES);
-        
-        // Mark in bloom filter
-        bloom_filter.write(meta.flow_hash, 1);
+        bloom_filter.write(meta.flow_hash, 1w1);
     }
 
     // Helper to extract TCP flags
     action extract_tcp_flags() {
         if (meta.protocol == TYPE_TCP) {
-            meta.flags_syn = hdr.tcp.ctrl[5:5];   // SYN bit
+            meta.flags_syn = hdr.tcp.ctrl[1:1];   // SYN bit (bit 1 of ctrl; bit 5 is URG)
             meta.flags_ack = hdr.tcp.ctrl[4:4];   // ACK bit
             meta.flags_fin = hdr.tcp.ctrl[0:0];   // FIN bit
             meta.flags_rst = hdr.tcp.ctrl[2:2];   // RST bit
@@ -308,7 +348,7 @@ control MyIngress(inout headers hdr,
         
         if (time_last != 0 && (current_time - time_last) > FLOW_TIMEOUT) {
             // Flow timeout: reset state and start a new flow
-            meta.is_first_packet = 1;
+            meta.is_first_packet = 1w1;
             meta.iat = 0;
             meta.duration = 0;
             meta.total_bytes = (bytes_t)standard_metadata.packet_length;
@@ -319,13 +359,13 @@ control MyIngress(inout headers hdr,
             reg_pkt_count.write(meta.flow_hash, 1);
             reg_sum_iat.write(meta.flow_hash, 0);
             reg_total_bytes.write(meta.flow_hash, meta.total_bytes);
-            reg_flags_syn.write(meta.flow_hash, 0);
-            reg_flags_ack.write(meta.flow_hash, 0);
-            reg_flags_fin.write(meta.flow_hash, 0);
-            reg_flags_rst.write(meta.flow_hash, 0);
+            reg_flags_syn.write(meta.flow_hash, 1w0);
+            reg_flags_ack.write(meta.flow_hash, 1w0);
+            reg_flags_fin.write(meta.flow_hash, 1w0);
+            reg_flags_rst.write(meta.flow_hash, 1w0);
         } else if (time_first == 0) {
             // First packet of flow
-            meta.is_first_packet = 1;
+            meta.is_first_packet = 1w1;
             reg_time_first_pkt.write(meta.flow_hash, current_time);
             reg_pkt_count.write(meta.flow_hash, 1);
             meta.iat = 0;
@@ -335,7 +375,7 @@ control MyIngress(inout headers hdr,
             reg_total_bytes.write(meta.flow_hash, meta.total_bytes);
         } else {
             // Subsequent packet
-            meta.is_first_packet = 0;
+            meta.is_first_packet = 1w0;
             
             // Calculate IAT (inter-arrival time)
             iat_t current_iat = current_time - time_last;
@@ -366,16 +406,16 @@ control MyIngress(inout headers hdr,
         
         // Update TCP flags (use bitwise OR to aggregate)
         if (meta.flags_syn == 1) {
-            reg_flags_syn.write(meta.flow_hash, 1);
+            reg_flags_syn.write(meta.flow_hash, 1w1);
         }
         if (meta.flags_ack == 1) {
-            reg_flags_ack.write(meta.flow_hash, 1);
+            reg_flags_ack.write(meta.flow_hash, 1w1);
         }
         if (meta.flags_fin == 1) {
-            reg_flags_fin.write(meta.flow_hash, 1);
+            reg_flags_fin.write(meta.flow_hash, 1w1);
         }
         if (meta.flags_rst == 1) {
-            reg_flags_rst.write(meta.flow_hash, 1);
+            reg_flags_rst.write(meta.flow_hash, 1w1);
         }
     }
 
@@ -394,15 +434,16 @@ control MyIngress(inout headers hdr,
 
     table pca_component1 {
         key = {
-            meta.iat         : range;
-            meta.duration    : range;
-            meta.src_port    : range;
-            meta.dst_port    : range;
-            meta.total_bytes : range;
-            meta.flags_syn   : range;
-            meta.flags_ack   : range;
-            meta.flags_fin   : range;
-            meta.flags_rst   : range;
+            meta.iat             : range;
+            meta.duration        : range;
+            meta.pkt_count       : range;
+            meta.canon_src_port  : range;
+            meta.canon_dst_port  : range;
+            meta.total_bytes     : range;
+            meta.flags_syn       : range;
+            meta.flags_ack       : range;
+            meta.flags_fin       : range;
+            meta.flags_rst       : range;
         }
         actions = {
             set_pc1_code;
@@ -418,15 +459,16 @@ control MyIngress(inout headers hdr,
 
     table pca_component2 {
         key = {
-            meta.iat         : range;
-            meta.duration    : range;
-            meta.src_port    : range;
-            meta.dst_port    : range;
-            meta.total_bytes : range;
-            meta.flags_syn   : range;
-            meta.flags_ack   : range;
-            meta.flags_fin   : range;
-            meta.flags_rst   : range;
+            meta.iat             : range;
+            meta.duration        : range;
+            meta.pkt_count       : range;
+            meta.canon_src_port  : range;
+            meta.canon_dst_port  : range;
+            meta.total_bytes     : range;
+            meta.flags_syn       : range;
+            meta.flags_ack       : range;
+            meta.flags_fin       : range;
+            meta.flags_rst       : range;
         }
         actions = {
             set_pc2_code;
@@ -442,15 +484,16 @@ control MyIngress(inout headers hdr,
 
     table pca_component3 {
         key = {
-            meta.iat         : range;
-            meta.duration    : range;
-            meta.src_port    : range;
-            meta.dst_port    : range;
-            meta.total_bytes : range;
-            meta.flags_syn   : range;
-            meta.flags_ack   : range;
-            meta.flags_fin   : range;
-            meta.flags_rst   : range;
+            meta.iat             : range;
+            meta.duration        : range;
+            meta.pkt_count       : range;
+            meta.canon_src_port  : range;
+            meta.canon_dst_port  : range;
+            meta.total_bytes     : range;
+            meta.flags_syn       : range;
+            meta.flags_ack       : range;
+            meta.flags_fin       : range;
+            meta.flags_rst       : range;
         }
         actions = {
             set_pc3_code;
@@ -466,15 +509,16 @@ control MyIngress(inout headers hdr,
 
     table pca_component4 {
         key = {
-            meta.iat         : range;
-            meta.duration    : range;
-            meta.src_port    : range;
-            meta.dst_port    : range;
-            meta.total_bytes : range;
-            meta.flags_syn   : range;
-            meta.flags_ack   : range;
-            meta.flags_fin   : range;
-            meta.flags_rst   : range;
+            meta.iat             : range;
+            meta.duration        : range;
+            meta.pkt_count       : range;
+            meta.canon_src_port  : range;
+            meta.canon_dst_port  : range;
+            meta.total_bytes     : range;
+            meta.flags_syn       : range;
+            meta.flags_ack       : range;
+            meta.flags_fin       : range;
+            meta.flags_rst       : range;
         }
         actions = {
             set_pc4_code;
@@ -490,15 +534,16 @@ control MyIngress(inout headers hdr,
 
     table pca_component5 {
         key = {
-            meta.iat         : range;
-            meta.duration    : range;
-            meta.src_port    : range;
-            meta.dst_port    : range;
-            meta.total_bytes : range;
-            meta.flags_syn   : range;
-            meta.flags_ack   : range;
-            meta.flags_fin   : range;
-            meta.flags_rst   : range;
+            meta.iat             : range;
+            meta.duration        : range;
+            meta.pkt_count       : range;
+            meta.canon_src_port  : range;
+            meta.canon_dst_port  : range;
+            meta.total_bytes     : range;
+            meta.flags_syn       : range;
+            meta.flags_ack       : range;
+            meta.flags_fin       : range;
+            meta.flags_rst       : range;
         }
         actions = {
             set_pc5_code;
@@ -514,15 +559,16 @@ control MyIngress(inout headers hdr,
 
     table pca_component6 {
         key = {
-            meta.iat         : range;
-            meta.duration    : range;
-            meta.src_port    : range;
-            meta.dst_port    : range;
-            meta.total_bytes : range;
-            meta.flags_syn   : range;
-            meta.flags_ack   : range;
-            meta.flags_fin   : range;
-            meta.flags_rst   : range;
+            meta.iat             : range;
+            meta.duration        : range;
+            meta.pkt_count       : range;
+            meta.canon_src_port  : range;
+            meta.canon_dst_port  : range;
+            meta.total_bytes     : range;
+            meta.flags_syn       : range;
+            meta.flags_ack       : range;
+            meta.flags_fin       : range;
+            meta.flags_rst       : range;
         }
         actions = {
             set_pc6_code;
@@ -538,15 +584,16 @@ control MyIngress(inout headers hdr,
 
     table pca_component7 {
         key = {
-            meta.iat         : range;
-            meta.duration    : range;
-            meta.src_port    : range;
-            meta.dst_port    : range;
-            meta.total_bytes : range;
-            meta.flags_syn   : range;
-            meta.flags_ack   : range;
-            meta.flags_fin   : range;
-            meta.flags_rst   : range;
+            meta.iat             : range;
+            meta.duration        : range;
+            meta.pkt_count       : range;
+            meta.canon_src_port  : range;
+            meta.canon_dst_port  : range;
+            meta.total_bytes     : range;
+            meta.flags_syn       : range;
+            meta.flags_ack       : range;
+            meta.flags_fin       : range;
+            meta.flags_rst       : range;
         }
         actions = {
             set_pc7_code;
@@ -562,15 +609,16 @@ control MyIngress(inout headers hdr,
 
     table pca_component8 {
         key = {
-            meta.iat         : range;
-            meta.duration    : range;
-            meta.src_port    : range;
-            meta.dst_port    : range;
-            meta.total_bytes : range;
-            meta.flags_syn   : range;
-            meta.flags_ack   : range;
-            meta.flags_fin   : range;
-            meta.flags_rst   : range;
+            meta.iat             : range;
+            meta.duration        : range;
+            meta.pkt_count       : range;
+            meta.canon_src_port  : range;
+            meta.canon_dst_port  : range;
+            meta.total_bytes     : range;
+            meta.flags_syn       : range;
+            meta.flags_ack       : range;
+            meta.flags_fin       : range;
+            meta.flags_rst       : range;
         }
         actions = {
             set_pc8_code;
@@ -579,12 +627,42 @@ control MyIngress(inout headers hdr,
         size = NB_ENTRIES;
     }
 
-    // Decision Tree classification using PCA components
+    // PCA component 9 transformation
+    action set_pc9_code(pca_code_t code) {
+        meta.pc9_code = code;
+    }
+
+    table pca_component9 {
+        key = {
+            meta.iat             : range;
+            meta.duration        : range;
+            meta.pkt_count       : range;
+            meta.canon_src_port  : range;
+            meta.canon_dst_port  : range;
+            meta.total_bytes     : range;
+            meta.flags_syn       : range;
+            meta.flags_ack       : range;
+            meta.flags_fin       : range;
+            meta.flags_rst       : range;
+        }
+        actions = {
+            set_pc9_code;
+            NoAction;
+        }
+        size = NB_ENTRIES;
+    }
+
+    // Shared classification result action
     action set_result(inference_result_t val) {
         meta.ml_result = val;
     }
 
-    table ml_code {
+    // RF tree 0 — range match on PCA codes, output vote to rf_votes[1:0]
+    action set_rf_tree_0_vote(bit<2> vote) {
+        meta.rf_votes[1:0] = vote;
+    }
+
+    table rf_tree_0 {
         key = {
             meta.pc1_code : range;
             meta.pc2_code : range;
@@ -594,17 +672,198 @@ control MyIngress(inout headers hdr,
             meta.pc6_code : range;
             meta.pc7_code : range;
             meta.pc8_code : range;
+            meta.pc9_code : range;
         }
         actions = {
-            set_result;
+            set_rf_tree_0_vote;
             NoAction;
         }
         size = NB_ENTRIES;
     }
 
+    // RF tree 1 — range match on PCA codes, output vote to rf_votes[3:2]
+    action set_rf_tree_1_vote(bit<2> vote) {
+        meta.rf_votes[3:2] = vote;
+    }
+
+    table rf_tree_1 {
+        key = {
+            meta.pc1_code : range;
+            meta.pc2_code : range;
+            meta.pc3_code : range;
+            meta.pc4_code : range;
+            meta.pc5_code : range;
+            meta.pc6_code : range;
+            meta.pc7_code : range;
+            meta.pc8_code : range;
+            meta.pc9_code : range;
+        }
+        actions = {
+            set_rf_tree_1_vote;
+            NoAction;
+        }
+        size = NB_ENTRIES;
+    }
+
+    // RF tree 2 — range match on PCA codes, output vote to rf_votes[5:4]
+    action set_rf_tree_2_vote(bit<2> vote) {
+        meta.rf_votes[5:4] = vote;
+    }
+
+    table rf_tree_2 {
+        key = {
+            meta.pc1_code : range;
+            meta.pc2_code : range;
+            meta.pc3_code : range;
+            meta.pc4_code : range;
+            meta.pc5_code : range;
+            meta.pc6_code : range;
+            meta.pc7_code : range;
+            meta.pc8_code : range;
+            meta.pc9_code : range;
+        }
+        actions = {
+            set_rf_tree_2_vote;
+            NoAction;
+        }
+        size = NB_ENTRIES;
+    }
+
+    // RF tree 3 — range match on PCA codes, output vote to rf_votes[7:6]
+    action set_rf_tree_3_vote(bit<2> vote) {
+        meta.rf_votes[7:6] = vote;
+    }
+
+    table rf_tree_3 {
+        key = {
+            meta.pc1_code : range;
+            meta.pc2_code : range;
+            meta.pc3_code : range;
+            meta.pc4_code : range;
+            meta.pc5_code : range;
+            meta.pc6_code : range;
+            meta.pc7_code : range;
+            meta.pc8_code : range;
+            meta.pc9_code : range;
+        }
+        actions = {
+            set_rf_tree_3_vote;
+            NoAction;
+        }
+        size = NB_ENTRIES;
+    }
+
+    // RF tree 4 — range match on PCA codes, output vote to rf_votes[9:8]
+    action set_rf_tree_4_vote(bit<2> vote) {
+        meta.rf_votes[9:8] = vote;
+    }
+
+    table rf_tree_4 {
+        key = {
+            meta.pc1_code : range;
+            meta.pc2_code : range;
+            meta.pc3_code : range;
+            meta.pc4_code : range;
+            meta.pc5_code : range;
+            meta.pc6_code : range;
+            meta.pc7_code : range;
+            meta.pc8_code : range;
+            meta.pc9_code : range;
+        }
+        actions = {
+            set_rf_tree_4_vote;
+            NoAction;
+        }
+        size = NB_ENTRIES;
+    }
+
+    // RF tree 5 — range match on PCA codes, output vote to rf_votes[11:10]
+    action set_rf_tree_5_vote(bit<2> vote) {
+        meta.rf_votes[11:10] = vote;
+    }
+
+    table rf_tree_5 {
+        key = {
+            meta.pc1_code : range;
+            meta.pc2_code : range;
+            meta.pc3_code : range;
+            meta.pc4_code : range;
+            meta.pc5_code : range;
+            meta.pc6_code : range;
+            meta.pc7_code : range;
+            meta.pc8_code : range;
+            meta.pc9_code : range;
+        }
+        actions = {
+            set_rf_tree_5_vote;
+            NoAction;
+        }
+        size = NB_ENTRIES;
+    }
+
+    // RF tree 6 — range match on PCA codes, output vote to rf_votes[13:12]
+    action set_rf_tree_6_vote(bit<2> vote) {
+        meta.rf_votes[13:12] = vote;
+    }
+
+    table rf_tree_6 {
+        key = {
+            meta.pc1_code : range;
+            meta.pc2_code : range;
+            meta.pc3_code : range;
+            meta.pc4_code : range;
+            meta.pc5_code : range;
+            meta.pc6_code : range;
+            meta.pc7_code : range;
+            meta.pc8_code : range;
+            meta.pc9_code : range;
+        }
+        actions = {
+            set_rf_tree_6_vote;
+            NoAction;
+        }
+        size = NB_ENTRIES;
+    }
+
+    // RF tree 7 — range match on PCA codes, output vote to rf_votes[15:14]
+    action set_rf_tree_7_vote(bit<2> vote) {
+        meta.rf_votes[15:14] = vote;
+    }
+
+    table rf_tree_7 {
+        key = {
+            meta.pc1_code : range;
+            meta.pc2_code : range;
+            meta.pc3_code : range;
+            meta.pc4_code : range;
+            meta.pc5_code : range;
+            meta.pc6_code : range;
+            meta.pc7_code : range;
+            meta.pc8_code : range;
+            meta.pc9_code : range;
+        }
+        actions = {
+            set_rf_tree_7_vote;
+            NoAction;
+        }
+        size = NB_ENTRIES;
+    }
+
+    // RF vote aggregation — exact match on packed vote field (16 bits)
+    table rf_vote_classify {
+        key = {
+            meta.rf_votes : exact;
+        }
+        actions = {
+            set_result;
+            NoAction;
+        }
+        size = 65536;
+    }
+
     apply {
         if (hdr.ipv4.isValid() && (meta.protocol == TYPE_TCP || meta.protocol == TYPE_UDP)) {
-            // Step 1: Compute flow hash
+            // Step 1: Compute bidirectional flow hash (canonical direction)
             compute_flow_hash();
             
             // Step 2: Extract TCP flags (if TCP)
@@ -625,16 +884,27 @@ control MyIngress(inout headers hdr,
             pca_component6.apply();
             pca_component7.apply();
             pca_component8.apply();
-            
-            // Step 6: Apply Decision Tree classification
-            ml_code.apply();
-            
+            pca_component9.apply();
+
+            // Step 6: Apply classifier
+            // Initialize packed vote field
+            meta.rf_votes = 16w0;
+            rf_tree_0.apply();
+            rf_tree_1.apply();
+            rf_tree_2.apply();
+            rf_tree_3.apply();
+            rf_tree_4.apply();
+            rf_tree_5.apply();
+            rf_tree_6.apply();
+            rf_tree_7.apply();
+            rf_vote_classify.apply();
+
             // Step 7: Send digest with flow features and classification result
             digest<digest_t>(1, {
-                meta.src_ip,
-                meta.dst_ip,
-                meta.src_port,
-                meta.dst_port,
+                meta.canon_src_ip,
+                meta.canon_dst_ip,
+                meta.canon_src_port,
+                meta.canon_dst_port,
                 meta.protocol,
                 meta.iat,
                 meta.duration,
@@ -652,6 +922,7 @@ control MyIngress(inout headers hdr,
                 meta.pc6_code,
                 meta.pc7_code,
                 meta.pc8_code,
+                meta.pc9_code,
                 meta.ml_result
             });
             

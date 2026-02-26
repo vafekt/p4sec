@@ -1,8 +1,13 @@
-# PCA with Decision Tree Traffic Classifier in P4 Switch
+# PCA with Machine Learning Traffic Classifier in P4 Switch
 
-A complete pipeline for extracting **flow-based** network traffic features from PCAP files or live capture, training a decision tree classifier using PCA-reduced dimensions, and deploying classification rules in P4 behavioral model switches for real-time in-network inference.
+A complete pipeline for extracting **flow-based** network traffic features from PCAP files or live capture, training ML classifiers (Decision Tree, Random Forest, or XGBoost) using PCA-reduced dimensions, and deploying classification rules in P4 behavioral model switches for real-time in-network inference.
 
 **Flow-Based Architecture:** Tracks per-flow statistics (5-tuple: src_ip, dst_ip, src_port, dst_port, protocol) using P4 registers to aggregate packets into flows and extract flow-level features for ML classification.
+
+**Multi-Model Support:** Supports three classification backends with unified pipeline:
+- **Decision Tree (DT)**: Single table lookup (default)
+- **Random Forest (RF)**: Multiple tree voting with packed results
+- **XGBoost (XGB)**: Gradient boosted trees with per-class score accumulation
 
 ## Pipeline Overview
 
@@ -17,21 +22,21 @@ Feature Dataset (dataset/dataset.csv)
     ↓
 PCA Rules (tables/s1-commands.txt)
     ↓
-[3] Decision Tree Training (3_dt_training_model.py)
+[3] Model Training (3_dt/rf/xgb_training_model.py)
     ↓
-Decision Tree Model (model/dt.model)
+Trained Model (model/{dt,rf,xgb}.model)
     ↓
-[4] DT Table Generation (4_dt_generating_entries.py)
+[4] Model Table Generation (4_dt/rf/xgb_generating_entries.py)
     ↓
-DT Rules (tables/dt_commands.txt)
+Model Rules (appended to tables/s1-commands.txt)
     ↓
-[5] P4 Code Generation (5_generating_p4_code.py)
+[5] P4 Code Generation (5_generating_p4_code.py --model-type {dt,rf,xgb})
     ↓
 P4 Program (basic.p4)
     ↓
-[6] Compile and Deploy (make)
+[6] Compile and Deploy (make clean && make run)
     ↓
-[7] Runtime Controller (5_controller.py)
+[7] Runtime Controller (6_controller.py)
     ↓
 Live Classification & Monitoring
 ```
@@ -104,13 +109,11 @@ sudo python3 1_data_extraction.py --mode live --interface eth0 --count 1000 --la
 
 **Flow Aggregation:** Packets are grouped by 5-tuple (src_ip, dst_ip, src_port, dst_port, protocol) to create per-flow statistics.
 
-**Note:** The feature extractor automatically supports both `.pcap` and `.pcapng` file formats. Labels are auto-extracted from filenames (format: `<label>.v<version>.pcap` or `.pcapng`)
-
-**Important:** IAT calculation uses `(sum_iat) >> 2` to match P4's implementation (P4 cannot perform runtime division, so right-shift approximates averaging).
-
 ---
 
-### Step 2: Train PCA and Generate Entries
+### Step 2: Train PCA and Generate Base Entries
+
+**IMPORTANT:** Always run this step when switching between model types (DT/RF/XGB) to ensure the PCA entries in `s1-commands.txt` don't conflict with model-specific table names.
 
 ```bash
 cd /tutorials/exercises/p4-pca-dt/control_plane
@@ -119,60 +122,94 @@ cd /tutorials/exercises/p4-pca-dt/control_plane
 python3 2_pca_generating_entries.py
 
 # Or specify number of components and bit width
-python3 2_pca_generating_entries.py --components 8 --bits 16
+python3 2_pca_generating_entries.py --components 9 --bits 16
 ```
 
 **Output:** 
-- PCA parameters and encoding (tables/pca_encoding_params.json)
-- Integer PCA codes mapping (tables/pca_integer_mapping.csv)
-- P4 table commands for PCA transformation (tables/s1-commands.txt)
+- PCA parameters and encoding (`tables/pca_encoding_params.json`)
+- Integer PCA codes mapping (`tables/pca_integer_mapping.csv`)
+- P4 table commands for PCA transformation (`tables/s1-commands.txt`)
 - DecisionTreeRegressor that maps raw features → PCA codes (used for P4 rule generation)
-
-**Note:** The PCA transformation is approximated using a DecisionTreeRegressor with max_depth=12 to enable P4 table-based inference. This creates ~73 leaf nodes mapping feature ranges to quantized PCA codes.
 
 ---
 
-### Step 3: Train Decision Tree
+### Step 3: Train Classification Model
 
+Choose one model type:
+
+#### Option A: Decision Tree (Simple, Fast)
 ```bash
-cd /tutorials/exercises/p4-pca-dt/control_plane
-
 python3 3_dt_training_model.py
 ```
 
-**Output:** Trained model and classification metrics
+#### Option B: Random Forest (Higher Accuracy)
+```bash
+python3 3_rf_training_model.py
+```
+
+#### Option C: XGBoost (Best Performance)
+```bash
+python3 3_xgb_training_model.py
+```
+
+**Output:** Trained model (`model/{dt,rf,xgb}.model`) and classification metrics
 
 ---
 
-### Step 4: Generate Decision Tree P4 Entries
+### Step 4: Generate Model-Specific P4 Entries
 
+Match the model type from Step 3:
+
+#### For Decision Tree:
 ```bash
-cd /tutorials/exercises/p4-pca-dt/control_plane
-
 python3 4_dt_generating_entries.py
 ```
 
-**Output:** P4 table entries for classification
+#### For Random Forest:
+```bash
+python3 4_rf_generating_entries.py
+```
+
+#### For XGBoost:
+```bash
+python3 4_xgb_generating_entries.py
+```
+
+**Output:** Model-specific P4 table entries appended to `tables/s1-commands.txt`
 
 ---
 
 ### Step 5: Generate P4 Program
 
-```bash
-cd /tutorials/exercises/p4-pca-dt/control_plane
+**IMPORTANT:** Use `--model-type` matching your trained model:
 
-python3 5_generating_p4_code.py
+#### For Decision Tree:
+```bash
+python3 5_generating_p4_code.py --model-type dt
 ```
 
-**Output:** `../basic.p4` (auto-generated for any number of PCA components)
+#### For Random Forest:
+```bash
+python3 5_generating_p4_code.py --model-type rf
+```
+
+#### For XGBoost:
+```bash
+python3 5_generating_p4_code.py --model-type xgb
+```
+
+**Output:** `../basic.p4` (auto-generated with model-specific logic)
 
 **P4 Architecture:**
-- **Flow Tracking:** Uses P4 registers to maintain per-flow state (timestamps, byte counts, flags)
+- **Flow Tracking:** P4 registers maintain per-flow state (timestamps, byte counts, flags)
 - **Hash-Based Indexing:** CRC16/CRC32 hash of 5-tuple for flow identification
 - **Feature Extraction:** Calculates IAT, Duration, TotalBytes, Ports, Flags from register state
-- **PCA Tables:** 8 tables (pca_component1-8) map flow features to quantized PCA codes using range matching
-- **ML Classification:** ml_code table uses PCA codes to determine traffic class
-- **Digest Output:** Sends flow features + PCA codes + classification to controller
+- **PCA Tables:** N tables (pca_component1-N) map flow features to quantized PCA codes
+- **Model-Specific Classification:**
+  - **DT:** Single `ml_code` table lookup
+  - **RF:** Multiple `rf_tree_i` tables + `rf_vote_classify` for majority voting
+  - **XGB:** Multiple `xgb_tree_<c>_<t>` tables + `xgb_classify` with score accumulation
+- **Digest Output:** Sends flow features + PCA codes + classification + model outputs to controller
 
 ---
 
@@ -190,26 +227,32 @@ sudo make run
 
 # Terminal 2: Start controller (AFTER Mininet is running)
 cd /tutorials/exercises/p4-pca-dt/control_plane
-python3 6_controller.py
+./6_controller.py
 ```
 
-**Note:** The controller automatically loads class labels from the trained model (`model/dt.model`), making it flexible to any dataset labels without code modifications.
+**Controller Features:**
+- Automatically detects model type from P4Info digest structure
+- Dynamically loads class labels from model parameters
+- For **RF**: Shows per-tree vote labels (e.g., `[Tree Votes: T0=Access T1=CC T2=Access...]`)
+- For **XGB**: Shows per-class score accumulation (e.g., `[Scores: c0=150 c1=200 c2=100 c3=80]`)
+- Records all predictions to `logs/predictions.csv`
+- Universal digest parsing adapts to any number of PCA components and features
 
 ---
 
 ## Complete Pipeline Examples
 
-### Quick Start
+### Quick Start with Decision Tree
 
 ```bash
 cd /tutorials/exercises/p4-pca-dt/control_plane
 
-# Full pipeline in one sequence
+# Full DT pipeline
 python3 1_data_extraction.py --mode pcap --pcap-dir pcaps && \
 python3 2_pca_generating_entries.py && \
 python3 3_dt_training_model.py && \
 python3 4_dt_generating_entries.py && \
-python3 5_generating_p4_code.py && \
+python3 5_generating_p4_code.py --model-type dt && \
 cd .. && make clean && make
 
 # Terminal 1: Start Mininet
@@ -217,13 +260,67 @@ sudo make run
 
 # Terminal 2: Start controller (new terminal)
 cd /tutorials/exercises/p4-pca-dt/control_plane
-python3 6_controller.py
+./6_controller.py
 ```
 
-**Expected Output (Controller):**
+### Using Random Forest
+
+```bash
+cd /tutorials/exercises/p4-pca-dt/control_plane
+
+# Full RF pipeline
+python3 1_data_extraction.py --mode pcap --pcap-dir pcaps && \
+python3 2_pca_generating_entries.py && \
+python3 3_rf_training_model.py && \
+python3 4_rf_generating_entries.py && \
+python3 5_generating_p4_code.py --model-type rf && \
+cd .. && make clean && make
 ```
-[1   ]     172.16.66.1:51954 ->    172.16.66.36:445   | IAT=58    Dur=232   Bytes=374  | Flags(S/A/F/R)=0/1/0/0 | PCA1=9678  PCA2=37800 ... | Class=CC(1)
-[2   ]    172.16.66.36:445   ->     172.16.66.1:51954 | IAT=302   Dur=1211  Bytes=502  | Flags(S/A/F/R)=0/1/0/0 | PCA1=54    PCA2=43184 ... | Class=Access(0)
+
+### Using XGBoost
+
+```bash
+cd /tutorials/exercises/p4-pca-dt/control_plane
+
+# Full XGB pipeline
+python3 1_data_extraction.py --mode pcap --pcap-dir pcaps && \
+python3 2_pca_generating_entries.py && \
+python3 3_xgb_training_model.py && \
+python3 4_xgb_generating_entries.py && \
+python3 5_generating_p4_code.py --model-type xgb && \
+cd .. && make clean && make
+```
+
+### Switching Between Models
+
+**IMPORTANT:** When switching model types, always regenerate PCA entries to avoid table name conflicts:
+
+```bash
+cd /tutorials/exercises/p4-pca-dt/control_plane
+
+# Example: Switch from DT to RF
+python3 2_pca_generating_entries.py     # Clear and regenerate base entries
+python3 3_rf_training_model.py          # Train new model
+python3 4_rf_generating_entries.py      # Generate RF table entries
+python3 5_generating_p4_code.py --model-type rf
+cd .. && make clean && make
+```
+
+**Expected Output (Controller with DT):**
+```
+[1   ]     172.16.66.1:51954 ->    172.16.66.36:445   | IAT=58    Dur=232   Bytes=374  Pkts=2 | Flags(S/A/F/R)=0/1/0/0 | PCA1=9678  PCA2=37800 ... | Class=CC(1)
+```
+
+**Expected Output (Controller with RF):**
+```
+[1   ]     172.16.66.1:51954 ->    172.16.66.36:445   | IAT=58    Dur=232   Bytes=374  Pkts=2 | Flags(S/A/F/R)=0/1/0/0 | PCA1=9678  PCA2=37800 ... | Class=CC(1)
+  [Tree Votes: T0=CC T1=CC T2=Access T3=CC T4=CC T5=CC T6=CC T7=CC]
+```
+
+**Expected Output (Controller with XGB):**
+```
+[1   ]     172.16.66.1:51954 ->    172.16.66.36:445   | IAT=58    Dur=232   Bytes=374  Pkts=2 | Flags(S/A/F/R)=0/1/0/0 | PCA1=9678  PCA2=37800 ... | Class=CC(1)
+  [Scores: c0=120 c1=185 c2=95 c3=80]
 ```
 
 ### Custom PCA Components
@@ -234,13 +331,13 @@ cd /tutorials/exercises/p4-pca-dt/control_plane
 # Extract features
 python3 1_data_extraction.py --mode pcap --pcap-dir pcaps
 
-# Use 3 PCA components with 8-bit quantization
-python3 2_pca_generating_entries.py --components 3 --bits 8
+# Use 5 PCA components with 12-bit quantization
+python3 2_pca_generating_entries.py --components 5 --bits 12
 
-# Continue with training
-python3 3_dt_training_model.py && \
-python3 4_dt_generating_entries.py && \
-python3 5_generating_p4_code.py && \
+# Continue with any model type (example: RF)
+python3 3_rf_training_model.py && \
+python3 4_rf_generating_entries.py && \
+python3 5_generating_p4_code.py --model-type rf && \
 cd .. && make clean && make
 ```
 
@@ -248,7 +345,31 @@ cd .. && make clean && make
 
 ## Recent Improvements
 
-### Flow-Based Feature Extraction (Major Update)
+### Multi-Model Architecture
+- **Three Classification Backends:** Decision Tree, Random Forest, XGBoost
+- **Unified Pipeline:** Same feature extraction and PCA training for all models
+- **Auto-Detection:** Controller automatically detects model type from P4Info digest schema
+- **Model-Specific Outputs:** RF shows per-tree votes, XGB shows per-class scores
+
+### Universal and Scalable Design
+- **Dynamic Feature Count:** Digest parsing adapts to any number of PCA components
+- **Schema-Driven:** Reads field layout from P4Info instead of hardcoded offsets
+- **Extensible:** Add new features by updating P4 code and field parsers adapt automatically
+- **No Feature Name Warnings:** Uses numpy arrays for predictions to avoid sklearn warnings
+
+### Multi-Model Architecture
+- **Three Classification Backends:** Decision Tree, Random Forest, XGBoost
+- **Unified Pipeline:** Same feature extraction and PCA training for all models
+- **Auto-Detection:** Controller automatically detects model type from P4Info digest schema
+- **Model-Specific Outputs:** RF shows per-tree votes, XGB shows per-class scores
+
+### Universal and Scalable Design
+- **Dynamic Feature Count:** Digest parsing adapts to any number of PCA components
+- **Schema-Driven:** Reads field layout from P4Info instead of hardcoded offsets
+- **Extensible:** Add new features by updating P4 code and field parsers adapt automatically
+- **No Feature Name Warnings:** Uses numpy arrays for predictions to avoid sklearn warnings
+
+### Flow-Based Feature Extraction
 - **Converted from packet-level to flow-level features** for better traffic characterization
 - Tracks 9 flow-based features: IAT, Duration, SrcPort, DstPort, TotalBytes, TCP Flags (Syn/Ack/Fin/Rst)
 - **P4 Flow State Management:** Uses registers to maintain per-flow statistics indexed by flow hash
@@ -260,12 +381,12 @@ cd .. && make clean && make
 - **Benefit:** Decision tree can use wildcards in rules, improving coverage and reducing table entries
 
 ### Flexible Label Support
-- **Controller (6_controller.py)** now dynamically loads class labels from the trained model instead of hardcoding them
-- The `load_class_labels()` function extracts labels from `model/dt.model` at runtime
-- **Benefit:** No code modifications needed when changing dataset labels - any classification labels work automatically
+- **Controller (6_controller.py)** dynamically loads class labels from trained model parameters
+- Works with any classification labels automatically
+- **Benefit:** No code modifications needed when changing dataset labels
 
 ### Multi-Format Capture Support
-- **Feature Extractor (1_data_extraction.py)** now supports both `.pcap` and `.pcapng` file formats
+- **Feature Extractor (1_data_extraction.py)** supports both `.pcap` and `.pcapng` file formats
 - Automatically globs for both formats when processing directories
 - **Benefit:** Works with any modern packet capture format without reconfiguration
 
@@ -279,23 +400,61 @@ cd .. && make clean && make
 
 ```
 p4-pca-dt/
-├── README.md                           # This file
+├── README.md                            # This file
 ├── LICENSE
-├── Makefile                            # P4 compilation
-├── requirements.txt                    # Python dependencies
-├── basic.p4                            # Generated P4 program
-├── basic.p4info                        # P4 program metadata
+├── Makefile                             # P4 compilation
+├── requirements.txt                     # Python dependencies
+├── basic.p4                             # Generated P4 program (model-specific)
+├── basic.p4info                         # P4 program metadata
 ├── control_plane/
-│   ├── 1_data_extraction.py           # Feature extraction (PCAP/PCAPNG, live capture)
-│   ├── 2_pca_generating_entries.py    # PCA training & encoding
-│   ├── 3_dt_training_model.py         # Decision tree training
-│   ├── 4_dt_generating_entries.py     # DT table generation
-│   ├── 5_generating_p4_code.py        # P4 code generation
-│   ├── 6_controller.py                # Runtime controller
-│   ├── pcaps/                         # PCAP/PCAPNG files
-│   ├── dataset/                       # Extracted features
-│   ├── model/                         # Trained models
-│   ├── tables/                        # Generated rules & configs
+│   ├── 1_data_extraction.py            # Feature extraction (PCAP/PCAPNG, live)
+│   ├── 2_pca_generating_entries.py     # PCA training & encoding
+│   ├── 3_dt_training_model.py          # Decision tree training
+│   ├── 3_rf_training_model.py          # Random forest training
+│   ├── 3_xgb_training_model.py         # XGBoost training
+│   ├── 4_dt_generating_entries.py      # DT table generation
+│   ├── 4_rf_generating_entries.py      # RF table generation
+│   ├── 4_xgb_generating_entries.py     # XGB table generation
+│   ├── 5_generating_p4_code.py         # P4 code generation (model-specific)
+│   ├── 6_controller.py                 # Runtime controller (auto-detects model)
+│   ├── pcaps/                          # PCAP/PCAPNG files
+│   ├── dataset/                        # Extracted features
+│   ├── model/                          # Trained models (dt.model, rf.model, xgb.model)
+│   ├── tables/                         # Generated rules & configs
+│   │   ├── s1-commands.txt            # P4 table entries (PCA + model)
+│   │   ├── pca_encoding_params.json   # PCA metadata
+│   │   ├── dt_params.json             # DT metadata (if using DT)
+│   │   ├── rf_params.json             # RF metadata (if using RF)
+│   │   └── xgb_params.json            # XGB metadata (if using XGB)
 │   └── logs/                          # Runtime logs & predictions
 └── build/                             # P4 compiler output
 ```
+
+---
+
+## Key Features
+
+### Scalable PCA Components
+- Supports any number of PCA components (auto-detect or manually specify)
+- P4 code, digest structure, and controller adapt dynamically
+- Default: Auto-detect for 95% variance explained
+
+### Three ML Backends
+1. **Decision Tree (DT):** Single table, fastest inference
+2. **Random Forest (RF):** Multiple trees with majority voting
+3. **XGBoost (XGB):** Gradient boosted trees with score accumulation
+
+### Bidirectional Flow Tracking
+- Normalizes flow direction (A→B and B→A map to same flow)
+- Canonical 5-tuple: endpoint with smaller (IP, port) always first
+- Matches offline extraction for consistent training/inference
+
+### Model-Specific Runtime Verification
+- **RF:** Shows which class each tree predicted for debugging
+- **XGB:** Displays per-class accumulated scores from dataplane
+- **DT:** Simple class output
+
+### Universal Digest Parsing
+- Reads digest schema from P4Info at runtime
+- Adapts to any feature count, PCA components, or model outputs
+- Fallback to heuristic parsing if schema unavailable

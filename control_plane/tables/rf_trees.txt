@@ -1,0 +1,116 @@
+# Random Forest — human-readable tree rules
+# n_estimators=8, n_classes=4
+
+# --- Tree 0 ---
+	IF pc4_code <= 35982.5000 AND pc6_code <= 3619.0000 AND pc2_code <= 10947.0000 AND pc3_code <= 19725.0000 THEN 2.0;
+	IF pc4_code <= 35982.5000 AND pc6_code <= 3619.0000 AND pc2_code <= 10947.0000 AND pc3_code > 19725.0000 THEN 1.0;
+	IF pc4_code <= 35982.5000 AND pc6_code <= 3619.0000 AND pc2_code > 10947.0000 AND pc6_code <= 2436.5000 AND pc6_code <= 307.0000 THEN 2.0;
+	IF pc4_code <= 35982.5000 AND pc6_code <= 3619.0000 AND pc2_code > 10947.0000 AND pc6_code <= 2436.5000 AND pc6_code > 307.0000 THEN 0.0;
+	IF pc4_code <= 35982.5000 AND pc6_code <= 3619.0000 AND pc2_code > 10947.0000 AND pc6_code > 2436.5000 AND pc6_code <= 3375.5000 THEN 3.0;
+	IF pc4_code <= 35982.5000 AND pc6_code <= 3619.0000 AND pc2_code > 10947.0000 AND pc6_code > 2436.5000 AND pc6_code > 3375.5000 THEN 0.0;
+	IF pc4_code <= 35982.5000 AND pc6_code > 3619.0000 AND pc8_code <= 7723.5000 AND pc8_code <= 627.0000 THEN 3.0;
+	IF pc4_code <= 35982.5000 AND pc6_code > 3619.0000 AND pc8_code <= 7723.5000 AND pc8_code > 627.0000 THEN 0.0;
+	IF pc4_code <= 35982.5000 AND pc6_code > 3619.0000 AND pc8_code > 7723.5000 AND pc6_code <= 5455.5000 THEN 2.0;
+	IF pc4_code <= 35982.5000 AND pc6_code > 3619.0000 AND pc8_code > 7723.5000 AND pc6_code > 5455.5000 AND pc3_code <= 31505.0000 THEN 2.0;
+	IF pc4_code <= 35982.5000 AND pc6_code > 3619.0000 AND pc8_code > 7723.5000 AND pc6_code > 5455.5000 AND pc3_code > 31505.0000 THEN 0.0;
+	IF pc4_code > 35982.5000 AND pc5_code <= 1800.0000 THEN 0.0;
+	IF pc4_code > 35982.5000 AND pc5_code > 1800.0000 THEN 1.0;
+
+# --- Tree 1 ---
+	IF pc3_code <= 64604.5000 AND pc3_code <= 63177.5000 AND pc2_code <= 10947.0000 AND pc3_code <= 51698.0000 AND pc1_code <= 33.5000 THEN 2.0;
+	IF pc3_code <= 64604.5000 AND pc3_code <= 63177.5000 AND pc2_code <= 10947.0000 AND pc3_code <= 51698.0000 AND pc1_code > 33.5000 THEN 1.0;
+	IF pc3_code <= 64604.5000 AND pc3_code <= 63177.5000 AND pc2_code <= 10947.0000 AND pc3_code > 51698.0000 THEN 3.0;
+	IF pc3_code <= 64604.5000 AND pc3_code <= 63177.5000 AND pc2_code > 10947.0000 AND pc5_code <= 8248.5000 AND pc2_code <= 11055.0000 THEN 0.0;
+	IF pc3_code <= 64604.5000 AND pc3_code <= 63177.5000 AND pc2_code > 10947.0000 AND pc5_code <= 8248.5000 AND pc2_code > 11055.0000 AND pc2_code <= 11086.0000 THEN 2.0;
+	IF pc3_code <= 64604.5000 AND pc3_code <= 63177.5000 AND pc2_code > 10947.0000 AND pc5_code <= 8248.5000 AND pc2_code > 11055.0000 AND pc2_code > 11086.0000 THEN 0.0;
+	IF pc3_code <= 64604.5000 AND pc3_code <= 63177.5000 AND pc2_code > 10947.0000 AND pc5_code > 8248.5000 AND pc3_code <= 31564.5000 THEN 2.0;
+	IF pc3_code <= 64604.5000 AND pc3_code <= 63177.5000 AND pc2_code > 10947.0000 AND pc5_code > 8248.5000 AND pc3_code > 31564.5000 AND pc6_code <= 4352.5000 AND pc9_code <= 28622.0000 THEN 3.0;
+	IF pc3_code <= 64604.5000 AND pc3_code <= 63177.5000 AND pc2_code > 10947.0000 AND pc5_code > 8248.5000 AND pc3_code > 31564.5000 AND pc6_code <= 4352.5000 AND pc9_code > 28622.0000 THEN 1.0;
+	IF pc3_code <= 64604.5000 AND pc3_code <= 63177.5000 AND pc2_code > 10947.0000 AND pc5_code > 8248.5000 AND pc3_code > 31564.5000 AND pc6_code > 4352.5000 THEN 0.0;
+	IF pc3_code <= 64604.5000 AND pc3_code > 63177.5000 THEN 2.0;
+	IF pc3_code > 64604.5000 THEN 1.0;
+
+# --- Tree 2 ---
+	IF pc7_code <= 24510.0000 AND pc4_code <= 34773.5000 AND pc5_code <= 8178.0000 THEN 0.0;
+	IF pc7_code <= 24510.0000 AND pc4_code <= 34773.5000 AND pc5_code > 8178.0000 AND pc3_code <= 20833.5000 THEN 2.0;
+	IF pc7_code <= 24510.0000 AND pc4_code <= 34773.5000 AND pc5_code > 8178.0000 AND pc3_code > 20833.5000 THEN 1.0;
+	IF pc7_code <= 24510.0000 AND pc4_code > 34773.5000 THEN 1.0;
+	IF pc7_code > 24510.0000 AND pc8_code <= 64816.5000 AND pc2_code <= 11024.5000 AND pc1_code <= 4.0000 THEN 0.0;
+	IF pc7_code > 24510.0000 AND pc8_code <= 64816.5000 AND pc2_code <= 11024.5000 AND pc1_code > 4.0000 AND pc5_code <= 9138.5000 AND pc9_code <= 24165.5000 THEN 2.0;
+	IF pc7_code > 24510.0000 AND pc8_code <= 64816.5000 AND pc2_code <= 11024.5000 AND pc1_code > 4.0000 AND pc5_code <= 9138.5000 AND pc9_code > 24165.5000 AND pc5_code <= 7072.5000 THEN 0.0;
+	IF pc7_code > 24510.0000 AND pc8_code <= 64816.5000 AND pc2_code <= 11024.5000 AND pc1_code > 4.0000 AND pc5_code <= 9138.5000 AND pc9_code > 24165.5000 AND pc5_code > 7072.5000 AND pc1_code <= 36.5000 THEN 3.0;
+	IF pc7_code > 24510.0000 AND pc8_code <= 64816.5000 AND pc2_code <= 11024.5000 AND pc1_code > 4.0000 AND pc5_code <= 9138.5000 AND pc9_code > 24165.5000 AND pc5_code > 7072.5000 AND pc1_code > 36.5000 THEN 2.0;
+	IF pc7_code > 24510.0000 AND pc8_code <= 64816.5000 AND pc2_code <= 11024.5000 AND pc1_code > 4.0000 AND pc5_code > 9138.5000 THEN 0.0;
+	IF pc7_code > 24510.0000 AND pc8_code <= 64816.5000 AND pc2_code > 11024.5000 AND pc1_code <= 52.5000 THEN 2.0;
+	IF pc7_code > 24510.0000 AND pc8_code <= 64816.5000 AND pc2_code > 11024.5000 AND pc1_code > 52.5000 AND pc1_code <= 301.0000 THEN 0.0;
+	IF pc7_code > 24510.0000 AND pc8_code <= 64816.5000 AND pc2_code > 11024.5000 AND pc1_code > 52.5000 AND pc1_code > 301.0000 THEN 2.0;
+	IF pc7_code > 24510.0000 AND pc8_code > 64816.5000 THEN 2.0;
+
+# --- Tree 3 ---
+	IF pc4_code <= 35982.5000 AND pc1_code <= 4.0000 AND pc4_code <= 28808.5000 THEN 2.0;
+	IF pc4_code <= 35982.5000 AND pc1_code <= 4.0000 AND pc4_code > 28808.5000 THEN 0.0;
+	IF pc4_code <= 35982.5000 AND pc1_code > 4.0000 AND pc4_code <= 29245.0000 AND pc7_code <= 25660.5000 THEN 1.0;
+	IF pc4_code <= 35982.5000 AND pc1_code > 4.0000 AND pc4_code <= 29245.0000 AND pc7_code > 25660.5000 AND pc8_code <= 1477.5000 THEN 3.0;
+	IF pc4_code <= 35982.5000 AND pc1_code > 4.0000 AND pc4_code <= 29245.0000 AND pc7_code > 25660.5000 AND pc8_code > 1477.5000 THEN 0.0;
+	IF pc4_code <= 35982.5000 AND pc1_code > 4.0000 AND pc4_code > 29245.0000 AND pc3_code <= 3623.5000 AND pc3_code <= 3425.5000 THEN 2.0;
+	IF pc4_code <= 35982.5000 AND pc1_code > 4.0000 AND pc4_code > 29245.0000 AND pc3_code <= 3623.5000 AND pc3_code > 3425.5000 THEN 0.0;
+	IF pc4_code <= 35982.5000 AND pc1_code > 4.0000 AND pc4_code > 29245.0000 AND pc3_code > 3623.5000 THEN 2.0;
+	IF pc4_code > 35982.5000 AND pc5_code <= 1800.0000 THEN 0.0;
+	IF pc4_code > 35982.5000 AND pc5_code > 1800.0000 THEN 1.0;
+
+# --- Tree 4 ---
+	IF pc7_code <= 24519.0000 AND pc9_code <= 24346.0000 THEN 0.0;
+	IF pc7_code <= 24519.0000 AND pc9_code > 24346.0000 AND pc6_code <= 35399.5000 THEN 1.0;
+	IF pc7_code <= 24519.0000 AND pc9_code > 24346.0000 AND pc6_code > 35399.5000 THEN 2.0;
+	IF pc7_code > 24519.0000 AND pc9_code <= 16375.0000 THEN 2.0;
+	IF pc7_code > 24519.0000 AND pc9_code > 16375.0000 AND pc1_code <= 4.0000 THEN 0.0;
+	IF pc7_code > 24519.0000 AND pc9_code > 16375.0000 AND pc1_code > 4.0000 AND pc3_code <= 60240.0000 AND pc8_code <= 1477.5000 THEN 3.0;
+	IF pc7_code > 24519.0000 AND pc9_code > 16375.0000 AND pc1_code > 4.0000 AND pc3_code <= 60240.0000 AND pc8_code > 1477.5000 AND pc7_code <= 28635.5000 THEN 0.0;
+	IF pc7_code > 24519.0000 AND pc9_code > 16375.0000 AND pc1_code > 4.0000 AND pc3_code <= 60240.0000 AND pc8_code > 1477.5000 AND pc7_code > 28635.5000 AND pc1_code <= 26.0000 THEN 2.0;
+	IF pc7_code > 24519.0000 AND pc9_code > 16375.0000 AND pc1_code > 4.0000 AND pc3_code <= 60240.0000 AND pc8_code > 1477.5000 AND pc7_code > 28635.5000 AND pc1_code > 26.0000 AND pc3_code <= 3870.5000 THEN 2.0;
+	IF pc7_code > 24519.0000 AND pc9_code > 16375.0000 AND pc1_code > 4.0000 AND pc3_code <= 60240.0000 AND pc8_code > 1477.5000 AND pc7_code > 28635.5000 AND pc1_code > 26.0000 AND pc3_code > 3870.5000 THEN 0.0;
+	IF pc7_code > 24519.0000 AND pc9_code > 16375.0000 AND pc1_code > 4.0000 AND pc3_code > 60240.0000 THEN 2.0;
+
+# --- Tree 5 ---
+	IF pc3_code <= 64604.5000 AND pc5_code <= 6640.5000 AND pc3_code <= 2685.5000 THEN 1.0;
+	IF pc3_code <= 64604.5000 AND pc5_code <= 6640.5000 AND pc3_code > 2685.5000 AND pc2_code <= 11038.0000 AND pc3_code <= 3916.0000 AND pc3_code <= 3645.5000 THEN 0.0;
+	IF pc3_code <= 64604.5000 AND pc5_code <= 6640.5000 AND pc3_code > 2685.5000 AND pc2_code <= 11038.0000 AND pc3_code <= 3916.0000 AND pc3_code > 3645.5000 THEN 2.0;
+	IF pc3_code <= 64604.5000 AND pc5_code <= 6640.5000 AND pc3_code > 2685.5000 AND pc2_code <= 11038.0000 AND pc3_code > 3916.0000 THEN 0.0;
+	IF pc3_code <= 64604.5000 AND pc5_code <= 6640.5000 AND pc3_code > 2685.5000 AND pc2_code > 11038.0000 AND pc6_code <= 4302.0000 THEN 0.0;
+	IF pc3_code <= 64604.5000 AND pc5_code <= 6640.5000 AND pc3_code > 2685.5000 AND pc2_code > 11038.0000 AND pc6_code > 4302.0000 THEN 2.0;
+	IF pc3_code <= 64604.5000 AND pc5_code > 6640.5000 AND pc7_code <= 24699.5000 AND pc3_code <= 20833.5000 THEN 2.0;
+	IF pc3_code <= 64604.5000 AND pc5_code > 6640.5000 AND pc7_code <= 24699.5000 AND pc3_code > 20833.5000 THEN 1.0;
+	IF pc3_code <= 64604.5000 AND pc5_code > 6640.5000 AND pc7_code > 24699.5000 AND pc2_code <= 10392.5000 THEN 0.0;
+	IF pc3_code <= 64604.5000 AND pc5_code > 6640.5000 AND pc7_code > 24699.5000 AND pc2_code > 10392.5000 AND pc8_code <= 5113.5000 AND pc8_code <= 417.5000 THEN 3.0;
+	IF pc3_code <= 64604.5000 AND pc5_code > 6640.5000 AND pc7_code > 24699.5000 AND pc2_code > 10392.5000 AND pc8_code <= 5113.5000 AND pc8_code > 417.5000 THEN 0.0;
+	IF pc3_code <= 64604.5000 AND pc5_code > 6640.5000 AND pc7_code > 24699.5000 AND pc2_code > 10392.5000 AND pc8_code > 5113.5000 THEN 2.0;
+	IF pc3_code > 64604.5000 THEN 1.0;
+
+# --- Tree 6 ---
+	IF pc2_code <= 10952.0000 AND pc6_code <= 942.5000 AND pc3_code <= 4011.0000 THEN 2.0;
+	IF pc2_code <= 10952.0000 AND pc6_code <= 942.5000 AND pc3_code > 4011.0000 THEN 0.0;
+	IF pc2_code <= 10952.0000 AND pc6_code > 942.5000 AND pc8_code <= 15744.5000 AND pc5_code <= 10579.5000 THEN 3.0;
+	IF pc2_code <= 10952.0000 AND pc6_code > 942.5000 AND pc8_code <= 15744.5000 AND pc5_code > 10579.5000 THEN 0.0;
+	IF pc2_code <= 10952.0000 AND pc6_code > 942.5000 AND pc8_code > 15744.5000 AND pc6_code <= 5331.0000 THEN 1.0;
+	IF pc2_code <= 10952.0000 AND pc6_code > 942.5000 AND pc8_code > 15744.5000 AND pc6_code > 5331.0000 THEN 2.0;
+	IF pc2_code > 10952.0000 AND pc5_code <= 6566.5000 THEN 0.0;
+	IF pc2_code > 10952.0000 AND pc5_code > 6566.5000 AND pc8_code <= 10949.0000 AND pc9_code <= 28505.0000 AND pc6_code <= 1619.0000 THEN 2.0;
+	IF pc2_code > 10952.0000 AND pc5_code > 6566.5000 AND pc8_code <= 10949.0000 AND pc9_code <= 28505.0000 AND pc6_code > 1619.0000 THEN 3.0;
+	IF pc2_code > 10952.0000 AND pc5_code > 6566.5000 AND pc8_code <= 10949.0000 AND pc9_code > 28505.0000 THEN 0.0;
+	IF pc2_code > 10952.0000 AND pc5_code > 6566.5000 AND pc8_code > 10949.0000 AND pc4_code <= 29238.0000 THEN 0.0;
+	IF pc2_code > 10952.0000 AND pc5_code > 6566.5000 AND pc8_code > 10949.0000 AND pc4_code > 29238.0000 THEN 2.0;
+
+# --- Tree 7 ---
+	IF pc1_code <= 2.5000 AND pc4_code <= 28808.5000 THEN 2.0;
+	IF pc1_code <= 2.5000 AND pc4_code > 28808.5000 THEN 0.0;
+	IF pc1_code > 2.5000 AND pc7_code <= 24510.0000 AND pc2_code <= 11685.5000 THEN 1.0;
+	IF pc1_code > 2.5000 AND pc7_code <= 24510.0000 AND pc2_code > 11685.5000 AND pc9_code <= 29274.5000 THEN 1.0;
+	IF pc1_code > 2.5000 AND pc7_code <= 24510.0000 AND pc2_code > 11685.5000 AND pc9_code > 29274.5000 THEN 2.0;
+	IF pc1_code > 2.5000 AND pc7_code > 24510.0000 AND pc7_code <= 41530.0000 AND pc8_code <= 5268.5000 THEN 3.0;
+	IF pc1_code > 2.5000 AND pc7_code > 24510.0000 AND pc7_code <= 41530.0000 AND pc8_code > 5268.5000 AND pc2_code <= 11039.0000 AND pc6_code <= 1057.5000 THEN 2.0;
+	IF pc1_code > 2.5000 AND pc7_code > 24510.0000 AND pc7_code <= 41530.0000 AND pc8_code > 5268.5000 AND pc2_code <= 11039.0000 AND pc6_code > 1057.5000 THEN 0.0;
+	IF pc1_code > 2.5000 AND pc7_code > 24510.0000 AND pc7_code <= 41530.0000 AND pc8_code > 5268.5000 AND pc2_code > 11039.0000 AND pc6_code <= 4302.0000 AND pc3_code <= 4065.5000 THEN 0.0;
+	IF pc1_code > 2.5000 AND pc7_code > 24510.0000 AND pc7_code <= 41530.0000 AND pc8_code > 5268.5000 AND pc2_code > 11039.0000 AND pc6_code <= 4302.0000 AND pc3_code > 4065.5000 THEN 2.0;
+	IF pc1_code > 2.5000 AND pc7_code > 24510.0000 AND pc7_code <= 41530.0000 AND pc8_code > 5268.5000 AND pc2_code > 11039.0000 AND pc6_code > 4302.0000 THEN 2.0;
+	IF pc1_code > 2.5000 AND pc7_code > 24510.0000 AND pc7_code > 41530.0000 AND pc5_code <= 9020.5000 THEN 2.0;
+	IF pc1_code > 2.5000 AND pc7_code > 24510.0000 AND pc7_code > 41530.0000 AND pc5_code > 9020.5000 THEN 0.0;

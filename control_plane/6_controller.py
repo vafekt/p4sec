@@ -17,9 +17,14 @@ import subprocess
 import json
 import pandas as pd
 import pickle
+import numpy as np
+import math
+import re
 from time import sleep
 from queue import Queue, Empty
 from threading import Thread
+from google.protobuf import text_format
+from p4.config.v1 import p4info_pb2
 
 sys.path.append(
     os.path.abspath(os.path.join(os.path.dirname(__file__),
@@ -32,13 +37,28 @@ from p4.v1 import p4runtime_pb2, p4runtime_pb2_grpc
 # Traffic class label mapping will be loaded dynamically from model
 CLASS_LABELS = {}
 
+def make_canonical_key(src_ip, src_port, dst_ip, dst_port, proto):
+    """
+    Return a direction-normalised 5-tuple key so that both A->B and B->A
+    digest messages aggregate into the same flow entry.
+
+    Matches the normalization applied in the P4 dataplane (compute_flow_hash)
+    and in the offline feature extractor (1_data_extraction.py):
+    the endpoint with the smaller (IP, port) tuple is always placed first.
+    """
+    if (src_ip, src_port) <= (dst_ip, dst_port):
+        return (src_ip, src_port, dst_ip, dst_port, proto)
+    else:
+        return (dst_ip, dst_port, src_ip, src_port, proto)
+
+
 class FlowAggregator:
     """Aggregate per-packet digests into flow-level outputs."""
     def __init__(self, timeout_s=5.0):
         self.timeout_s = timeout_s
         self.flows = {}
 
-    def update(self, key, features, pca_codes, class_id, class_label, flags):
+    def update(self, key, features, pca_codes, class_id, class_label, flags, xgb_scores=None, rf_votes=None):
         now = time.time()
         entry = self.flows.get(key)
         if entry is None:
@@ -49,6 +69,8 @@ class FlowAggregator:
                 "class_id": class_id,
                 "class_label": class_label,
                 "flags": flags,
+                "xgb_scores": xgb_scores or {},
+                "rf_votes": rf_votes or [],
             }
             self.flows[key] = entry
         else:
@@ -58,6 +80,8 @@ class FlowAggregator:
             entry["class_id"] = class_id
             entry["class_label"] = class_label
             entry["flags"] = flags
+            entry["xgb_scores"] = xgb_scores or {}
+            entry["rf_votes"] = rf_votes or []
 
         # If FIN/RST seen, flush immediately
         if flags.get("fin") == 1 or flags.get("rst") == 1:
@@ -129,20 +153,17 @@ def bytes_to_ip(bb):
     return '.'.join(str(b) for b in bb)
 
 def load_class_labels(model_path):
-    """Load class labels from trained DecisionTree model.
-    
-    Dynamically extracts class labels from the model to support flexible
-    training with any number of classes or different label names.
-    
+    """Load class labels from a trained sklearn model.
+
     Args:
-        model_path: Path to the pickled DecisionTree model file
-        
+        model_path: Path to the pickled model file
+
     Returns:
         Dictionary mapping class_id (int) to class_label (str)
     """
     try:
-        dt = pd.read_pickle(model_path)
-        label_mapping = {idx: label for idx, label in enumerate(dt.classes_)}
+        model = pd.read_pickle(model_path)
+        label_mapping = {idx: label for idx, label in enumerate(model.classes_)}
         print("=== Class Label Mapping (from model) ===")
         for class_id, label in sorted(label_mapping.items()):
             print(f"  {class_id}: {label}")
@@ -156,6 +177,134 @@ def load_class_labels(model_path):
         print(f"WARNING: Error loading model from {model_path}: {e}")
         print("Using empty label mapping - will default to 'unknown' for all classes")
         return {}
+
+def load_class_labels_from_rf_params(params_path, model_path):
+    """Load class labels for RF from params JSON, fallback to model if needed."""
+    try:
+        with open(params_path, 'r') as f:
+            params = json.load(f)
+        classes = params.get("classes")
+        if classes:
+            label_mapping = {idx: label for idx, label in enumerate(classes)}
+            print("=== Class Label Mapping (from rf_params.json) ===")
+            for class_id, label in sorted(label_mapping.items()):
+                print(f"  {class_id}: {label}")
+            print()
+            return label_mapping
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        print(f"WARNING: Error reading RF params from {params_path}: {e}")
+
+    # Fallback to model if params are missing or invalid
+    return load_class_labels(model_path)
+
+def load_class_labels_from_xgb_params(params_path, model_path):
+    """Load class labels for XGB from params JSON, fallback to model if needed."""
+    try:
+        with open(params_path, 'r') as f:
+            params = json.load(f)
+        classes = params.get("classes")
+        if classes:
+            label_mapping = {idx: label for idx, label in enumerate(classes)}
+            print("=== Class Label Mapping (from xgb_params.json) ===")
+            for class_id, label in sorted(label_mapping.items()):
+                print(f"  {class_id}: {label}")
+            print()
+            return label_mapping
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        print(f"WARNING: Error reading XGB params from {params_path}: {e}")
+
+    # Fallback to model if params are missing or invalid
+    return load_class_labels(model_path)
+
+def load_digest_schema(p4info_path, digest_name):
+    """Load digest field names from P4Info.
+
+    Returns a list of field names in order, or [] if not found.
+    """
+    try:
+        p4info = p4info_pb2.P4Info()
+        with open(p4info_path, 'r') as f:
+            text_format.Merge(f.read(), p4info)
+        digest = None
+        for d in p4info.digests:
+            if d.preamble.name == digest_name or d.preamble.alias == digest_name:
+                digest = d
+                break
+        if digest is None:
+            return []
+
+        type_spec = digest.type_spec
+        type_kind = type_spec.WhichOneof("type_spec")
+        if type_kind != "struct":
+            return []
+        struct_name = type_spec.struct.name
+        if not struct_name:
+            return []
+        if struct_name not in p4info.type_info.structs:
+            return []
+        struct_spec = p4info.type_info.structs[struct_name]
+        return [m.name for m in struct_spec.members]
+    except Exception as e:
+        print(f"WARNING: Unable to load digest schema from P4Info: {e}")
+        return []
+
+def build_digest_field_index(digest_fields):
+    return {name: idx for idx, name in enumerate(digest_fields)}
+
+def find_first_field(name_to_index, candidates):
+    for name in candidates:
+        if name in name_to_index:
+            return name
+    return None
+
+def parse_pca_field_names(digest_fields):
+    """Return PCA field names sorted by numeric suffix (pc1_code, pc2_code, ...)."""
+    pca = []
+    for name in digest_fields:
+        m = re.match(r"^pc(\d+)_code$", name)
+        if m:
+            pca.append((int(m.group(1)), name))
+    if not pca:
+        return []
+    return [name for _, name in sorted(pca, key=lambda x: x[0])]
+
+def parse_score_field_names(digest_fields):
+    """Return score fields mapped by class index (e.g., score_c0, xgb_c1)."""
+    scores = []
+    patterns = [
+        r"^(?:xgb_)?score[_-]?c?(\d+)$",
+        r"^(?:xgb_)?c(\d+)$",
+        r"^score_c(\d+)$",
+    ]
+    for name in digest_fields:
+        for pat in patterns:
+            m = re.match(pat, name)
+            if m:
+                scores.append((int(m.group(1)), name))
+                break
+    if not scores:
+        return []
+    return [name for _, name in sorted(scores, key=lambda x: x[0])]
+
+def format_score_debug(scores):
+    if not scores:
+        return ""
+    def sort_key(k):
+        m = re.match(r"c(\d+)$", k)
+        return int(m.group(1)) if m else k
+    parts = [f"{k}={scores.get(k, '?')}" for k in sorted(scores.keys(), key=sort_key)]
+    return f"  [Scores: {' '.join(parts)}]"
+
+def format_votes_debug(votes, class_labels):
+    """Format RF per-tree votes for display."""
+    if not votes:
+        return ""
+    vote_strs = [f"T{i}={class_labels.get(v, f'{v}')}" for i, v in enumerate(votes)]
+    return f"  [Tree Votes: {' '.join(vote_strs)}]"
 
 class DigestClient:
     """Dedicated P4Runtime client for receiving digest messages from the switch.
@@ -287,12 +436,101 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
         n_components = 2
         pca_bits = 16
     
+    # Load digest schema from P4Info for dynamic parsing
+    digest_fields = load_digest_schema(p4info_file_path, digest_name)
+    name_to_index = build_digest_field_index(digest_fields) if digest_fields else {}
+    pca_field_names = parse_pca_field_names(digest_fields)
+    score_field_names = parse_score_field_names(digest_fields)
+
+    if pca_field_names:
+        n_components = len(pca_field_names)
+
+    if digest_fields:
+        print(f"Digest schema loaded: {len(digest_fields)} fields")
+    else:
+        print("WARNING: Digest schema not found; using fallback parsing")
+
     print(f"PCA Components: {n_components} (bits={pca_bits})\n")
 
-    # Load class labels dynamically from trained model
-    model_path = os.path.join(script_dir, 'model/dt.model')
+    # Load class labels dynamically from trained model (DT, RF, or XGB)
     global CLASS_LABELS
-    CLASS_LABELS = load_class_labels(model_path)
+    dt_params_path = os.path.join(script_dir, 'tables/dt_params.json')
+    rf_params_path = os.path.join(script_dir, 'tables/rf_params.json')
+    xgb_params_path = os.path.join(script_dir, 'tables/xgb_params.json')
+    dt_model_path = os.path.join(script_dir, 'model/dt.model')
+    rf_model_path = os.path.join(script_dir, 'model/rf.model')
+    xgb_model_path = os.path.join(script_dir, 'model/xgb.model')
+
+    # Infer model type from digest structure (most reliable when multiple params exist)
+    model_type = None
+    if digest_fields:
+        if any(re.match(r"^xgb_score_c\d+$", f) for f in digest_fields):
+            model_type = "xgb"
+        elif "rf_votes" in digest_fields:
+            model_type = "rf"
+    
+    # Fallback: check params files (prioritize rf > xgb > dt)
+    if model_type is None:
+        for params_path, mtype in [
+            (rf_params_path, "rf"),
+            (xgb_params_path, "xgb"),
+            (dt_params_path, "dt"),
+        ]:
+            if os.path.exists(params_path):
+                try:
+                    with open(params_path, 'r') as f:
+                        params = json.load(f)
+                    if params.get("model_type") == mtype:
+                        model_type = mtype
+                        break
+                except Exception:
+                    pass
+    
+    # Final default
+    if model_type is None:
+        model_type = "dt"
+
+    rf_model = None
+    rf_params = None
+    rf_vote_bits = None
+    xgb_model = None
+    xgb_params = None
+    xgb_class_mapping = None  # Maps encoded int to class name for XGB
+    
+    if model_type == "rf":
+        CLASS_LABELS = load_class_labels_from_rf_params(rf_params_path, rf_model_path)
+        try:
+            rf_model = pd.read_pickle(rf_model_path)
+            print("RF model loaded for runtime verification.")
+        except Exception as e:
+            print(f"WARNING: Unable to load RF model for verification: {e}")
+            rf_model = None
+        try:
+            with open(rf_params_path, 'r') as f:
+                rf_params = json.load(f)
+            rf_vote_bits = rf_params.get('vote_bits')
+        except Exception:
+            rf_params = None
+            rf_vote_bits = None
+    elif model_type == "xgb":
+        CLASS_LABELS = load_class_labels_from_xgb_params(xgb_params_path, xgb_model_path)
+        try:
+            xgb_model = pd.read_pickle(xgb_model_path)
+            print("XGB model loaded for runtime verification.")
+        except Exception as e:
+            print(f"WARNING: Unable to load XGB model for verification: {e}")
+            xgb_model = None
+        try:
+            with open(xgb_params_path, 'r') as f:
+                xgb_params = json.load(f)
+            # Build class mapping: encoded_int -> class_name
+            classes = xgb_params.get("classes", [])
+            xgb_class_mapping = {idx: cls for idx, cls in enumerate(classes)}
+        except Exception:
+            xgb_params = None
+            xgb_class_mapping = None
+    else:
+        CLASS_LABELS = load_class_labels(dt_model_path)
 
     # Create logs directory
     os.makedirs('logs', exist_ok=True)
@@ -327,9 +565,16 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
         os.makedirs('logs', exist_ok=True)
         with open("logs/predictions.csv", "w") as out:
             # Build CSV header dynamically based on number of PCA components
-            pca_headers = ','.join([f'pc{i}_code' for i in range(1, n_components + 1)])
+            if pca_field_names:
+                pca_headers = ','.join(pca_field_names)
+            else:
+                pca_headers = ','.join([f'pc{i}_code' for i in range(1, n_components + 1)])
             out.write(f"src_ip,src_port,dst_ip,dst_port,proto,iat,duration,total_bytes,pkt_count,flags_syn,flags_ack,flags_fin,flags_rst,{pca_headers},class_id,class_label\n")
             packet_id = 0
+            warn_once = {
+                "missing_fields": False,
+                "missing_class": False,
+            }
             
             while True:
                 msg = dclient.get_digest(timeout=0.5)
@@ -348,11 +593,65 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
                         class_id = entry["class_id"]
                         class_label = entry["class_label"]
 
+                        verify_note = ""
+                        votes_or_scores_debug = ""
+                        if model_type == "rf" and rf_model is not None:
+                            try:
+                                x_np = np.array([entry["pca_codes"]], dtype=np.float64)
+                                pred_label = rf_model.predict(x_np)[0]
+                                pred_id = list(rf_model.classes_).index(pred_label)
+
+                                # Per-tree votes and packed value
+                                class_to_index = {label: idx for idx, label in enumerate(rf_model.classes_)}
+                                votes = []
+                                for est in rf_model.estimators_:
+                                    v = est.predict(x_np)[0]
+                                    if v in class_to_index:
+                                        v_id = class_to_index[v]
+                                    else:
+                                        v_id = int(v)
+                                    votes.append(v_id)
+
+                                # Display per-tree votes
+                                votes_or_scores_debug = format_votes_debug(votes, CLASS_LABELS)
+
+                                vote_bits = rf_vote_bits
+                                if vote_bits is None:
+                                    n_cls = len(rf_model.classes_)
+                                    vote_bits = max(1, math.ceil(math.log2(n_cls))) if n_cls > 1 else 1
+                                packed = 0
+                                for i, v in enumerate(votes):
+                                    packed |= (v << (i * vote_bits))
+
+                                if pred_id != class_id:
+                                    verify_note = (
+                                        f" | RF-VERIFY={pred_label}({pred_id})"
+                                        f" PACK={packed} VOTES={votes}"
+                                    )
+                            except Exception:
+                                verify_note = f" | RF-VERIFY=error"
+                        elif model_type == "xgb" and xgb_model is not None:
+                            try:
+                                x_np = np.array([entry["pca_codes"]], dtype=np.float64)
+                                pred_id = int(xgb_model.predict(x_np)[0])
+                                # XGBoost returns encoded int; decode to class name using mapping
+                                pred_label = xgb_class_mapping.get(pred_id, f"unknown({pred_id})")
+
+                                if pred_id != class_id:
+                                    verify_note = f" | XGB-VERIFY={pred_label}({pred_id})"
+                            except Exception:
+                                verify_note = f" | XGB-VERIFY=error"
+
+                            # Debug: show accumulated scores from dataplane (any class count)
+                            votes_or_scores_debug = format_score_debug(entry.get("xgb_scores", {}))
+
                         print(f"[{packet_id:<4}] {f['src_ip']:>15}:{f['src_port']:<5} -> {f['dst_ip']:>15}:{f['dst_port']:<5} | "
                               f"IAT={f['iat']:<12} Dur={f['duration']:<12} Bytes={f['total_bytes']:<8} Pkts={f['pkt_count']:<4} | "
                               f"Flags(S/A/F/R)={flags['syn']}/{flags['ack']}/{flags['fin']}/{flags['rst']} | "
                               f"{pca_display} | "
-                              f"Class={class_label}({class_id})")
+                              f"Class={class_label}({class_id}){verify_note}")
+                        if votes_or_scores_debug:
+                            print(votes_or_scores_debug)
 
                         out.write(f"{f['src_ip']},{f['src_port']},{f['dst_ip']},{f['dst_port']},{f['proto']},"
                                   f"{f['iat']},{f['duration']},{f['total_bytes']},{f['pkt_count']},{flags['syn']},{flags['ack']},{flags['fin']},{flags['rst']},"
@@ -368,29 +667,137 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
 
                 for el in digest.data:
                     st = el.struct.members
-                    src_ip = bytes_to_ip(st[0].bitstring)
-                    dst_ip = bytes_to_ip(st[1].bitstring)
-                    src_port = bytes_to_int(st[2].bitstring)
-                    dst_port = bytes_to_int(st[3].bitstring)
-                    proto = bytes_to_int(st[4].bitstring)
-                    
-                    # Extract flow-based features
-                    iat = bytes_to_int(st[5].bitstring)           # Inter-Arrival Time
-                    duration = bytes_to_int(st[6].bitstring)      # Flow duration
-                    total_bytes = bytes_to_int(st[7].bitstring)   # Total bytes
-                    pkt_count = bytes_to_int(st[8].bitstring)     # Packet count
-                    flags_syn = bytes_to_int(st[9].bitstring)     # SYN flag
-                    flags_ack = bytes_to_int(st[10].bitstring)    # ACK flag
-                    flags_fin = bytes_to_int(st[11].bitstring)    # FIN flag
-                    flags_rst = bytes_to_int(st[12].bitstring)    # RST flag
-                    
-                    # Extract PCA component codes dynamically
-                    pca_codes = []
-                    for i in range(n_components):
-                        pca_codes.append(bytes_to_int(st[13 + i].bitstring))
-                    
-                    # Class ID is at position 12 + n_components
-                    class_id = bytes_to_int(st[13 + n_components].bitstring)
+
+                    if digest_fields:
+                        def get_idx(candidates):
+                            return find_first_field(name_to_index, candidates)
+
+                        src_ip_field = get_idx(["srcAddr", "src_ip", "src"])
+                        dst_ip_field = get_idx(["dstAddr", "dst_ip", "dst"])
+                        src_port_field = get_idx(["srcPort", "src_port"])
+                        dst_port_field = get_idx(["dstPort", "dst_port"])
+                        proto_field = get_idx(["protocol", "proto"])
+
+                        def get_val(field_name, default=0, is_ip=False):
+                            if field_name is None:
+                                return default
+                            idx = name_to_index.get(field_name)
+                            if idx is None or idx >= len(st):
+                                return default
+                            return bytes_to_ip(st[idx].bitstring) if is_ip else bytes_to_int(st[idx].bitstring)
+
+                        src_ip = get_val(src_ip_field, default="0.0.0.0", is_ip=True)
+                        dst_ip = get_val(dst_ip_field, default="0.0.0.0", is_ip=True)
+                        src_port = get_val(src_port_field, default=0)
+                        dst_port = get_val(dst_port_field, default=0)
+                        proto = get_val(proto_field, default=0)
+
+                        iat = get_val(get_idx(["iat"]))
+                        duration = get_val(get_idx(["duration"]))
+                        total_bytes = get_val(get_idx(["total_bytes", "bytes"]))
+                        pkt_count = get_val(get_idx(["pkt_count", "packet_count"]))
+                        flags_syn = get_val(get_idx(["flags_syn", "syn"]))
+                        flags_ack = get_val(get_idx(["flags_ack", "ack"]))
+                        flags_fin = get_val(get_idx(["flags_fin", "fin"]))
+                        flags_rst = get_val(get_idx(["flags_rst", "rst"]))
+
+                        pca_codes = []
+                        for name in (pca_field_names or []):
+                            idx = name_to_index.get(name)
+                            if idx is None or idx >= len(st):
+                                pca_codes.append(0)
+                            else:
+                                pca_codes.append(bytes_to_int(st[idx].bitstring))
+                        if not pca_codes:
+                            pca_codes = [0] * n_components
+
+                        xgb_scores = {}
+                        for name in (score_field_names or []):
+                            idx = name_to_index.get(name)
+                            if idx is None or idx >= len(st):
+                                continue
+                            m = re.search(r"(\d+)$", name)
+                            if m:
+                                xgb_scores[f"c{int(m.group(1))}"] = bytes_to_int(st[idx].bitstring)
+
+                        class_field = get_idx(["ml_result", "class_id", "class", "label", "result"])
+                        class_id = get_val(class_field, default=0)
+                        if class_field is None and not warn_once["missing_class"]:
+                            warn_once["missing_class"] = True
+                            print("WARNING: Class field not found in digest schema; defaulting class_id=0")
+                    else:
+                        if len(st) < 13:
+                            if not warn_once["missing_fields"]:
+                                warn_once["missing_fields"] = True
+                                print(f"WARNING: Digest has insufficient fields ({len(st)}); skipping")
+                            continue
+
+                        src_ip = bytes_to_ip(st[0].bitstring)
+                        dst_ip = bytes_to_ip(st[1].bitstring)
+                        src_port = bytes_to_int(st[2].bitstring)
+                        dst_port = bytes_to_int(st[3].bitstring)
+                        proto = bytes_to_int(st[4].bitstring)
+
+                        # Extract flow-based features
+                        iat = bytes_to_int(st[5].bitstring)           # Inter-Arrival Time
+                        duration = bytes_to_int(st[6].bitstring)      # Flow duration
+                        total_bytes = bytes_to_int(st[7].bitstring)   # Total bytes
+                        pkt_count = bytes_to_int(st[8].bitstring)     # Packet count
+                        flags_syn = bytes_to_int(st[9].bitstring)     # SYN flag
+                        flags_ack = bytes_to_int(st[10].bitstring)    # ACK flag
+                        flags_fin = bytes_to_int(st[11].bitstring)    # FIN flag
+                        flags_rst = bytes_to_int(st[12].bitstring)    # RST flag
+
+                        base_fields = 13
+                        remaining = len(st) - base_fields
+                        if remaining <= 0:
+                            if not warn_once["missing_fields"]:
+                                warn_once["missing_fields"] = True
+                                print(f"WARNING: Digest has no PCA/class fields ({len(st)}); skipping")
+                            continue
+
+                        # Determine layout: either [PCA... , class_id] or [PCA..., xgb_scores(4), class_id]
+                        has_xgb_scores = False
+                        if remaining >= 5 and (remaining - 1) not in (n_components, 9):
+                            if remaining >= n_components + 5:
+                                has_xgb_scores = True
+
+                        if has_xgb_scores:
+                            pca_count = min(n_components, remaining - 5)
+                            scores_start = base_fields + pca_count
+                            class_index = scores_start + 4
+                        else:
+                            pca_count = min(n_components, max(0, remaining - 1))
+                            class_index = base_fields + (remaining - 1)
+
+                        # Extract PCA component codes (pad if digest has fewer than expected)
+                        pca_codes = []
+                        for i in range(pca_count):
+                            idx = base_fields + i
+                            if idx >= len(st):
+                                break
+                            pca_codes.append(bytes_to_int(st[idx].bitstring))
+                        if len(pca_codes) < n_components:
+                            pca_codes.extend([0] * (n_components - len(pca_codes)))
+
+                        # Extract XGB scores if present
+                        xgb_scores = {}
+                        if has_xgb_scores and (class_index < len(st)):
+                            if scores_start + 3 < len(st):
+                                xgb_scores = {
+                                    'c0': bytes_to_int(st[scores_start].bitstring),
+                                    'c1': bytes_to_int(st[scores_start + 1].bitstring),
+                                    'c2': bytes_to_int(st[scores_start + 2].bitstring),
+                                    'c3': bytes_to_int(st[scores_start + 3].bitstring),
+                                }
+
+                        # Class ID is the last field in both layouts
+                        if class_index >= len(st):
+                            if not warn_once["missing_fields"]:
+                                warn_once["missing_fields"] = True
+                                print(f"WARNING: Digest class_id index out of range ({class_index} >= {len(st)}); skipping")
+                            continue
+                        class_id = bytes_to_int(st[class_index].bitstring)
 
                     class_label = CLASS_LABELS.get(class_id, "unknown")
 
@@ -413,12 +820,13 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
                     }
 
                     for entry in flow_aggregator.update(
-                        (src_ip, dst_ip, src_port, dst_port, proto),
+                        make_canonical_key(src_ip, src_port, dst_ip, dst_port, proto),
                         features,
                         pca_codes,
                         class_id,
                         class_label,
                         flags,
+                        xgb_scores,
                     ):
                         # Only output flows with 2+ packets (match offline extraction)
                         if entry["features"]["pkt_count"] < 2:
@@ -431,11 +839,64 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
                         class_id = entry["class_id"]
                         class_label = entry["class_label"]
 
+                        verify_note = ""
+                        votes_or_scores_debug = ""
+                        if model_type == "rf" and rf_model is not None:
+                            try:
+                                x_np = np.array([entry["pca_codes"]], dtype=np.float64)
+                                pred_label = rf_model.predict(x_np)[0]
+                                pred_id = list(rf_model.classes_).index(pred_label)
+
+                                class_to_index = {label: idx for idx, label in enumerate(rf_model.classes_)}
+                                votes = []
+                                for est in rf_model.estimators_:
+                                    v = est.predict(x_np)[0]
+                                    if v in class_to_index:
+                                        v_id = class_to_index[v]
+                                    else:
+                                        v_id = int(v)
+                                    votes.append(v_id)
+
+                                # Display per-tree votes
+                                votes_or_scores_debug = format_votes_debug(votes, CLASS_LABELS)
+
+                                vote_bits = rf_vote_bits
+                                if vote_bits is None:
+                                    n_cls = len(rf_model.classes_)
+                                    vote_bits = max(1, math.ceil(math.log2(n_cls))) if n_cls > 1 else 1
+                                packed = 0
+                                for i, v in enumerate(votes):
+                                    packed |= (v << (i * vote_bits))
+
+                                if pred_id != class_id:
+                                    verify_note = (
+                                        f" | RF-VERIFY={pred_label}({pred_id})"
+                                        f" PACK={packed} VOTES={votes}"
+                                    )
+                            except Exception:
+                                verify_note = f" | RF-VERIFY=error"
+                        elif model_type == "xgb" and xgb_model is not None:
+                            try:
+                                x_np = np.array([entry["pca_codes"]], dtype=np.float64)
+                                pred_id = int(xgb_model.predict(x_np)[0])
+                                # XGBoost returns encoded int; decode to class name using mapping
+                                pred_label = xgb_class_mapping.get(pred_id, f"unknown({pred_id})")
+
+                                if pred_id != class_id:
+                                    verify_note = f" | XGB-VERIFY={pred_label}({pred_id})"
+                            except Exception:
+                                verify_note = f" | XGB-VERIFY=error"
+
+                            # Debug: show accumulated scores from dataplane (any class count)
+                            votes_or_scores_debug = format_score_debug(entry.get("xgb_scores", {}))
+
                         print(f"[{packet_id:<4}] {f['src_ip']:>15}:{f['src_port']:<5} -> {f['dst_ip']:>15}:{f['dst_port']:<5} | "
                               f"IAT={f['iat']:<12} Dur={f['duration']:<12} Bytes={f['total_bytes']:<8} Pkts={f['pkt_count']:<4} | "
                               f"Flags(S/A/F/R)={flags['syn']}/{flags['ack']}/{flags['fin']}/{flags['rst']} | "
                               f"{pca_display} | "
-                              f"Class={class_label}({class_id})")
+                              f"Class={class_label}({class_id}){verify_note}")
+                        if votes_or_scores_debug:
+                            print(votes_or_scores_debug)
 
                         out.write(f"{f['src_ip']},{f['src_port']},{f['dst_ip']},{f['dst_port']},{f['proto']},"
                                   f"{f['iat']},{f['duration']},{f['total_bytes']},{f['pkt_count']},{flags['syn']},{flags['ack']},{flags['fin']},{flags['rst']},"

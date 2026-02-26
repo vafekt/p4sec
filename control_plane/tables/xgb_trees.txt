@@ -1,0 +1,214 @@
+# XGBoost — human-readable tree rules (leaf = raw log-odds delta)
+# total_trees=32, n_classes=4
+
+# --- XGB Tree 0  (class 0) ---
+	IF pc1_code <= 3.0000 AND pc4_code <= 33411.0000 THEN leaf=0.135332;
+	IF pc1_code <= 3.0000 AND pc4_code > 33411.0000 THEN leaf=0.615493;
+	IF pc1_code > 3.0000 AND pc8_code <= 21371.0000 AND pc7_code <= 39695.0000 THEN leaf=0.351734;
+	IF pc1_code > 3.0000 AND pc8_code <= 21371.0000 AND pc7_code > 39695.0000 THEN leaf=-0.113697;
+	IF pc1_code > 3.0000 AND pc8_code > 21371.0000 AND pc4_code <= 28264.0000 THEN leaf=0.060724;
+	IF pc1_code > 3.0000 AND pc8_code > 21371.0000 AND pc4_code > 28264.0000 THEN leaf=-0.191981;
+
+# --- XGB Tree 1  (class 1) ---
+	IF pc3_code <= 64607.0000 AND pc2_code <= 10940.0000 AND pc7_code <= 25424.0000 THEN leaf=0.338459;
+	IF pc3_code <= 64607.0000 AND pc2_code <= 10940.0000 AND pc7_code > 25424.0000 THEN leaf=-0.177506;
+	IF pc3_code <= 64607.0000 AND pc2_code > 10940.0000 AND pc1_code <= 444.0000 THEN leaf=-0.234579;
+	IF pc3_code <= 64607.0000 AND pc2_code > 10940.0000 AND pc1_code > 444.0000 THEN leaf=0.051553;
+	IF pc3_code > 64607.0000 THEN leaf=0.394300;
+
+# --- XGB Tree 2  (class 2) ---
+	IF pc6_code <= 4277.0000 AND pc2_code <= 11021.0000 AND pc8_code <= 12167.0000 THEN leaf=-0.003849;
+	IF pc6_code <= 4277.0000 AND pc2_code <= 11021.0000 AND pc8_code > 12167.0000 THEN leaf=-0.186525;
+	IF pc6_code <= 4277.0000 AND pc2_code > 11021.0000 AND pc1_code <= 18.0000 THEN leaf=0.413452;
+	IF pc6_code <= 4277.0000 AND pc2_code > 11021.0000 AND pc1_code > 18.0000 THEN leaf=-0.106923;
+	IF pc6_code > 4277.0000 AND pc3_code <= 62952.0000 AND pc3_code <= 8234.0000 THEN leaf=0.483315;
+	IF pc6_code > 4277.0000 AND pc3_code <= 62952.0000 AND pc3_code > 8234.0000 THEN leaf=-0.150404;
+	IF pc6_code > 4277.0000 AND pc3_code > 62952.0000 THEN leaf=0.612734;
+
+# --- XGB Tree 3  (class 3) ---
+	IF pc8_code <= 835.0000 THEN leaf=0.435828;
+	IF pc8_code > 835.0000 THEN leaf=-0.183172;
+
+# --- XGB Tree 4  (class 0) ---
+	IF pc3_code <= 63403.0000 AND pc2_code <= 10947.0000 AND pc8_code <= 12030.0000 THEN leaf=0.110290;
+	IF pc3_code <= 63403.0000 AND pc2_code <= 10947.0000 AND pc8_code > 12030.0000 THEN leaf=-0.159136;
+	IF pc3_code <= 63403.0000 AND pc2_code > 10947.0000 AND pc2_code <= 11051.0000 THEN leaf=0.364370;
+	IF pc3_code <= 63403.0000 AND pc2_code > 10947.0000 AND pc2_code > 11051.0000 THEN leaf=-0.009062;
+	IF pc3_code > 63403.0000 THEN leaf=-0.179082;
+
+# --- XGB Tree 5  (class 1) ---
+	IF pc4_code <= 36127.0000 AND pc1_code <= 6428.0000 THEN leaf=-0.206684;
+	IF pc4_code <= 36127.0000 AND pc1_code > 6428.0000 THEN leaf=0.208077;
+	IF pc4_code > 36127.0000 AND pc7_code <= 25424.0000 THEN leaf=0.287055;
+	IF pc4_code > 36127.0000 AND pc7_code > 25424.0000 THEN leaf=-0.173463;
+
+# --- XGB Tree 6  (class 2) ---
+	IF pc6_code <= 4277.0000 AND pc2_code <= 11021.0000 AND pc8_code <= 12167.0000 THEN leaf=-0.001923;
+	IF pc6_code <= 4277.0000 AND pc2_code <= 11021.0000 AND pc8_code > 12167.0000 THEN leaf=-0.175924;
+	IF pc6_code <= 4277.0000 AND pc2_code > 11021.0000 AND pc1_code <= 18.0000 THEN leaf=0.318910;
+	IF pc6_code <= 4277.0000 AND pc2_code > 11021.0000 AND pc1_code > 18.0000 THEN leaf=-0.103805;
+	IF pc6_code > 4277.0000 AND pc4_code <= 30226.0000 THEN leaf=-0.120030;
+	IF pc6_code > 4277.0000 AND pc4_code > 30226.0000 AND pc4_code <= 36127.0000 THEN leaf=0.385552;
+	IF pc6_code > 4277.0000 AND pc4_code > 30226.0000 AND pc4_code > 36127.0000 THEN leaf=-0.116686;
+
+# --- XGB Tree 7  (class 3) ---
+	IF pc8_code <= 835.0000 THEN leaf=0.315186;
+	IF pc8_code > 835.0000 THEN leaf=-0.174128;
+
+# --- XGB Tree 8  (class 0) ---
+	IF pc3_code <= 63403.0000 AND pc2_code <= 10947.0000 AND pc8_code <= 12030.0000 THEN leaf=0.092071;
+	IF pc3_code <= 63403.0000 AND pc2_code <= 10947.0000 AND pc8_code > 12030.0000 THEN leaf=-0.150028;
+	IF pc3_code <= 63403.0000 AND pc2_code > 10947.0000 AND pc2_code <= 11200.0000 THEN leaf=0.252273;
+	IF pc3_code <= 63403.0000 AND pc2_code > 10947.0000 AND pc2_code > 11200.0000 THEN leaf=-0.134006;
+	IF pc3_code > 63403.0000 THEN leaf=-0.169903;
+
+# --- XGB Tree 9  (class 1) ---
+	IF pc4_code <= 36127.0000 AND pc1_code <= 6428.0000 THEN leaf=-0.188314;
+	IF pc4_code <= 36127.0000 AND pc1_code > 6428.0000 THEN leaf=0.172967;
+	IF pc4_code > 36127.0000 AND pc7_code <= 25424.0000 THEN leaf=0.235720;
+	IF pc4_code > 36127.0000 AND pc7_code > 25424.0000 THEN leaf=-0.155946;
+
+# --- XGB Tree 10  (class 2) ---
+	IF pc7_code <= 27838.0000 AND pc6_code <= 5288.0000 THEN leaf=-0.168255;
+	IF pc7_code <= 27838.0000 AND pc6_code > 5288.0000 THEN leaf=0.089912;
+	IF pc7_code > 27838.0000 AND pc5_code <= 6350.0000 THEN leaf=-0.124884;
+	IF pc7_code > 27838.0000 AND pc5_code > 6350.0000 AND pc8_code <= 7691.0000 THEN leaf=-0.127874;
+	IF pc7_code > 27838.0000 AND pc5_code > 6350.0000 AND pc8_code > 7691.0000 THEN leaf=0.240802;
+
+# --- XGB Tree 11  (class 3) ---
+	IF pc8_code <= 835.0000 THEN leaf=0.263121;
+	IF pc8_code > 835.0000 THEN leaf=-0.167172;
+
+# --- XGB Tree 12  (class 0) ---
+	IF pc3_code <= 63403.0000 AND pc1_code <= 4.0000 AND pc5_code <= 7762.0000 THEN leaf=0.226321;
+	IF pc3_code <= 63403.0000 AND pc1_code <= 4.0000 AND pc5_code > 7762.0000 THEN leaf=0.054591;
+	IF pc3_code <= 63403.0000 AND pc1_code > 4.0000 AND pc7_code <= 25424.0000 THEN leaf=-0.135976;
+	IF pc3_code <= 63403.0000 AND pc1_code > 4.0000 AND pc7_code > 25424.0000 THEN leaf=0.092040;
+	IF pc3_code > 63403.0000 THEN leaf=-0.163020;
+
+# --- XGB Tree 13  (class 1) ---
+	IF pc4_code <= 36127.0000 AND pc1_code <= 6428.0000 THEN leaf=-0.175489;
+	IF pc4_code <= 36127.0000 AND pc1_code > 6428.0000 THEN leaf=0.148142;
+	IF pc4_code > 36127.0000 AND pc7_code <= 25424.0000 THEN leaf=0.206453;
+	IF pc4_code > 36127.0000 AND pc7_code > 25424.0000 THEN leaf=-0.143018;
+
+# --- XGB Tree 14  (class 2) ---
+	IF pc7_code <= 27838.0000 AND pc2_code <= 11051.0000 THEN leaf=-0.162249;
+	IF pc7_code <= 27838.0000 AND pc2_code > 11051.0000 THEN leaf=0.083533;
+	IF pc7_code > 27838.0000 AND pc5_code <= 9096.0000 AND pc1_code <= 4.0000 THEN leaf=-0.053173;
+	IF pc7_code > 27838.0000 AND pc5_code <= 9096.0000 AND pc1_code > 4.0000 THEN leaf=0.217431;
+	IF pc7_code > 27838.0000 AND pc5_code > 9096.0000 THEN leaf=-0.121760;
+
+# --- XGB Tree 15  (class 3) ---
+	IF pc8_code <= 835.0000 THEN leaf=0.226871;
+	IF pc8_code > 835.0000 THEN leaf=-0.161707;
+
+# --- XGB Tree 16  (class 0) ---
+	IF pc3_code <= 63403.0000 AND pc4_code <= 33410.0000 AND pc6_code <= 4485.0000 THEN leaf=-0.159599;
+	IF pc3_code <= 63403.0000 AND pc4_code <= 33410.0000 AND pc6_code > 4485.0000 THEN leaf=0.135640;
+	IF pc3_code <= 63403.0000 AND pc4_code > 33410.0000 AND pc2_code <= 10947.0000 THEN leaf=-0.021512;
+	IF pc3_code <= 63403.0000 AND pc4_code > 33410.0000 AND pc2_code > 10947.0000 THEN leaf=0.184230;
+	IF pc3_code > 63403.0000 THEN leaf=-0.157543;
+
+# --- XGB Tree 17  (class 1) ---
+	IF pc4_code <= 36127.0000 AND pc1_code <= 6428.0000 THEN leaf=-0.166213;
+	IF pc4_code <= 36127.0000 AND pc1_code > 6428.0000 THEN leaf=0.129461;
+	IF pc4_code > 36127.0000 AND pc7_code <= 25424.0000 THEN leaf=0.188177;
+	IF pc4_code > 36127.0000 AND pc7_code > 25424.0000 THEN leaf=-0.133769;
+
+# --- XGB Tree 18  (class 2) ---
+	IF pc7_code <= 27838.0000 AND pc2_code <= 11051.0000 THEN leaf=-0.157373;
+	IF pc7_code <= 27838.0000 AND pc2_code > 11051.0000 THEN leaf=0.070933;
+	IF pc7_code > 27838.0000 AND pc5_code <= 9096.0000 AND pc1_code <= 4.0000 THEN leaf=-0.042756;
+	IF pc7_code > 27838.0000 AND pc5_code <= 9096.0000 AND pc1_code > 4.0000 THEN leaf=0.181473;
+	IF pc7_code > 27838.0000 AND pc5_code > 9096.0000 THEN leaf=-0.114506;
+
+# --- XGB Tree 19  (class 3) ---
+	IF pc8_code <= 835.0000 THEN leaf=0.199061;
+	IF pc8_code > 835.0000 THEN leaf=-0.157345;
+
+# --- XGB Tree 20  (class 0) ---
+	IF pc3_code <= 63403.0000 AND pc4_code <= 33410.0000 AND pc6_code <= 4485.0000 THEN leaf=-0.148159;
+	IF pc3_code <= 63403.0000 AND pc4_code <= 33410.0000 AND pc6_code > 4485.0000 THEN leaf=0.109896;
+	IF pc3_code <= 63403.0000 AND pc4_code > 33410.0000 AND pc2_code <= 10947.0000 THEN leaf=-0.018005;
+	IF pc3_code <= 63403.0000 AND pc4_code > 33410.0000 AND pc2_code > 10947.0000 THEN leaf=0.162815;
+	IF pc3_code > 63403.0000 THEN leaf=-0.152956;
+
+# --- XGB Tree 21  (class 1) ---
+	IF pc4_code <= 36127.0000 AND pc1_code <= 6428.0000 THEN leaf=-0.158928;
+	IF pc4_code <= 36127.0000 AND pc1_code > 6428.0000 THEN leaf=0.113734;
+	IF pc4_code > 36127.0000 AND pc7_code <= 25424.0000 THEN leaf=0.176118;
+	IF pc4_code > 36127.0000 AND pc7_code > 25424.0000 THEN leaf=-0.125139;
+
+# --- XGB Tree 22  (class 2) ---
+	IF pc7_code <= 27838.0000 AND pc7_code <= 1329.0000 THEN leaf=0.069570;
+	IF pc7_code <= 27838.0000 AND pc7_code > 1329.0000 THEN leaf=-0.153436;
+	IF pc7_code > 27838.0000 AND pc5_code <= 9096.0000 AND pc5_code <= 6350.0000 THEN leaf=-0.101599;
+	IF pc7_code > 27838.0000 AND pc5_code <= 9096.0000 AND pc5_code > 6350.0000 THEN leaf=0.141929;
+	IF pc7_code > 27838.0000 AND pc5_code > 9096.0000 THEN leaf=-0.107461;
+
+# --- XGB Tree 23  (class 3) ---
+	IF pc8_code <= 835.0000 THEN leaf=0.168078;
+	IF pc8_code > 835.0000 THEN leaf=-0.153647;
+
+# --- XGB Tree 24  (class 0) ---
+	IF pc3_code <= 63403.0000 AND pc2_code <= 11200.0000 AND pc2_code <= 10947.0000 THEN leaf=-0.049993;
+	IF pc3_code <= 63403.0000 AND pc2_code <= 11200.0000 AND pc2_code > 10947.0000 THEN leaf=0.146567;
+	IF pc3_code <= 63403.0000 AND pc2_code > 11200.0000 THEN leaf=-0.123547;
+	IF pc3_code > 63403.0000 THEN leaf=-0.148856;
+
+# --- XGB Tree 25  (class 1) ---
+	IF pc4_code <= 36127.0000 AND pc1_code <= 6428.0000 THEN leaf=-0.152790;
+	IF pc4_code <= 36127.0000 AND pc1_code > 6428.0000 THEN leaf=0.100653;
+	IF pc4_code > 36127.0000 AND pc7_code <= 25424.0000 THEN leaf=0.167577;
+	IF pc4_code > 36127.0000 AND pc7_code > 25424.0000 THEN leaf=-0.117434;
+
+# --- XGB Tree 26  (class 2) ---
+	IF pc6_code <= 4277.0000 AND pc8_code <= 13755.0000 AND pc4_code <= 34503.0000 THEN leaf=0.116843;
+	IF pc6_code <= 4277.0000 AND pc8_code <= 13755.0000 AND pc4_code > 34503.0000 THEN leaf=-0.117132;
+	IF pc6_code <= 4277.0000 AND pc8_code > 13755.0000 THEN leaf=-0.151771;
+	IF pc6_code > 4277.0000 AND pc4_code <= 30226.0000 THEN leaf=-0.091654;
+	IF pc6_code > 4277.0000 AND pc4_code > 30226.0000 AND pc4_code <= 35838.0000 THEN leaf=0.180185;
+	IF pc6_code > 4277.0000 AND pc4_code > 30226.0000 AND pc4_code > 35838.0000 THEN leaf=-0.002608;
+
+# --- XGB Tree 27  (class 3) ---
+	IF pc8_code <= 835.0000 THEN leaf=0.145722;
+	IF pc8_code > 835.0000 THEN leaf=-0.150341;
+
+# --- XGB Tree 28  (class 0) ---
+	IF pc3_code <= 63403.0000 AND pc2_code <= 11051.0000 AND pc2_code <= 10947.0000 THEN leaf=-0.043033;
+	IF pc3_code <= 63403.0000 AND pc2_code <= 11051.0000 AND pc2_code > 10947.0000 THEN leaf=0.154653;
+	IF pc3_code <= 63403.0000 AND pc2_code > 11051.0000 AND pc1_code <= 54.0000 THEN leaf=-0.144663;
+	IF pc3_code <= 63403.0000 AND pc2_code > 11051.0000 AND pc1_code > 54.0000 THEN leaf=0.070148;
+	IF pc3_code > 63403.0000 THEN leaf=-0.144852;
+
+# --- XGB Tree 29  (class 1) ---
+	IF pc3_code <= 64607.0000 AND pc1_code <= 9695.0000 AND pc3_code <= 3099.0000 THEN leaf=0.093895;
+	IF pc3_code <= 64607.0000 AND pc1_code <= 9695.0000 AND pc3_code > 3099.0000 THEN leaf=-0.150520;
+	IF pc3_code <= 64607.0000 AND pc1_code > 9695.0000 THEN leaf=0.122126;
+	IF pc3_code > 64607.0000 THEN leaf=0.160039;
+
+# --- XGB Tree 30  (class 2) ---
+	IF pc7_code <= 27838.0000 AND pc2_code <= 11051.0000 THEN leaf=-0.146231;
+	IF pc7_code <= 27838.0000 AND pc2_code > 11051.0000 THEN leaf=0.063457;
+	IF pc7_code > 27838.0000 AND pc9_code <= 24185.0000 AND pc1_code <= 2.0000 THEN leaf=0.045290;
+	IF pc7_code > 27838.0000 AND pc9_code <= 24185.0000 AND pc1_code > 2.0000 THEN leaf=0.158975;
+	IF pc7_code > 27838.0000 AND pc9_code > 24185.0000 AND pc2_code <= 11021.0000 THEN leaf=-0.124373;
+	IF pc7_code > 27838.0000 AND pc9_code > 24185.0000 AND pc2_code > 11021.0000 THEN leaf=0.078913;
+
+# --- XGB Tree 31  (class 3) ---
+	IF pc8_code <= 835.0000 THEN leaf=0.137130;
+	IF pc8_code > 835.0000 THEN leaf=-0.147168;
+
+
+# === Proxy DT for xgb_classify (accuracy=1.0000) ===
+# |--- score_c1 <= 942.00
+# |   |--- score_c2 <= 1358.50
+# |   |   |--- score_c3 <= 1020.00
+# |   |   |   |--- class: 0
+# |   |   |--- score_c3 >  1020.00
+# |   |   |   |--- class: 3
+# |   |--- score_c2 >  1358.50
+# |   |   |--- class: 2
+# |--- score_c1 >  942.00
+# |   |--- class: 1

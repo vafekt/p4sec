@@ -82,9 +82,8 @@
     "PC8_code",
     "PC9_code"
   ],
-  "random_state": 42,
-  "max_depth": null,
-  "min_samples_leaf": 1,
-  "input_csv": "tables/pca_integer_mapping.csv",
-  "model_path": "model/dt.model"
+  "n_estimators": 8,
+  "max_depth": 3,
+  "learning_rate": 0.3,
+  "random_state": 42
 }

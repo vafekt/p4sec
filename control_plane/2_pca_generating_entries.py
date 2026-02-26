@@ -339,14 +339,19 @@ print("Saved detailed metrics to:", metrics_path)
 # 10. Save mapping PCA_float + PCA_code + Label (for all samples)
 # ==========================================================
 PC_all = np.vstack([PC_train, PC_test])          # (N_all, k)
-PC_code_all = np.vstack([PC_code_train, PC_code_test])
+# CRITICAL: use tree-approximated codes here, NOT the exact quantized PCA codes.
+# The P4 switch produces codes via the regressor-tree lookup (PC_code_tree_train),
+# NOT by directly quantizing PCA scores (PC_code_train).
+# The DT classifier (step 3) must be trained on the same codes the switch will produce,
+# otherwise ml_code table ranges will never match the runtime switch output.
+PC_code_tree_all = np.vstack([PC_code_tree_train, PC_code_tree_test])
 y_all = np.concatenate([y_train, y_test])
 
 mapping_dict = {}
 for j in range(k):
     mapping_dict[f"PC{j+1}_float"] = PC_all[:, j]
 for j in range(k):
-    mapping_dict[f"PC{j+1}_code"] = PC_code_all[:, j]
+    mapping_dict[f"PC{j+1}_code"] = PC_code_tree_all[:, j]   # tree-approx codes ← matches P4 switch
 mapping_dict["Label"] = y_all
 
 mapping_df = pd.DataFrame(mapping_dict)
@@ -525,6 +530,7 @@ FEATURE_MAX_DEFAULTS = {
     "SrcPort": (2**16 - 1),
     "DstPort": (2**16 - 1),
     "TotalBytes": (2**32 - 1),
+    "PktCount":  (2**32 - 1),   # 32-bit register in P4
     "FlagsSyn": 1,
     "FlagsAck": 1,
     "FlagsFin": 1,

@@ -12,64 +12,64 @@
         "precision": 1.0,
         "recall": 1.0,
         "f1-score": 1.0,
-        "support": 32.0
+        "support": 30.0
       },
       "CC": {
         "precision": 1.0,
         "recall": 1.0,
         "f1-score": 1.0,
-        "support": 9.0
+        "support": 106.0
       },
       "Discovery": {
         "precision": 1.0,
         "recall": 1.0,
         "f1-score": 1.0,
-        "support": 28.0
+        "support": 14.0
       },
       "Evasion": {
         "precision": 1.0,
         "recall": 1.0,
         "f1-score": 1.0,
-        "support": 4.0
+        "support": 2.0
       },
       "accuracy": 1.0,
       "macro avg": {
         "precision": 1.0,
         "recall": 1.0,
         "f1-score": 1.0,
-        "support": 73.0
+        "support": 152.0
       },
       "weighted avg": {
         "precision": 1.0,
         "recall": 1.0,
         "f1-score": 1.0,
-        "support": 73.0
+        "support": 152.0
       }
     },
     "confusion_matrix": [
       [
-        32,
+        30,
         0,
         0,
         0
       ],
       [
         0,
-        9,
+        106,
         0,
         0
       ],
       [
         0,
         0,
-        28,
+        14,
         0
       ],
       [
         0,
         0,
         0,
-        4
+        2
       ]
     ]
   },
@@ -80,64 +80,64 @@
         "precision": 1.0,
         "recall": 1.0,
         "f1-score": 1.0,
-        "support": 32.0
+        "support": 30.0
       },
       "CC": {
         "precision": 1.0,
         "recall": 1.0,
         "f1-score": 1.0,
-        "support": 9.0
+        "support": 106.0
       },
       "Discovery": {
         "precision": 1.0,
         "recall": 1.0,
         "f1-score": 1.0,
-        "support": 28.0
+        "support": 14.0
       },
       "Evasion": {
         "precision": 1.0,
         "recall": 1.0,
         "f1-score": 1.0,
-        "support": 4.0
+        "support": 2.0
       },
       "accuracy": 1.0,
       "macro avg": {
         "precision": 1.0,
         "recall": 1.0,
         "f1-score": 1.0,
-        "support": 73.0
+        "support": 152.0
       },
       "weighted avg": {
         "precision": 1.0,
         "recall": 1.0,
         "f1-score": 1.0,
-        "support": 73.0
+        "support": 152.0
       }
     },
     "confusion_matrix": [
       [
-        32,
+        30,
         0,
         0,
         0
       ],
       [
         0,
-        9,
+        106,
         0,
         0
       ],
       [
         0,
         0,
-        28,
+        14,
         0
       ],
       [
         0,
         0,
         0,
-        4
+        2
       ]
     ]
   },
@@ -148,64 +148,64 @@
         "precision": 1.0,
         "recall": 1.0,
         "f1-score": 1.0,
-        "support": 32.0
+        "support": 30.0
       },
       "CC": {
         "precision": 1.0,
         "recall": 1.0,
         "f1-score": 1.0,
-        "support": 9.0
+        "support": 106.0
       },
       "Discovery": {
         "precision": 1.0,
         "recall": 1.0,
         "f1-score": 1.0,
-        "support": 28.0
+        "support": 14.0
       },
       "Evasion": {
         "precision": 1.0,
         "recall": 1.0,
         "f1-score": 1.0,
-        "support": 4.0
+        "support": 2.0
       },
       "accuracy": 1.0,
       "macro avg": {
         "precision": 1.0,
         "recall": 1.0,
         "f1-score": 1.0,
-        "support": 73.0
+        "support": 152.0
       },
       "weighted avg": {
         "precision": 1.0,
         "recall": 1.0,
         "f1-score": 1.0,
-        "support": 73.0
+        "support": 152.0
       }
     },
     "confusion_matrix": [
       [
-        32,
+        30,
         0,
         0,
         0
       ],
       [
         0,
-        9,
+        106,
         0,
         0
       ],
       [
         0,
         0,
-        28,
+        14,
         0
       ],
       [
         0,
         0,
         0,
-        4
+        2
       ]
     ]
   },
@@ -216,64 +216,64 @@
         "precision": 1.0,
         "recall": 1.0,
         "f1-score": 1.0,
-        "support": 32.0
+        "support": 30.0
       },
       "CC": {
         "precision": 1.0,
         "recall": 1.0,
         "f1-score": 1.0,
-        "support": 9.0
+        "support": 106.0
       },
       "Discovery": {
         "precision": 1.0,
         "recall": 1.0,
         "f1-score": 1.0,
-        "support": 28.0
+        "support": 14.0
       },
       "Evasion": {
         "precision": 1.0,
         "recall": 1.0,
         "f1-score": 1.0,
-        "support": 4.0
+        "support": 2.0
       },
       "accuracy": 1.0,
       "macro avg": {
         "precision": 1.0,
         "recall": 1.0,
         "f1-score": 1.0,
-        "support": 73.0
+        "support": 152.0
       },
       "weighted avg": {
         "precision": 1.0,
         "recall": 1.0,
         "f1-score": 1.0,
-        "support": 73.0
+        "support": 152.0
       }
     },
     "confusion_matrix": [
       [
-        32,
+        30,
         0,
         0,
         0
       ],
       [
         0,
-        9,
+        106,
         0,
         0
       ],
       [
         0,
         0,
-        28,
+        14,
         0
       ],
       [
         0,
         0,
         0,
-        4
+        2
       ]
     ]
   }
