@@ -82,12 +82,22 @@ label_col = df.columns[-1]
 # Remove NaN / Inf
 df_clean = df.replace([np.inf, -np.inf], np.nan).dropna()
 
-# Feature selection: keep only numeric features (excluding Label)
-X_df = df_clean.drop(columns=[label_col]).select_dtypes(include=[np.number])
+# ==========================================================
+# Select exactly the 8 P4-compatible features in the EXACT order
+# that the pca_component* tables declare their key fields.
+# 1_data_extraction.py now outputs these columns directly.
+# ==========================================================
+P4_FEATURE_COLS = [
+    "Duration", "MaxIAT", "UrgCount",
+    "FwdPktCount", "BwdPktCount",
+    "FwdBytes", "BwdBytes",
+    "MaxWinSize",
+]
+X_df = df_clean[P4_FEATURE_COLS].astype(int)
 
 # Features and labels
 feature_cols = X_df.columns.tolist()
-X = X_df.values                           # shape: (n_samples, n_features)
+X = X_df.values                           # shape: (n_samples, 8)
 y = df_clean[label_col].values            # string labels
 
 print("Samples after clean:", X.shape[0])
@@ -525,16 +535,14 @@ def write_pca_p4_commands(dt, feature_names, leaf_to_codes, k, max_val, feature_
 
 # Build feature max values based on P4 field widths (fallback to dataset max)
 FEATURE_MAX_DEFAULTS = {
-    "IAT": (2**48 - 1),
-    "Duration": (2**48 - 1),
-    "SrcPort": (2**16 - 1),
-    "DstPort": (2**16 - 1),
-    "TotalBytes": (2**32 - 1),
-    "PktCount":  (2**32 - 1),   # 32-bit register in P4
-    "FlagsSyn": 1,
-    "FlagsAck": 1,
-    "FlagsFin": 1,
-    "FlagsRst": 1,
+    "Duration":    (2**48 - 1),
+    "MaxIAT":      (2**48 - 1),
+    "UrgCount":    (2**32 - 1),
+    "FwdPktCount": (2**32 - 1),
+    "BwdPktCount": (2**32 - 1),
+    "FwdBytes":    (2**32 - 1),
+    "BwdBytes":    (2**32 - 1),
+    "MaxWinSize":  (2**16 - 1),
 }
 
 feature_max_map = {}

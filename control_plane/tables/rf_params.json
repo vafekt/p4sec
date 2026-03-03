@@ -5,20 +5,16 @@
   "vote_bits": 2,
   "total_vote_bits": 16,
   "classes": [
-    "Access",
-    "CC",
-    "Discovery",
-    "Evasion"
+    "Benign",
+    "DDoS",
+    "PasswordHacking",
+    "Reconnaissance"
   ],
   "feature_names": [
     "PC1_code",
     "PC2_code",
     "PC3_code",
     "PC4_code",
-    "PC5_code",
-    "PC6_code",
-    "PC7_code",
-    "PC8_code",
-    "PC9_code"
+    "PC5_code"
   ]
 }

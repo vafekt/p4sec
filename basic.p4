@@ -105,10 +105,14 @@ struct metadata {
     bit<1>  hash_collision;
     
     // Flow-based features
-    iat_t iat;
     duration_t duration;
-    bytes_t total_bytes;
-    bit<32> pkt_count;
+    iat_t      max_iat;
+    bit<32>    urg_count;
+    bit<32>    fwd_pkt_count;
+    bit<32>    bwd_pkt_count;
+    bytes_t    fwd_bytes;
+    bytes_t    bwd_bytes;
+    bit<16>    max_win_size;
     flags_t flags_syn;
     flags_t flags_ack;
     flags_t flags_fin;
@@ -120,10 +124,6 @@ struct metadata {
     pca_code_t pc3_code;
     pca_code_t pc4_code;
     pca_code_t pc5_code;
-    pca_code_t pc6_code;
-    pca_code_t pc7_code;
-    pca_code_t pc8_code;
-    pca_code_t pc9_code;
     
     // Classification result
     inference_result_t ml_result;
@@ -151,10 +151,14 @@ struct digest_t {
     bit<8>  protocol;
     
     // Flow-based features
-    iat_t iat;
     duration_t duration;
-    bytes_t total_bytes;
-    bit<32> pkt_count;
+    iat_t      max_iat;
+    bit<32>    urg_count;
+    bit<32>    fwd_pkt_count;
+    bit<32>    bwd_pkt_count;
+    bytes_t    fwd_bytes;
+    bytes_t    bwd_bytes;
+    bit<16>    max_win_size;
     flags_t flags_syn;
     flags_t flags_ack;
     flags_t flags_fin;
@@ -166,10 +170,6 @@ struct digest_t {
     pca_code_t pc3_code;
     pca_code_t pc4_code;
     pca_code_t pc5_code;
-    pca_code_t pc6_code;
-    pca_code_t pc7_code;
-    pca_code_t pc8_code;
-    pca_code_t pc9_code;
     
     // Classification result
     inference_result_t ml_result;
@@ -242,13 +242,17 @@ control MyIngress(inout headers hdr,
     // Registers for flow state tracking
     register<bit<48>>(MAX_REGISTER_ENTRIES) reg_time_first_pkt;   // Time of first packet
     register<bit<48>>(MAX_REGISTER_ENTRIES) reg_time_last_pkt;    // Time of last packet
-    register<bytes_t>(MAX_REGISTER_ENTRIES) reg_total_bytes;      // Total bytes in flow
+    register<iat_t>(MAX_REGISTER_ENTRIES)   reg_max_iat;          // Max inter-arrival time
+    register<bit<32>>(MAX_REGISTER_ENTRIES) reg_urg_count;        // URG packet count
+    register<bit<32>>(MAX_REGISTER_ENTRIES) reg_fwd_pkt_count;    // Forward packet count
+    register<bit<32>>(MAX_REGISTER_ENTRIES) reg_bwd_pkt_count;    // Backward packet count
+    register<bytes_t>(MAX_REGISTER_ENTRIES) reg_fwd_bytes;        // Forward bytes
+    register<bytes_t>(MAX_REGISTER_ENTRIES) reg_bwd_bytes;        // Backward bytes
+    register<bit<16>>(MAX_REGISTER_ENTRIES) reg_max_win_size;     // Max TCP window size
     register<flags_t>(MAX_REGISTER_ENTRIES) reg_flags_syn;        // SYN flag seen
     register<flags_t>(MAX_REGISTER_ENTRIES) reg_flags_ack;        // ACK flag seen
     register<flags_t>(MAX_REGISTER_ENTRIES) reg_flags_fin;        // FIN flag seen
     register<flags_t>(MAX_REGISTER_ENTRIES) reg_flags_rst;        // RST flag seen
-    register<iat_t>(MAX_REGISTER_ENTRIES) reg_sum_iat;            // Sum of IATs for averaging
-    register<bit<32>>(MAX_REGISTER_ENTRIES) reg_pkt_count;        // Packet count in flow
     
     // Bloom filter for efficient flow tracking
     register<bit<1>>(MAX_REGISTER_ENTRIES) bloom_filter;
@@ -322,7 +326,7 @@ control MyIngress(inout headers hdr,
     // Helper to extract TCP flags
     action extract_tcp_flags() {
         if (meta.protocol == TYPE_TCP) {
-            meta.flags_syn = hdr.tcp.ctrl[1:1];   // SYN bit (bit 1 of ctrl; bit 5 is URG)
+            meta.flags_syn = hdr.tcp.ctrl[1:1];   // SYN bit
             meta.flags_ack = hdr.tcp.ctrl[4:4];   // ACK bit
             meta.flags_fin = hdr.tcp.ctrl[0:0];   // FIN bit
             meta.flags_rst = hdr.tcp.ctrl[2:2];   // RST bit
@@ -331,34 +335,50 @@ control MyIngress(inout headers hdr,
 
     // Helper to update flow state
     action update_flow_state() {
-        bit<48> current_time_us = standard_metadata.ingress_global_timestamp;  // in microseconds
+        bit<48> current_time_us = standard_metadata.ingress_global_timestamp;
         bit<48> current_time = current_time_us * 1000;  // convert to nanoseconds
         bit<48> time_first;
         bit<48> time_last;
-        bit<32> pkt_count;
-        bytes_t total_bytes;
-        iat_t sum_iat;
-        
+        iat_t   max_iat;
+        bit<32> fwd_pkt_count;
+        bit<32> bwd_pkt_count;
+        bytes_t fwd_bytes;
+        bytes_t bwd_bytes;
+        bit<16> max_win_size;
+        bit<32> urg_count;
+
         // Read current state
         reg_time_first_pkt.read(time_first, meta.flow_hash);
         reg_time_last_pkt.read(time_last, meta.flow_hash);
-        reg_total_bytes.read(total_bytes, meta.flow_hash);
-        reg_pkt_count.read(pkt_count, meta.flow_hash);
-        reg_sum_iat.read(sum_iat, meta.flow_hash);
-        
+        reg_max_iat.read(max_iat, meta.flow_hash);
+        reg_fwd_pkt_count.read(fwd_pkt_count, meta.flow_hash);
+        reg_bwd_pkt_count.read(bwd_pkt_count, meta.flow_hash);
+        reg_fwd_bytes.read(fwd_bytes, meta.flow_hash);
+        reg_bwd_bytes.read(bwd_bytes, meta.flow_hash);
+        reg_max_win_size.read(max_win_size, meta.flow_hash);
+        reg_urg_count.read(urg_count, meta.flow_hash);
+
         if (time_last != 0 && (current_time - time_last) > FLOW_TIMEOUT) {
-            // Flow timeout: reset state and start a new flow
+            // Flow timeout: reset and start a new flow
             meta.is_first_packet = 1w1;
-            meta.iat = 0;
-            meta.duration = 0;
-            meta.total_bytes = (bytes_t)standard_metadata.packet_length;
-            meta.pkt_count = 1;
+            meta.duration      = 0;
+            meta.max_iat       = 0;
+            meta.urg_count     = 0;
+            meta.fwd_pkt_count = meta.is_reverse_dir == 1w0 ? 32w1 : 32w0;
+            meta.bwd_pkt_count = meta.is_reverse_dir == 1w1 ? 32w1 : 32w0;
+            meta.fwd_bytes     = meta.is_reverse_dir == 1w0 ? (bytes_t)standard_metadata.packet_length : 32w0;
+            meta.bwd_bytes     = meta.is_reverse_dir == 1w1 ? (bytes_t)standard_metadata.packet_length : 32w0;
+            meta.max_win_size  = (meta.protocol == TYPE_TCP) ? hdr.tcp.window : 16w0;
 
             reg_time_first_pkt.write(meta.flow_hash, current_time);
             reg_time_last_pkt.write(meta.flow_hash, current_time);
-            reg_pkt_count.write(meta.flow_hash, 1);
-            reg_sum_iat.write(meta.flow_hash, 0);
-            reg_total_bytes.write(meta.flow_hash, meta.total_bytes);
+            reg_max_iat.write(meta.flow_hash, 0);
+            reg_urg_count.write(meta.flow_hash, 0);
+            reg_fwd_pkt_count.write(meta.flow_hash, meta.fwd_pkt_count);
+            reg_bwd_pkt_count.write(meta.flow_hash, meta.bwd_pkt_count);
+            reg_fwd_bytes.write(meta.flow_hash, meta.fwd_bytes);
+            reg_bwd_bytes.write(meta.flow_hash, meta.bwd_bytes);
+            reg_max_win_size.write(meta.flow_hash, meta.max_win_size);
             reg_flags_syn.write(meta.flow_hash, 1w0);
             reg_flags_ack.write(meta.flow_hash, 1w0);
             reg_flags_fin.write(meta.flow_hash, 1w0);
@@ -366,45 +386,74 @@ control MyIngress(inout headers hdr,
         } else if (time_first == 0) {
             // First packet of flow
             meta.is_first_packet = 1w1;
+            meta.duration      = 0;
+            meta.max_iat       = 0;
+            meta.urg_count     = 0;
+            meta.fwd_pkt_count = meta.is_reverse_dir == 1w0 ? 32w1 : 32w0;
+            meta.bwd_pkt_count = meta.is_reverse_dir == 1w1 ? 32w1 : 32w0;
+            meta.fwd_bytes     = meta.is_reverse_dir == 1w0 ? (bytes_t)standard_metadata.packet_length : 32w0;
+            meta.bwd_bytes     = meta.is_reverse_dir == 1w1 ? (bytes_t)standard_metadata.packet_length : 32w0;
+            meta.max_win_size  = (meta.protocol == TYPE_TCP) ? hdr.tcp.window : 16w0;
+
             reg_time_first_pkt.write(meta.flow_hash, current_time);
-            reg_pkt_count.write(meta.flow_hash, 1);
-            meta.iat = 0;
-            meta.duration = 0;
-            meta.total_bytes = (bytes_t)standard_metadata.packet_length;
-            meta.pkt_count = 1;
-            reg_total_bytes.write(meta.flow_hash, meta.total_bytes);
+            reg_fwd_pkt_count.write(meta.flow_hash, meta.fwd_pkt_count);
+            reg_bwd_pkt_count.write(meta.flow_hash, meta.bwd_pkt_count);
+            reg_fwd_bytes.write(meta.flow_hash, meta.fwd_bytes);
+            reg_bwd_bytes.write(meta.flow_hash, meta.bwd_bytes);
+            reg_max_win_size.write(meta.flow_hash, meta.max_win_size);
         } else {
             // Subsequent packet
             meta.is_first_packet = 1w0;
-            
-            // Calculate IAT (inter-arrival time)
+
+            // Max IAT
             iat_t current_iat = current_time - time_last;
-            
-            // Update sum of IATs
-            sum_iat = sum_iat + current_iat;
-            reg_sum_iat.write(meta.flow_hash, sum_iat);
-            
-            // Use sum_iat directly (right-shift as approximation for averaging)
-            // This maintains statistical properties for ML without runtime division
-            meta.iat = sum_iat >> 2;  // Approximate average by right-shifting
-            
-            // Update total bytes
-            total_bytes = total_bytes + (bytes_t)standard_metadata.packet_length;
-            meta.total_bytes = total_bytes;
-            
-            // Update duration (from first to current packet)
+            if (current_iat > max_iat) {
+                max_iat = current_iat;
+            }
+            reg_max_iat.write(meta.flow_hash, max_iat);
+            meta.max_iat = max_iat;
+
+            // Duration
             meta.duration = current_time - time_first;
-            
-            // Write updated state
-            reg_pkt_count.write(meta.flow_hash, pkt_count + 1);
-            reg_total_bytes.write(meta.flow_hash, total_bytes);
-            meta.pkt_count = pkt_count + 1;
+
+            // Directional packet counts and bytes
+            if (meta.is_reverse_dir == 1w0) {
+                fwd_pkt_count = fwd_pkt_count + 1;
+                fwd_bytes = fwd_bytes + (bytes_t)standard_metadata.packet_length;
+                reg_fwd_pkt_count.write(meta.flow_hash, fwd_pkt_count);
+                reg_fwd_bytes.write(meta.flow_hash, fwd_bytes);
+            } else {
+                bwd_pkt_count = bwd_pkt_count + 1;
+                bwd_bytes = bwd_bytes + (bytes_t)standard_metadata.packet_length;
+                reg_bwd_pkt_count.write(meta.flow_hash, bwd_pkt_count);
+                reg_bwd_bytes.write(meta.flow_hash, bwd_bytes);
+            }
+            meta.fwd_pkt_count = fwd_pkt_count;
+            meta.bwd_pkt_count = bwd_pkt_count;
+            meta.fwd_bytes = fwd_bytes;
+            meta.bwd_bytes = bwd_bytes;
+
+            // Max window size
+            if (meta.protocol == TYPE_TCP) {
+                if (hdr.tcp.window > max_win_size) {
+                    max_win_size = hdr.tcp.window;
+                    reg_max_win_size.write(meta.flow_hash, max_win_size);
+                }
+            }
+            meta.max_win_size = max_win_size;
         }
-        
-        // Always update last packet time and flags
+
+        // Always update last packet time
         reg_time_last_pkt.write(meta.flow_hash, current_time);
-        
-        // Update TCP flags (use bitwise OR to aggregate)
+
+        // URG count (TCP only)
+        if (meta.protocol == TYPE_TCP && hdr.tcp.ctrl[5:5] == 1w1) {
+            urg_count = urg_count + 1;
+            reg_urg_count.write(meta.flow_hash, urg_count);
+        }
+        meta.urg_count = urg_count;
+
+        // TCP flags (bitwise OR to aggregate)
         if (meta.flags_syn == 1) {
             reg_flags_syn.write(meta.flow_hash, 1w1);
         }
@@ -434,16 +483,14 @@ control MyIngress(inout headers hdr,
 
     table pca_component1 {
         key = {
-            meta.iat             : range;
             meta.duration        : range;
-            meta.pkt_count       : range;
-            meta.canon_src_port  : range;
-            meta.canon_dst_port  : range;
-            meta.total_bytes     : range;
-            meta.flags_syn       : range;
-            meta.flags_ack       : range;
-            meta.flags_fin       : range;
-            meta.flags_rst       : range;
+            meta.max_iat         : range;
+            meta.urg_count       : range;
+            meta.fwd_pkt_count   : range;
+            meta.bwd_pkt_count   : range;
+            meta.fwd_bytes       : range;
+            meta.bwd_bytes       : range;
+            meta.max_win_size    : range;
         }
         actions = {
             set_pc1_code;
@@ -459,16 +506,14 @@ control MyIngress(inout headers hdr,
 
     table pca_component2 {
         key = {
-            meta.iat             : range;
             meta.duration        : range;
-            meta.pkt_count       : range;
-            meta.canon_src_port  : range;
-            meta.canon_dst_port  : range;
-            meta.total_bytes     : range;
-            meta.flags_syn       : range;
-            meta.flags_ack       : range;
-            meta.flags_fin       : range;
-            meta.flags_rst       : range;
+            meta.max_iat         : range;
+            meta.urg_count       : range;
+            meta.fwd_pkt_count   : range;
+            meta.bwd_pkt_count   : range;
+            meta.fwd_bytes       : range;
+            meta.bwd_bytes       : range;
+            meta.max_win_size    : range;
         }
         actions = {
             set_pc2_code;
@@ -484,16 +529,14 @@ control MyIngress(inout headers hdr,
 
     table pca_component3 {
         key = {
-            meta.iat             : range;
             meta.duration        : range;
-            meta.pkt_count       : range;
-            meta.canon_src_port  : range;
-            meta.canon_dst_port  : range;
-            meta.total_bytes     : range;
-            meta.flags_syn       : range;
-            meta.flags_ack       : range;
-            meta.flags_fin       : range;
-            meta.flags_rst       : range;
+            meta.max_iat         : range;
+            meta.urg_count       : range;
+            meta.fwd_pkt_count   : range;
+            meta.bwd_pkt_count   : range;
+            meta.fwd_bytes       : range;
+            meta.bwd_bytes       : range;
+            meta.max_win_size    : range;
         }
         actions = {
             set_pc3_code;
@@ -509,16 +552,14 @@ control MyIngress(inout headers hdr,
 
     table pca_component4 {
         key = {
-            meta.iat             : range;
             meta.duration        : range;
-            meta.pkt_count       : range;
-            meta.canon_src_port  : range;
-            meta.canon_dst_port  : range;
-            meta.total_bytes     : range;
-            meta.flags_syn       : range;
-            meta.flags_ack       : range;
-            meta.flags_fin       : range;
-            meta.flags_rst       : range;
+            meta.max_iat         : range;
+            meta.urg_count       : range;
+            meta.fwd_pkt_count   : range;
+            meta.bwd_pkt_count   : range;
+            meta.fwd_bytes       : range;
+            meta.bwd_bytes       : range;
+            meta.max_win_size    : range;
         }
         actions = {
             set_pc4_code;
@@ -534,119 +575,17 @@ control MyIngress(inout headers hdr,
 
     table pca_component5 {
         key = {
-            meta.iat             : range;
             meta.duration        : range;
-            meta.pkt_count       : range;
-            meta.canon_src_port  : range;
-            meta.canon_dst_port  : range;
-            meta.total_bytes     : range;
-            meta.flags_syn       : range;
-            meta.flags_ack       : range;
-            meta.flags_fin       : range;
-            meta.flags_rst       : range;
+            meta.max_iat         : range;
+            meta.urg_count       : range;
+            meta.fwd_pkt_count   : range;
+            meta.bwd_pkt_count   : range;
+            meta.fwd_bytes       : range;
+            meta.bwd_bytes       : range;
+            meta.max_win_size    : range;
         }
         actions = {
             set_pc5_code;
-            NoAction;
-        }
-        size = NB_ENTRIES;
-    }
-
-    // PCA component 6 transformation
-    action set_pc6_code(pca_code_t code) {
-        meta.pc6_code = code;
-    }
-
-    table pca_component6 {
-        key = {
-            meta.iat             : range;
-            meta.duration        : range;
-            meta.pkt_count       : range;
-            meta.canon_src_port  : range;
-            meta.canon_dst_port  : range;
-            meta.total_bytes     : range;
-            meta.flags_syn       : range;
-            meta.flags_ack       : range;
-            meta.flags_fin       : range;
-            meta.flags_rst       : range;
-        }
-        actions = {
-            set_pc6_code;
-            NoAction;
-        }
-        size = NB_ENTRIES;
-    }
-
-    // PCA component 7 transformation
-    action set_pc7_code(pca_code_t code) {
-        meta.pc7_code = code;
-    }
-
-    table pca_component7 {
-        key = {
-            meta.iat             : range;
-            meta.duration        : range;
-            meta.pkt_count       : range;
-            meta.canon_src_port  : range;
-            meta.canon_dst_port  : range;
-            meta.total_bytes     : range;
-            meta.flags_syn       : range;
-            meta.flags_ack       : range;
-            meta.flags_fin       : range;
-            meta.flags_rst       : range;
-        }
-        actions = {
-            set_pc7_code;
-            NoAction;
-        }
-        size = NB_ENTRIES;
-    }
-
-    // PCA component 8 transformation
-    action set_pc8_code(pca_code_t code) {
-        meta.pc8_code = code;
-    }
-
-    table pca_component8 {
-        key = {
-            meta.iat             : range;
-            meta.duration        : range;
-            meta.pkt_count       : range;
-            meta.canon_src_port  : range;
-            meta.canon_dst_port  : range;
-            meta.total_bytes     : range;
-            meta.flags_syn       : range;
-            meta.flags_ack       : range;
-            meta.flags_fin       : range;
-            meta.flags_rst       : range;
-        }
-        actions = {
-            set_pc8_code;
-            NoAction;
-        }
-        size = NB_ENTRIES;
-    }
-
-    // PCA component 9 transformation
-    action set_pc9_code(pca_code_t code) {
-        meta.pc9_code = code;
-    }
-
-    table pca_component9 {
-        key = {
-            meta.iat             : range;
-            meta.duration        : range;
-            meta.pkt_count       : range;
-            meta.canon_src_port  : range;
-            meta.canon_dst_port  : range;
-            meta.total_bytes     : range;
-            meta.flags_syn       : range;
-            meta.flags_ack       : range;
-            meta.flags_fin       : range;
-            meta.flags_rst       : range;
-        }
-        actions = {
-            set_pc9_code;
             NoAction;
         }
         size = NB_ENTRIES;
@@ -669,10 +608,6 @@ control MyIngress(inout headers hdr,
             meta.pc3_code : range;
             meta.pc4_code : range;
             meta.pc5_code : range;
-            meta.pc6_code : range;
-            meta.pc7_code : range;
-            meta.pc8_code : range;
-            meta.pc9_code : range;
         }
         actions = {
             set_rf_tree_0_vote;
@@ -693,10 +628,6 @@ control MyIngress(inout headers hdr,
             meta.pc3_code : range;
             meta.pc4_code : range;
             meta.pc5_code : range;
-            meta.pc6_code : range;
-            meta.pc7_code : range;
-            meta.pc8_code : range;
-            meta.pc9_code : range;
         }
         actions = {
             set_rf_tree_1_vote;
@@ -717,10 +648,6 @@ control MyIngress(inout headers hdr,
             meta.pc3_code : range;
             meta.pc4_code : range;
             meta.pc5_code : range;
-            meta.pc6_code : range;
-            meta.pc7_code : range;
-            meta.pc8_code : range;
-            meta.pc9_code : range;
         }
         actions = {
             set_rf_tree_2_vote;
@@ -741,10 +668,6 @@ control MyIngress(inout headers hdr,
             meta.pc3_code : range;
             meta.pc4_code : range;
             meta.pc5_code : range;
-            meta.pc6_code : range;
-            meta.pc7_code : range;
-            meta.pc8_code : range;
-            meta.pc9_code : range;
         }
         actions = {
             set_rf_tree_3_vote;
@@ -765,10 +688,6 @@ control MyIngress(inout headers hdr,
             meta.pc3_code : range;
             meta.pc4_code : range;
             meta.pc5_code : range;
-            meta.pc6_code : range;
-            meta.pc7_code : range;
-            meta.pc8_code : range;
-            meta.pc9_code : range;
         }
         actions = {
             set_rf_tree_4_vote;
@@ -789,10 +708,6 @@ control MyIngress(inout headers hdr,
             meta.pc3_code : range;
             meta.pc4_code : range;
             meta.pc5_code : range;
-            meta.pc6_code : range;
-            meta.pc7_code : range;
-            meta.pc8_code : range;
-            meta.pc9_code : range;
         }
         actions = {
             set_rf_tree_5_vote;
@@ -813,10 +728,6 @@ control MyIngress(inout headers hdr,
             meta.pc3_code : range;
             meta.pc4_code : range;
             meta.pc5_code : range;
-            meta.pc6_code : range;
-            meta.pc7_code : range;
-            meta.pc8_code : range;
-            meta.pc9_code : range;
         }
         actions = {
             set_rf_tree_6_vote;
@@ -837,10 +748,6 @@ control MyIngress(inout headers hdr,
             meta.pc3_code : range;
             meta.pc4_code : range;
             meta.pc5_code : range;
-            meta.pc6_code : range;
-            meta.pc7_code : range;
-            meta.pc8_code : range;
-            meta.pc9_code : range;
         }
         actions = {
             set_rf_tree_7_vote;
@@ -881,10 +788,6 @@ control MyIngress(inout headers hdr,
             pca_component3.apply();
             pca_component4.apply();
             pca_component5.apply();
-            pca_component6.apply();
-            pca_component7.apply();
-            pca_component8.apply();
-            pca_component9.apply();
 
             // Step 6: Apply classifier
             // Initialize packed vote field
@@ -906,10 +809,14 @@ control MyIngress(inout headers hdr,
                 meta.canon_src_port,
                 meta.canon_dst_port,
                 meta.protocol,
-                meta.iat,
                 meta.duration,
-                meta.total_bytes,
-                meta.pkt_count,
+                meta.max_iat,
+                meta.urg_count,
+                meta.fwd_pkt_count,
+                meta.bwd_pkt_count,
+                meta.fwd_bytes,
+                meta.bwd_bytes,
+                meta.max_win_size,
                 meta.flags_syn,
                 meta.flags_ack,
                 meta.flags_fin,
@@ -919,10 +826,6 @@ control MyIngress(inout headers hdr,
                 meta.pc3_code,
                 meta.pc4_code,
                 meta.pc5_code,
-                meta.pc6_code,
-                meta.pc7_code,
-                meta.pc8_code,
-                meta.pc9_code,
                 meta.ml_result
             });
             

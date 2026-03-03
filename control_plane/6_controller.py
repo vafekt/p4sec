@@ -42,14 +42,23 @@ def make_canonical_key(src_ip, src_port, dst_ip, dst_port, proto):
     Return a direction-normalised 5-tuple key so that both A->B and B->A
     digest messages aggregate into the same flow entry.
 
-    Matches the normalization applied in the P4 dataplane (compute_flow_hash)
-    and in the offline feature extractor (1_data_extraction.py):
-    the endpoint with the smaller (IP, port) tuple is always placed first.
+    Uses INTEGER IP comparison — matches P4 (bit<32> comparison) and
+    1_data_extraction.py (ipaddress.ip_address integer conversion) exactly.
+    String comparison (e.g. '192.168.1.100' < '192.168.1.52') disagrees with
+    integer comparison and would split a bidirectional flow into two entries.
     """
-    if (src_ip, src_port) <= (dst_ip, dst_port):
+    import ipaddress
+    src_int = int(ipaddress.ip_address(src_ip))
+    dst_int = int(ipaddress.ip_address(dst_ip))
+    if src_int < dst_int:
         return (src_ip, src_port, dst_ip, dst_port, proto)
-    else:
+    elif src_int > dst_int:
         return (dst_ip, dst_port, src_ip, src_port, proto)
+    else:
+        if src_port <= dst_port:
+            return (src_ip, src_port, dst_ip, dst_port, proto)
+        else:
+            return (dst_ip, dst_port, src_ip, src_port, proto)
 
 
 class FlowAggregator:
@@ -98,6 +107,12 @@ class FlowAggregator:
                 expired.append(entry)
                 del self.flows[key]
         return expired
+
+    def flush_all(self):
+        """Flush every remaining flow regardless of timeout — call at shutdown."""
+        remaining = list(self.flows.values())
+        self.flows.clear()
+        return remaining
 
 def load_switch_cli(sw, runtime_cli, thrift_port=9090):
     """Load P4 table rules via simple_switch_CLI."""
@@ -561,15 +576,15 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
     dclient = DigestClient(address='127.0.0.1:50051', device_id=0, election_id=2)
     dclient.start()
 
+    os.makedirs('logs', exist_ok=True)
     try:
-        os.makedirs('logs', exist_ok=True)
         with open("logs/predictions.csv", "w") as out:
             # Build CSV header dynamically based on number of PCA components
             if pca_field_names:
                 pca_headers = ','.join(pca_field_names)
             else:
                 pca_headers = ','.join([f'pc{i}_code' for i in range(1, n_components + 1)])
-            out.write(f"src_ip,src_port,dst_ip,dst_port,proto,iat,duration,total_bytes,pkt_count,flags_syn,flags_ack,flags_fin,flags_rst,{pca_headers},class_id,class_label\n")
+            out.write(f"src_ip,src_port,dst_ip,dst_port,proto,duration,max_iat,urg_count,fwd_pkt_count,bwd_pkt_count,fwd_bytes,bwd_bytes,max_win_size,flags_syn,flags_ack,flags_fin,flags_rst,{pca_headers},class_id,class_label\n")
             packet_id = 0
             warn_once = {
                 "missing_fields": False,
@@ -582,7 +597,7 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
                     # Periodically flush expired flows
                     for entry in flow_aggregator.flush_expired():
                         # Only output flows with 2+ packets (match offline extraction)
-                        if entry["features"]["pkt_count"] < 2:
+                        if (entry["features"]["fwd_pkt_count"] + entry["features"]["bwd_pkt_count"]) < 2:
                             continue
                         
                         packet_id += 1
@@ -646,7 +661,9 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
                             votes_or_scores_debug = format_score_debug(entry.get("xgb_scores", {}))
 
                         print(f"[{packet_id:<4}] {f['src_ip']:>15}:{f['src_port']:<5} -> {f['dst_ip']:>15}:{f['dst_port']:<5} | "
-                              f"IAT={f['iat']:<12} Dur={f['duration']:<12} Bytes={f['total_bytes']:<8} Pkts={f['pkt_count']:<4} | "
+                              f"Dur={f['duration']:<12} MaxIAT={f['max_iat']:<12} Urg={f['urg_count']:<4} "
+                              f"FwdPkts={f['fwd_pkt_count']:<4} BwdPkts={f['bwd_pkt_count']:<4} "
+                              f"FwdBytes={f['fwd_bytes']:<8} BwdBytes={f['bwd_bytes']:<8} Win={f['max_win_size']:<6} | "
                               f"Flags(S/A/F/R)={flags['syn']}/{flags['ack']}/{flags['fin']}/{flags['rst']} | "
                               f"{pca_display} | "
                               f"Class={class_label}({class_id}){verify_note}")
@@ -654,7 +671,8 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
                             print(votes_or_scores_debug)
 
                         out.write(f"{f['src_ip']},{f['src_port']},{f['dst_ip']},{f['dst_port']},{f['proto']},"
-                                  f"{f['iat']},{f['duration']},{f['total_bytes']},{f['pkt_count']},{flags['syn']},{flags['ack']},{flags['fin']},{flags['rst']},"
+                                  f"{f['duration']},{f['max_iat']},{f['urg_count']},{f['fwd_pkt_count']},{f['bwd_pkt_count']},"
+                                  f"{f['fwd_bytes']},{f['bwd_bytes']},{f['max_win_size']},{flags['syn']},{flags['ack']},{flags['fin']},{flags['rst']},"
                                   f"{','.join([str(code) for code in entry['pca_codes']])},{class_id},{class_label}\n")
                         out.flush()
                     continue
@@ -692,10 +710,14 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
                         dst_port = get_val(dst_port_field, default=0)
                         proto = get_val(proto_field, default=0)
 
-                        iat = get_val(get_idx(["iat"]))
-                        duration = get_val(get_idx(["duration"]))
-                        total_bytes = get_val(get_idx(["total_bytes", "bytes"]))
-                        pkt_count = get_val(get_idx(["pkt_count", "packet_count"]))
+                        duration     = get_val(get_idx(["duration"]))
+                        max_iat      = get_val(get_idx(["max_iat"]))
+                        urg_count    = get_val(get_idx(["urg_count"]))
+                        fwd_pkt_count= get_val(get_idx(["fwd_pkt_count"]))
+                        bwd_pkt_count= get_val(get_idx(["bwd_pkt_count"]))
+                        fwd_bytes    = get_val(get_idx(["fwd_bytes"]))
+                        bwd_bytes    = get_val(get_idx(["bwd_bytes"]))
+                        max_win_size = get_val(get_idx(["max_win_size"]))
                         flags_syn = get_val(get_idx(["flags_syn", "syn"]))
                         flags_ack = get_val(get_idx(["flags_ack", "ack"]))
                         flags_fin = get_val(get_idx(["flags_fin", "fin"]))
@@ -726,7 +748,7 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
                             warn_once["missing_class"] = True
                             print("WARNING: Class field not found in digest schema; defaulting class_id=0")
                     else:
-                        if len(st) < 13:
+                        if len(st) < 17:
                             if not warn_once["missing_fields"]:
                                 warn_once["missing_fields"] = True
                                 print(f"WARNING: Digest has insufficient fields ({len(st)}); skipping")
@@ -739,16 +761,20 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
                         proto = bytes_to_int(st[4].bitstring)
 
                         # Extract flow-based features
-                        iat = bytes_to_int(st[5].bitstring)           # Inter-Arrival Time
-                        duration = bytes_to_int(st[6].bitstring)      # Flow duration
-                        total_bytes = bytes_to_int(st[7].bitstring)   # Total bytes
-                        pkt_count = bytes_to_int(st[8].bitstring)     # Packet count
-                        flags_syn = bytes_to_int(st[9].bitstring)     # SYN flag
-                        flags_ack = bytes_to_int(st[10].bitstring)    # ACK flag
-                        flags_fin = bytes_to_int(st[11].bitstring)    # FIN flag
-                        flags_rst = bytes_to_int(st[12].bitstring)    # RST flag
+                        duration      = bytes_to_int(st[5].bitstring)   # Flow duration
+                        max_iat       = bytes_to_int(st[6].bitstring)   # Max inter-arrival time
+                        urg_count     = bytes_to_int(st[7].bitstring)   # URG count
+                        fwd_pkt_count = bytes_to_int(st[8].bitstring)   # Forward packet count
+                        bwd_pkt_count = bytes_to_int(st[9].bitstring)   # Backward packet count
+                        fwd_bytes     = bytes_to_int(st[10].bitstring)  # Forward bytes
+                        bwd_bytes     = bytes_to_int(st[11].bitstring)  # Backward bytes
+                        max_win_size  = bytes_to_int(st[12].bitstring)  # Max window size
+                        flags_syn = bytes_to_int(st[13].bitstring)      # SYN flag
+                        flags_ack = bytes_to_int(st[14].bitstring)      # ACK flag
+                        flags_fin = bytes_to_int(st[15].bitstring)      # FIN flag
+                        flags_rst = bytes_to_int(st[16].bitstring)      # RST flag
 
-                        base_fields = 13
+                        base_fields = 17
                         remaining = len(st) - base_fields
                         if remaining <= 0:
                             if not warn_once["missing_fields"]:
@@ -807,10 +833,14 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
                         "src_port": src_port,
                         "dst_port": dst_port,
                         "proto": proto,
-                        "iat": iat,
                         "duration": duration,
-                        "total_bytes": total_bytes,
-                        "pkt_count": pkt_count,
+                        "max_iat": max_iat,
+                        "urg_count": urg_count,
+                        "fwd_pkt_count": fwd_pkt_count,
+                        "bwd_pkt_count": bwd_pkt_count,
+                        "fwd_bytes": fwd_bytes,
+                        "bwd_bytes": bwd_bytes,
+                        "max_win_size": max_win_size,
                     }
                     flags = {
                         "syn": flags_syn,
@@ -829,7 +859,7 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
                         xgb_scores,
                     ):
                         # Only output flows with 2+ packets (match offline extraction)
-                        if entry["features"]["pkt_count"] < 2:
+                        if (entry["features"]["fwd_pkt_count"] + entry["features"]["bwd_pkt_count"]) < 2:
                             continue
                         packet_id += 1
                         pca_width = len(str((1 << pca_bits) - 1))
@@ -891,7 +921,9 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
                             votes_or_scores_debug = format_score_debug(entry.get("xgb_scores", {}))
 
                         print(f"[{packet_id:<4}] {f['src_ip']:>15}:{f['src_port']:<5} -> {f['dst_ip']:>15}:{f['dst_port']:<5} | "
-                              f"IAT={f['iat']:<12} Dur={f['duration']:<12} Bytes={f['total_bytes']:<8} Pkts={f['pkt_count']:<4} | "
+                              f"Dur={f['duration']:<12} MaxIAT={f['max_iat']:<12} Urg={f['urg_count']:<4} "
+                              f"FwdPkts={f['fwd_pkt_count']:<4} BwdPkts={f['bwd_pkt_count']:<4} "
+                              f"FwdBytes={f['fwd_bytes']:<8} BwdBytes={f['bwd_bytes']:<8} Win={f['max_win_size']:<6} | "
                               f"Flags(S/A/F/R)={flags['syn']}/{flags['ack']}/{flags['fin']}/{flags['rst']} | "
                               f"{pca_display} | "
                               f"Class={class_label}({class_id}){verify_note}")
@@ -899,7 +931,8 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
                             print(votes_or_scores_debug)
 
                         out.write(f"{f['src_ip']},{f['src_port']},{f['dst_ip']},{f['dst_port']},{f['proto']},"
-                                  f"{f['iat']},{f['duration']},{f['total_bytes']},{f['pkt_count']},{flags['syn']},{flags['ack']},{flags['fin']},{flags['rst']},"
+                                  f"{f['duration']},{f['max_iat']},{f['urg_count']},{f['fwd_pkt_count']},{f['bwd_pkt_count']},"
+                                  f"{f['fwd_bytes']},{f['bwd_bytes']},{f['max_win_size']},{flags['syn']},{flags['ack']},{flags['fin']},{flags['rst']},"
                                   f"{','.join([str(code) for code in entry['pca_codes']])},{class_id},{class_label}\n")
                         out.flush()
     except KeyboardInterrupt:
@@ -908,6 +941,38 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
         print(f"ERROR: {e}")
         raise
     finally:
+        # Flush any flows still in memory that never got a FIN/RST or timed out.
+        # Reopen in append mode — the `with open()` above has already closed the file.
+        remaining = flow_aggregator.flush_all()
+        if remaining:
+            print(f"Flushing {len(remaining)} remaining in-memory flows...")
+            with open("logs/predictions.csv", "a") as final_out:
+                for entry in remaining:
+                    if (entry["features"]["fwd_pkt_count"] + entry["features"]["bwd_pkt_count"]) < 2:
+                        continue
+                    packet_id += 1
+                    f = entry["features"]
+                    flags = entry["flags"]
+                    class_id = entry["class_id"]
+                    class_label = entry["class_label"]
+                    pca_width = len(str((1 << pca_bits) - 1))
+                    pca_display = ' '.join([f'PCA{i+1}={entry["pca_codes"][i]:<{pca_width}}' for i in range(n_components)])
+                    print(f"[{packet_id:<4}] {f['src_ip']:>15}:{f['src_port']:<5} -> "
+                          f"{f['dst_ip']:>15}:{f['dst_port']:<5} | "
+                          f"Dur={f['duration']:<12} MaxIAT={f['max_iat']:<12} Urg={f['urg_count']:<4} "
+                          f"FwdPkts={f['fwd_pkt_count']:<4} BwdPkts={f['bwd_pkt_count']:<4} "
+                          f"FwdBytes={f['fwd_bytes']:<8} BwdBytes={f['bwd_bytes']:<8} Win={f['max_win_size']:<6} | "
+                          f"Flags(S/A/F/R)={flags['syn']}/{flags['ack']}/{flags['fin']}/{flags['rst']} | "
+                          f"{pca_display} | Class={class_label}({class_id}) [FINAL-FLUSH]")
+                    final_out.write(
+                        f"{f['src_ip']},{f['src_port']},{f['dst_ip']},{f['dst_port']},{f['proto']},"
+                        f"{f['duration']},{f['max_iat']},{f['urg_count']},{f['fwd_pkt_count']},{f['bwd_pkt_count']},"
+                        f"{f['fwd_bytes']},{f['bwd_bytes']},{f['max_win_size']},"
+                        f"{flags['syn']},{flags['ack']},{flags['fin']},{flags['rst']},"
+                        f"{','.join([str(code) for code in entry['pca_codes']])},"
+                        f"{class_id},{class_label}\n"
+                    )
+            print(f"Final flush complete. Total flows recorded: {packet_id}")
         dclient.stop()
         ShutdownAllSwitchConnections()
 
