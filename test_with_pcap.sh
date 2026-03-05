@@ -8,7 +8,7 @@
 
 set -e
 
-PCAP_FILE="${1:-control_plane/pcaps/Reconnaissance.v1.pcap}"
+PCAP_FILE="${1:-control_plane/pcaps/Mu-IoT/Benign.v1.pcap}"
 INTERFACE="${2:-s1-eth1}"
 TIMEOUT_AFTER_PCAP="${3:-15}"  # seconds to wait after PCAP finishes before shutting down
 

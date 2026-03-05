@@ -13,7 +13,7 @@ Output columns per flow (bidirectional, canonical key):
     Protocol  - IP protocol number (6=TCP, 17=UDP)
 
   ML feature columns — match EXACTLY what the P4 switch computes and
-  sends to the pca_component* tables (same names, same order):
+  sends as a digest when a flow ends (same names, same order):
     Duration     - Time from first to last packet (nanoseconds)
     MaxIAT       - Maximum inter-arrival time across consecutive packets (ns)
     UrgCount     - Number of packets with URG flag set
@@ -22,6 +22,15 @@ Output columns per flow (bidirectional, canonical key):
     FwdBytes     - Total bytes in forward direction
     BwdBytes     - Total bytes in backward direction
     MaxWinSize   - Maximum TCP window size observed in flow (0 for UDP)
+
+NOTE: Output is one row PER FLOW, emitted when a flow ends:
+  - TCP FIN or RST flag is seen (flow closed)
+  - Flow has been idle for 120 s (timeout)
+  - End of PCAP file
+This mirrors P4's classify-and-digest behavior which is gated on
+meta.flow_ended == 1, so training data and live inference see the
+same complete-flow feature vectors.
+Only flows with at least 2 packets are written (Duration > 0).
 
 Direction convention (mirrors P4 compute_flow_hash() exactly):
   "Forward"  (is_reverse=0) = packets whose src_ip is the numerically smaller IP
@@ -69,12 +78,14 @@ def make_canonical_key(src_ip, src_port, dst_ip, dst_port, protocol):
 
 
 # ---------------------------------------------------------------------------
-# Feature finalisation
+# Flow state management  (mirrors P4 registers + update_flow_state action)
 # ---------------------------------------------------------------------------
 
 def _finalize_flow(flow_key, flow_data, label):
     """
-    Convert accumulated flow state into a feature dict.
+    Convert completed flow state into a feature dict.
+    Mirrors P4's classify-and-digest step that runs when flow_ended==1.
+    Only emits a row when the flow has at least 2 packets (Duration > 0).
     flow_key = (canon_src_ip, canon_src_port, canon_dst_ip, canon_dst_port, protocol)
     """
     timestamps = flow_data['timestamps']
@@ -92,56 +103,53 @@ def _finalize_flow(flow_key, flow_data, label):
 
     feature = {
         # --- Identifier columns (not ML features) ---
-        "SrcIP":       flow_key[0],
-        "DstIP":       flow_key[2],
-        "SrcPort":     flow_key[1],
-        "DstPort":     flow_key[3],
-        "Protocol":    flow_key[4],
+        'SrcIP':       flow_key[0],
+        'DstIP':       flow_key[2],
+        'SrcPort':     flow_key[1],
+        'DstPort':     flow_key[3],
+        'Protocol':    flow_key[4],
         # --- ML features in P4 table key order ---
-        "Duration":    duration_ns,
-        "MaxIAT":      max_iat_ns,
-        "UrgCount":    flow_data['urg_count'],
-        "FwdPktCount": flow_data['fwd_pkt_count'],
-        "BwdPktCount": flow_data['bwd_pkt_count'],
-        "FwdBytes":    flow_data['fwd_bytes'],
-        "BwdBytes":    flow_data['bwd_bytes'],
-        "MaxWinSize":  flow_data['max_win_size'],
+        'Duration':    duration_ns,
+        'MaxIAT':      max_iat_ns,
+        'UrgCount':    flow_data['urg_count'],
+        'FwdPktCount': flow_data['fwd_pkt_count'],
+        'BwdPktCount': flow_data['bwd_pkt_count'],
+        'FwdBytes':    flow_data['fwd_bytes'],
+        'BwdBytes':    flow_data['bwd_bytes'],
+        'MaxWinSize':  flow_data['max_win_size'],
     }
     if label is not None:
-        feature["Label"] = label
+        feature['Label'] = label
     return feature
 
 
 def _empty_flow_state():
+    """
+    Initialise a blank flow state — mirrors P4 register initial values (all zero).
+    """
     return {
         'timestamps':    [],
-        'syn_count':     0,
-        'ack_count':     0,
-        'fin_count':     0,
-        'rst_count':     0,
         'urg_count':     0,
         'fwd_pkt_count': 0,
         'bwd_pkt_count': 0,
         'fwd_bytes':     0,
         'bwd_bytes':     0,
-        'hdr_len':       0,
         'max_win_size':  0,
+        'flags_fin':     0,   # set when FIN seen — triggers flow end
+        'flags_rst':     0,   # set when RST seen — triggers flow end
     }
 
 
-def _update_flow_state(state, timestamp_ns, pkt_len, pkt_hdr_len,
-                        is_reverse, flags_syn, flags_ack, flags_fin,
-                        flags_rst, flags_urg, win_size):
-    """Accumulate a single packet into the flow state."""
+def _update_flow_state(state, timestamp_ns, pkt_len, is_reverse,
+                        flags_syn, flags_ack, flags_fin, flags_rst, flags_urg, win_size):
+    """Accumulate a single packet into the flow state. Returns True if the flow
+    should be finalized after this packet (FIN or RST seen), False otherwise."""
     state['timestamps'].append(timestamp_ns)
-    state['syn_count'] += flags_syn
-    state['ack_count'] += flags_ack
-    state['fin_count'] += flags_fin
-    state['rst_count'] += flags_rst
     state['urg_count'] += flags_urg
-    state['hdr_len']   += pkt_hdr_len
     if win_size > state['max_win_size']:
         state['max_win_size'] = win_size
+    state['flags_fin'] |= flags_fin
+    state['flags_rst'] |= flags_rst
 
     if is_reverse:
         state['bwd_pkt_count'] += 1
@@ -149,6 +157,9 @@ def _update_flow_state(state, timestamp_ns, pkt_len, pkt_hdr_len,
     else:
         state['fwd_pkt_count'] += 1
         state['fwd_bytes']     += pkt_len
+
+    # Signal flow-end when TCP FIN or RST is seen (mirrors P4 flow_ended logic)
+    return bool(flags_fin or flags_rst)
 
 
 # ---------------------------------------------------------------------------
@@ -222,22 +233,31 @@ def extract_features_from_pcap(pcap_path, label=None):
                                        fields['protocol'])
                 flow_key = (c_src_ip, c_src_port, c_dst_ip, c_dst_port, proto)
 
-                if flows[flow_key] is None:
-                    flows[flow_key] = _empty_flow_state()
-                else:
-                    state = flows[flow_key]
-                    if state['timestamps'] and \
-                            (fields['timestamp_ns'] - state['timestamps'][-1]) > FLOW_TIMEOUT_NS:
-                        feat = _finalize_flow(flow_key, state, label)
-                        if feat:
-                            features_list.append(feat)
-                        flows[flow_key] = _empty_flow_state()
+                state = flows[flow_key]
 
-                _update_flow_state(flows[flow_key], fields['timestamp_ns'],
-                                   fields['pkt_len'], fields['pkt_hdr_len'],
-                                   is_reverse, fields['flags_syn'], fields['flags_ack'],
-                                   fields['flags_fin'], fields['flags_rst'],
-                                   fields['flags_urg'], fields['win_size'])
+                # Timeout: finalize the previous flow, then reset
+                if state is not None and state['timestamps'] and \
+                        (fields['timestamp_ns'] - state['timestamps'][-1]) > FLOW_TIMEOUT_NS:
+                    feat = _finalize_flow(flow_key, state, label)
+                    if feat:
+                        features_list.append(feat)
+                    flows[flow_key] = _empty_flow_state()
+                elif state is None:
+                    flows[flow_key] = _empty_flow_state()
+
+                # Accumulate packet; check if flow ends (FIN/RST)
+                flow_ended = _update_flow_state(
+                    flows[flow_key],
+                    fields['timestamp_ns'], fields['pkt_len'], is_reverse,
+                    fields['flags_syn'], fields['flags_ack'],
+                    fields['flags_fin'], fields['flags_rst'],
+                    fields['flags_urg'], fields['win_size'])
+
+                if flow_ended:
+                    feat = _finalize_flow(flow_key, flows[flow_key], label)
+                    if feat:
+                        features_list.append(feat)
+                    flows[flow_key] = None   # reset slot for next flow on same 5-tuple
 
                 packet_count += 1
                 if packet_count % 1000 == 0:
@@ -249,6 +269,8 @@ def extract_features_from_pcap(pcap_path, label=None):
     finally:
         cap.close()
 
+    # Finalize all open flows at end of file (mirrors controller reading
+    # registers at capture end, or flow aging in production)
     for flow_key, state in flows.items():
         if state is not None:
             feat = _finalize_flow(flow_key, state, label)
@@ -334,22 +356,32 @@ def extract_features_from_interface(interface, output_csv, label=None,
                                        fields['protocol'])
                 flow_key = (c_src_ip, c_src_port, c_dst_ip, c_dst_port, proto)
 
-                if flows[flow_key] is None:
-                    flows[flow_key] = _empty_flow_state()
-                else:
-                    state = flows[flow_key]
-                    if state['timestamps'] and \
-                            (fields['timestamp_ns'] - state['timestamps'][-1]) > FLOW_TIMEOUT_NS:
-                        feat = _finalize_flow(flow_key, state, label)
-                        if feat:
-                            features_list.append(feat)
-                        flows[flow_key] = _empty_flow_state()
+                state = flows[flow_key]
 
-                _update_flow_state(flows[flow_key], fields['timestamp_ns'],
-                                   fields['pkt_len'], fields['pkt_hdr_len'],
-                                   is_reverse, fields['flags_syn'], fields['flags_ack'],
-                                   fields['flags_fin'], fields['flags_rst'],
-                                   fields['flags_urg'], fields['win_size'])
+                # Timeout: finalize the previous flow, then reset
+                if state is not None and state['timestamps'] and \
+                        (fields['timestamp_ns'] - state['timestamps'][-1]) > FLOW_TIMEOUT_NS:
+                    feat = _finalize_flow(flow_key, state, label)
+                    if feat:
+                        features_list.append(feat)
+                    flows[flow_key] = _empty_flow_state()
+                elif state is None:
+                    flows[flow_key] = _empty_flow_state()
+
+                # Accumulate packet; check if flow ends (FIN/RST)
+                flow_ended = _update_flow_state(
+                    flows[flow_key],
+                    fields['timestamp_ns'], fields['pkt_len'], is_reverse,
+                    fields['flags_syn'], fields['flags_ack'],
+                    fields['flags_fin'], fields['flags_rst'],
+                    fields['flags_urg'], fields['win_size'])
+
+                if flow_ended:
+                    feat = _finalize_flow(flow_key, flows[flow_key], label)
+                    if feat:
+                        features_list.append(feat)
+                    flows[flow_key] = None
+
                 captured += 1
                 if captured % 100 == 0:
                     logger.info(f"Captured {captured} packets, {len(flows)} active flows…")
@@ -361,6 +393,7 @@ def extract_features_from_interface(interface, output_csv, label=None,
     finally:
         cap.close()
 
+    # Finalize all open flows at end of capture
     for flow_key, state in flows.items():
         if state is not None:
             feat = _finalize_flow(flow_key, state, label)

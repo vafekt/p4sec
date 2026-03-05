@@ -809,13 +809,6 @@ actions {
 }
 actions {
   preamble {
-    id: 21623455
-    name: "MyIngress.read_flow_features"
-    alias: "read_flow_features"
-  }
-}
-actions {
-  preamble {
     id: 25127132
     name: "MyIngress.set_pc1_code"
     alias: "set_pc1_code"

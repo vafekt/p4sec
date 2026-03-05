@@ -12,19 +12,19 @@
         "precision": 1.0,
         "recall": 1.0,
         "f1-score": 1.0,
-        "support": 793.0
+        "support": 788.0
       },
       "DDoS": {
         "precision": 1.0,
         "recall": 1.0,
         "f1-score": 1.0,
-        "support": 1824.0
+        "support": 2360.0
       },
       "PasswordHacking": {
         "precision": 1.0,
         "recall": 1.0,
         "f1-score": 1.0,
-        "support": 349.0
+        "support": 603.0
       },
       "Reconnaissance": {
         "precision": 1.0,
@@ -37,32 +37,32 @@
         "precision": 1.0,
         "recall": 1.0,
         "f1-score": 1.0,
-        "support": 3584.0
+        "support": 4369.0
       },
       "weighted avg": {
         "precision": 1.0,
         "recall": 1.0,
         "f1-score": 1.0,
-        "support": 3584.0
+        "support": 4369.0
       }
     },
     "confusion_matrix": [
       [
-        793,
+        788,
         0,
         0,
         0
       ],
       [
         0,
-        1824,
+        2360,
         0,
         0
       ],
       [
         0,
         0,
-        349,
+        603,
         0
       ],
       [
@@ -80,19 +80,19 @@
         "precision": 1.0,
         "recall": 1.0,
         "f1-score": 1.0,
-        "support": 793.0
+        "support": 788.0
       },
       "DDoS": {
         "precision": 1.0,
         "recall": 1.0,
         "f1-score": 1.0,
-        "support": 1824.0
+        "support": 2360.0
       },
       "PasswordHacking": {
         "precision": 1.0,
         "recall": 1.0,
         "f1-score": 1.0,
-        "support": 349.0
+        "support": 603.0
       },
       "Reconnaissance": {
         "precision": 1.0,
@@ -105,32 +105,32 @@
         "precision": 1.0,
         "recall": 1.0,
         "f1-score": 1.0,
-        "support": 3584.0
+        "support": 4369.0
       },
       "weighted avg": {
         "precision": 1.0,
         "recall": 1.0,
         "f1-score": 1.0,
-        "support": 3584.0
+        "support": 4369.0
       }
     },
     "confusion_matrix": [
       [
-        793,
+        788,
         0,
         0,
         0
       ],
       [
         0,
-        1824,
+        2360,
         0,
         0
       ],
       [
         0,
         0,
-        349,
+        603,
         0
       ],
       [
@@ -142,25 +142,25 @@
     ]
   },
   "quantized_codes": {
-    "accuracy": 0.9818638392857143,
+    "accuracy": 0.9919890135042344,
     "classification_report": {
       "Benign": {
-        "precision": 0.9312796208530806,
-        "recall": 0.9911727616645649,
-        "f1-score": 0.9602932193036041,
-        "support": 793.0
+        "precision": 0.9630996309963099,
+        "recall": 0.9936548223350253,
+        "f1-score": 0.9781386633354153,
+        "support": 788.0
       },
       "DDoS": {
-        "precision": 0.9989047097480832,
+        "precision": 0.9995764506565015,
         "recall": 1.0,
-        "f1-score": 0.9994520547945206,
-        "support": 1824.0
+        "f1-score": 0.9997881804702393,
+        "support": 2360.0
       },
       "PasswordHacking": {
-        "precision": 0.9864406779661017,
-        "recall": 0.833810888252149,
-        "f1-score": 0.9037267080745341,
-        "support": 349.0
+        "precision": 0.9947916666666666,
+        "recall": 0.9502487562189055,
+        "f1-score": 0.9720101781170484,
+        "support": 603.0
       },
       "Reconnaissance": {
         "precision": 0.9983844911147012,
@@ -168,37 +168,37 @@
         "f1-score": 0.9991915925626516,
         "support": 618.0
       },
-      "accuracy": 0.9818638392857143,
+      "accuracy": 0.9919890135042344,
       "macro avg": {
-        "precision": 0.9787523749204917,
-        "recall": 0.9562459124791785,
-        "f1-score": 0.9656658936838276,
-        "support": 3584.0
+        "precision": 0.9889630598585447,
+        "recall": 0.9859758946384827,
+        "f1-score": 0.9872821536213386,
+        "support": 4369.0
       },
       "weighted avg": {
-        "precision": 0.9826384882913091,
-        "recall": 0.9818638392857143,
-        "f1-score": 0.981421343798743,
-        "support": 3584.0
+        "precision": 0.9921684420424173,
+        "recall": 0.9919890135042344,
+        "f1-score": 0.9919651897977503,
+        "support": 4369.0
       }
     },
     "confusion_matrix": [
       [
-        786,
-        2,
-        4,
+        783,
+        1,
+        3,
         1
       ],
       [
         0,
-        1824,
+        2360,
         0,
         0
       ],
       [
-        58,
+        30,
         0,
-        291,
+        573,
         0
       ],
       [
@@ -210,70 +210,70 @@
     ]
   },
   "tree_approx_codes": {
-    "accuracy": 0.9690290178571429,
+    "accuracy": 0.9679560540169375,
     "classification_report": {
       "Benign": {
-        "precision": 0.8822869955156951,
-        "recall": 0.9924337957124842,
-        "f1-score": 0.9341246290801187,
-        "support": 793.0
+        "precision": 0.8754208754208754,
+        "recall": 0.9898477157360406,
+        "f1-score": 0.9291244788564622,
+        "support": 788.0
       },
       "DDoS": {
-        "precision": 0.9989047097480832,
-        "recall": 1.0,
-        "f1-score": 0.9994520547945206,
-        "support": 1824.0
+        "precision": 0.9936548223350253,
+        "recall": 0.9953389830508474,
+        "f1-score": 0.9944961896697714,
+        "support": 2360.0
       },
       "PasswordHacking": {
-        "precision": 0.9896551724137931,
-        "recall": 0.8223495702005731,
-        "f1-score": 0.8982785602503912,
-        "support": 349.0
+        "precision": 0.9740740740740741,
+        "recall": 0.8723051409618574,
+        "f1-score": 0.9203849518810149,
+        "support": 603.0
       },
       "Reconnaissance": {
-        "precision": 0.9982638888888888,
-        "recall": 0.93042071197411,
-        "f1-score": 0.9631490787269682,
+        "precision": 1.0,
+        "recall": 0.9288025889967637,
+        "f1-score": 0.9630872483221476,
         "support": 618.0
       },
-      "accuracy": 0.9690290178571429,
+      "accuracy": 0.9679560540169375,
       "macro avg": {
-        "precision": 0.967277691641615,
-        "recall": 0.9363010194717919,
-        "f1-score": 0.9487510807129996,
-        "support": 3584.0
+        "precision": 0.9607874429574936,
+        "recall": 0.9465736071863773,
+        "f1-score": 0.951773217182349,
+        "support": 4369.0
       },
       "weighted avg": {
-        "precision": 0.9720905459068631,
-        "recall": 0.9690290178571429,
-        "f1-score": 0.9688858055207569,
-        "support": 3584.0
+        "precision": 0.9705249936390423,
+        "recall": 0.9679560540169375,
+        "f1-score": 0.9680341365087876,
+        "support": 4369.0
       }
     },
     "confusion_matrix": [
       [
-        787,
-        2,
-        3,
-        1
-      ],
-      [
-        0,
-        1824,
-        0,
+        780,
+        4,
+        4,
         0
       ],
       [
-        62,
-        0,
-        287,
+        1,
+        2349,
+        10,
         0
       ],
       [
-        43,
+        66,
+        11,
+        526,
+        0
+      ],
+      [
+        44,
         0,
         0,
-        575
+        574
       ]
     ]
   }

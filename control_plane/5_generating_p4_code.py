@@ -157,6 +157,7 @@ struct metadata {
     bit<32> flow_hash_2;
     bit<1>  is_first_packet;
     bit<1>  hash_collision;
+    bit<1>  flow_ended;     // 1 = flow is complete (timeout or FIN/RST) — gate classify+digest
     
     // Flow-based features
     duration_t duration;
@@ -441,32 +442,46 @@ control MyIngress(inout headers hdr,
         reg_urg_count.read(urg_count, meta.flow_hash);
 
         if (time_last != 0 && (current_time - time_last) > FLOW_TIMEOUT) {
-            // Flow timeout: reset and start a new flow
-            meta.is_first_packet = 1w1;
-            meta.duration      = 0;
-            meta.max_iat       = 0;
-            meta.urg_count     = 0;
-            meta.fwd_pkt_count = meta.is_reverse_dir == 1w0 ? 32w1 : 32w0;
-            meta.bwd_pkt_count = meta.is_reverse_dir == 1w1 ? 32w1 : 32w0;
-            meta.fwd_bytes     = meta.is_reverse_dir == 1w0 ? (bytes_t)standard_metadata.packet_length : 32w0;
-            meta.bwd_bytes     = meta.is_reverse_dir == 1w1 ? (bytes_t)standard_metadata.packet_length : 32w0;
-            meta.max_win_size  = (meta.protocol == TYPE_TCP) ? hdr.tcp.window : 16w0;
+            // Flow timeout: the previous flow is complete — classify it before resetting.
+            // Snapshot the old accumulated features into meta so PCA+classify runs on them.
+            meta.flow_ended    = 1w1;
+            meta.duration      = current_time - time_first;  // full duration of old flow
+            meta.max_iat       = max_iat;
+            meta.urg_count     = urg_count;
+            meta.fwd_pkt_count = fwd_pkt_count;
+            meta.bwd_pkt_count = bwd_pkt_count;
+            meta.fwd_bytes     = fwd_bytes;
+            meta.bwd_bytes     = bwd_bytes;
+            meta.max_win_size  = max_win_size;
+            // Snapshot accumulated flags BEFORE clearing the registers
+            reg_flags_syn.read(meta.flags_syn, meta.flow_hash);
+            reg_flags_ack.read(meta.flags_ack, meta.flow_hash);
+            reg_flags_fin.read(meta.flags_fin, meta.flow_hash);
+            reg_flags_rst.read(meta.flags_rst, meta.flow_hash);
 
+            // Now reset registers for the new flow starting with this packet
+            meta.is_first_packet = 1w1;
             reg_time_first_pkt.write(meta.flow_hash, current_time);
             reg_time_last_pkt.write(meta.flow_hash, current_time);
             reg_max_iat.write(meta.flow_hash, 0);
             reg_urg_count.write(meta.flow_hash, 0);
-            reg_fwd_pkt_count.write(meta.flow_hash, meta.fwd_pkt_count);
-            reg_bwd_pkt_count.write(meta.flow_hash, meta.bwd_pkt_count);
-            reg_fwd_bytes.write(meta.flow_hash, meta.fwd_bytes);
-            reg_bwd_bytes.write(meta.flow_hash, meta.bwd_bytes);
-            reg_max_win_size.write(meta.flow_hash, meta.max_win_size);
+            reg_fwd_pkt_count.write(meta.flow_hash,
+                meta.is_reverse_dir == 1w0 ? 32w1 : 32w0);
+            reg_bwd_pkt_count.write(meta.flow_hash,
+                meta.is_reverse_dir == 1w1 ? 32w1 : 32w0);
+            reg_fwd_bytes.write(meta.flow_hash,
+                meta.is_reverse_dir == 1w0 ? (bytes_t)standard_metadata.packet_length : 32w0);
+            reg_bwd_bytes.write(meta.flow_hash,
+                meta.is_reverse_dir == 1w1 ? (bytes_t)standard_metadata.packet_length : 32w0);
+            reg_max_win_size.write(meta.flow_hash,
+                (meta.protocol == TYPE_TCP) ? hdr.tcp.window : 16w0);
             reg_flags_syn.write(meta.flow_hash, 1w0);
             reg_flags_ack.write(meta.flow_hash, 1w0);
             reg_flags_fin.write(meta.flow_hash, 1w0);
             reg_flags_rst.write(meta.flow_hash, 1w0);
         } else if (time_first == 0) {
             // First packet of flow
+            meta.flow_ended    = 1w0;
             meta.is_first_packet = 1w1;
             meta.duration      = 0;
             meta.max_iat       = 0;
@@ -485,6 +500,7 @@ control MyIngress(inout headers hdr,
             reg_max_win_size.write(meta.flow_hash, meta.max_win_size);
         } else {
             // Subsequent packet
+            meta.flow_ended      = 1w0;
             meta.is_first_packet = 1w0;
 
             // Max IAT
@@ -547,6 +563,40 @@ control MyIngress(inout headers hdr,
         }
         if (meta.flags_rst == 1) {
             reg_flags_rst.write(meta.flow_hash, 1w1);
+        }
+
+        // FIN or RST ends the flow — snapshot current accumulated state and mark ended.
+        // (Only when flow_ended not already set by timeout branch above)
+        if (meta.flow_ended == 1w0 &&
+                meta.protocol == TYPE_TCP &&
+                (meta.flags_fin == 1w1 || meta.flags_rst == 1w1)) {
+            meta.flow_ended    = 1w1;
+            meta.duration      = current_time - time_first;
+            meta.max_iat       = max_iat;
+            meta.urg_count     = urg_count;
+            reg_fwd_pkt_count.read(meta.fwd_pkt_count, meta.flow_hash);
+            reg_bwd_pkt_count.read(meta.bwd_pkt_count, meta.flow_hash);
+            reg_fwd_bytes.read(meta.fwd_bytes, meta.flow_hash);
+            reg_bwd_bytes.read(meta.bwd_bytes, meta.flow_hash);
+            reg_max_win_size.read(meta.max_win_size, meta.flow_hash);
+            // Read accumulated syn/ack flags BEFORE clearing (fin/rst already in meta)
+            reg_flags_syn.read(meta.flags_syn, meta.flow_hash);
+            reg_flags_ack.read(meta.flags_ack, meta.flow_hash);
+            // meta.flags_fin and meta.flags_rst already set by extract_tcp_flags()
+            // Reset register slot so next flow on same 5-tuple starts fresh
+            reg_time_first_pkt.write(meta.flow_hash, 0);
+            reg_time_last_pkt.write(meta.flow_hash, 0);
+            reg_max_iat.write(meta.flow_hash, 0);
+            reg_urg_count.write(meta.flow_hash, 0);
+            reg_fwd_pkt_count.write(meta.flow_hash, 0);
+            reg_bwd_pkt_count.write(meta.flow_hash, 0);
+            reg_fwd_bytes.write(meta.flow_hash, 0);
+            reg_bwd_bytes.write(meta.flow_hash, 0);
+            reg_max_win_size.write(meta.flow_hash, 0);
+            reg_flags_syn.write(meta.flow_hash, 1w0);
+            reg_flags_ack.write(meta.flow_hash, 1w0);
+            reg_flags_fin.write(meta.flow_hash, 1w0);
+            reg_flags_rst.write(meta.flow_hash, 1w0);
         }
     }
 
@@ -721,13 +771,16 @@ control MyIngress(inout headers hdr,
             // Step 2: Extract TCP flags (if TCP)
             extract_tcp_flags();
             
-            // Step 3: Update flow state and calculate features
+            // Step 3: Update flow state.
+            //         meta.flow_ended is set to 1 when the flow is complete
+            //         (timeout exposing previous flow, or FIN/RST ending current flow).
             update_flow_state();
             
-            // Step 4: Read aggregated flow features
-            read_flow_features();
-            
-            // Step 5: Apply PCA transformations
+            // Step 4–7 only run when a complete flow is ready for classification.
+            if (meta.flow_ended == 1w1) {
+                // (Flags already snapshotted inside update_flow_state before register clear)
+                
+                // Step 4: Apply PCA transformations
 '''
         for i in range(1, self.n_components + 1):
             code += f'            pca_component{i}.apply();\n'
@@ -788,8 +841,9 @@ control MyIngress(inout headers hdr,
 
         code += '''                meta.ml_result
             });
+            } // end if (meta.flow_ended == 1w1)
             
-            // Step 8: Forward packet
+            // Step 8: Forward packet (always, regardless of flow state)
             ipv4_lpm.apply();
         }
     }
