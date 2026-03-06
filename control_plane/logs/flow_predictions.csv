@@ -1,2 +1,0 @@
-flow_id,src_ip,src_port,dst_ip,dst_port,proto,flow_duration_us,iat_sum_us,pkt_count,total_bytes,pc1_code,pc2_code,pc3_code,class_id,class_label
-1,10.8.0.1,41346,64.68.105.103,443,6,6061,6061,3,335,0,0,0,2,whasapp
