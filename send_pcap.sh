@@ -64,8 +64,24 @@ echo "Options:    $EXTRA_ARGS"
 echo "=========================================="
 echo ""
 
-# Replay the pcap file
+# Replay the pcap file.
+# Some PCAPs (e.g. DDoS amplification) contain packets larger than the default
+# 1500-byte MTU of mininet veth pairs, causing errno=90 with tcpreplay.
+# Temporarily raise the MTU to 9000 (jumbo) on the replay interface, then
+# restore it after the replay finishes.
+ORIG_MTU=$(ip link show "$INTERFACE" 2>/dev/null | awk '/mtu/ {for(i=1;i<=NF;i++) if($i=="mtu") print $(i+1)}')
+ORIG_MTU=${ORIG_MTU:-1500}
+if [ "${ORIG_MTU:-0}" -lt 9000 ] 2>/dev/null; then
+    sudo ip link set "$INTERFACE" mtu 9000 2>/dev/null && echo "MTU raised to 9000 on $INTERFACE"
+fi
+
 sudo tcpreplay --intf1=$INTERFACE $EXTRA_ARGS "$PCAP_FILE"
+EXIT_CODE=$?
+
+if [ "${ORIG_MTU:-0}" -lt 9000 ] 2>/dev/null; then
+    sudo ip link set "$INTERFACE" mtu "$ORIG_MTU" 2>/dev/null && echo "MTU restored to $ORIG_MTU on $INTERFACE"
+fi
+exit $EXIT_CODE
 
 echo ""
 echo "Replay complete!"

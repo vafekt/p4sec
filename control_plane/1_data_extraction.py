@@ -22,6 +22,10 @@ Output columns per flow (bidirectional, canonical key):
     FwdBytes     - Total bytes in forward direction
     BwdBytes     - Total bytes in backward direction
     MaxWinSize   - Maximum TCP window size observed in flow (0 for UDP)
+    FlagsSyn     - Number of packets with SYN flag set (0 for UDP)
+    FlagsAck     - Number of packets with ACK flag set (0 for UDP)
+    FlagsFin     - Number of packets with FIN flag set (0 for UDP)
+    FlagsRst     - Number of packets with RST flag set (0 for UDP)
 
 NOTE: Output is one row PER FLOW, emitted when a flow ends:
   - TCP FIN or RST flag is seen (flow closed)
@@ -46,6 +50,7 @@ import argparse
 import logging
 import time
 from collections import defaultdict
+from decimal import Decimal
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -117,6 +122,10 @@ def _finalize_flow(flow_key, flow_data, label):
         'FwdBytes':    flow_data['fwd_bytes'],
         'BwdBytes':    flow_data['bwd_bytes'],
         'MaxWinSize':  flow_data['max_win_size'],
+        'FlagsSyn':    flow_data['flags_syn_count'],
+        'FlagsAck':    flow_data['flags_ack_count'],
+        'FlagsFin':    flow_data['flags_fin_count'],
+        'FlagsRst':    flow_data['flags_rst_count'],
     }
     if label is not None:
         feature['Label'] = label
@@ -128,15 +137,17 @@ def _empty_flow_state():
     Initialise a blank flow state — mirrors P4 register initial values (all zero).
     """
     return {
-        'timestamps':    [],
-        'urg_count':     0,
-        'fwd_pkt_count': 0,
-        'bwd_pkt_count': 0,
-        'fwd_bytes':     0,
-        'bwd_bytes':     0,
-        'max_win_size':  0,
-        'flags_fin':     0,   # set when FIN seen — triggers flow end
-        'flags_rst':     0,   # set when RST seen — triggers flow end
+        'timestamps':     [],
+        'urg_count':      0,
+        'fwd_pkt_count':  0,
+        'bwd_pkt_count':  0,
+        'fwd_bytes':      0,
+        'bwd_bytes':      0,
+        'max_win_size':   0,
+        'flags_syn_count': 0,  # count of packets with SYN set
+        'flags_ack_count': 0,  # count of packets with ACK set
+        'flags_fin_count': 0,  # count of packets with FIN set (also triggers flow end)
+        'flags_rst_count': 0,  # count of packets with RST set (also triggers flow end)
     }
 
 
@@ -148,8 +159,11 @@ def _update_flow_state(state, timestamp_ns, pkt_len, is_reverse,
     state['urg_count'] += flags_urg
     if win_size > state['max_win_size']:
         state['max_win_size'] = win_size
-    state['flags_fin'] |= flags_fin
-    state['flags_rst'] |= flags_rst
+    # Accumulate flag counts (mirrors P4 register += 1 logic)
+    state['flags_syn_count'] += flags_syn
+    state['flags_ack_count'] += flags_ack
+    state['flags_fin_count'] += flags_fin
+    state['flags_rst_count'] += flags_rst
 
     if is_reverse:
         state['bwd_pkt_count'] += 1
@@ -174,7 +188,6 @@ def _extract_packet_fields(packet):
     src_ip   = packet.ip.src
     dst_ip   = packet.ip.dst
     protocol = int(packet.ip.proto)
-    ip_hdr_len = int(packet.ip.hdr_len) if hasattr(packet.ip, 'hdr_len') else 20
 
     if protocol == 6:   # TCP
         src_port    = int(packet.tcp.srcport)
@@ -184,7 +197,6 @@ def _extract_packet_fields(packet):
         flags_fin   = int(packet.tcp.flags_fin)   if hasattr(packet.tcp, 'flags_fin')   else 0
         flags_rst   = int(packet.tcp.flags_reset) if hasattr(packet.tcp, 'flags_reset') else 0
         flags_urg   = int(packet.tcp.flags_urg)   if hasattr(packet.tcp, 'flags_urg')   else 0
-        l4_hdr_len  = int(packet.tcp.hdr_len)     if hasattr(packet.tcp, 'hdr_len')     else 20
         # window_size_value is the unscaled value (matches the raw TCP header field)
         win_size    = int(packet.tcp.window_size_value) if hasattr(packet.tcp, 'window_size_value') else \
                       (int(packet.tcp.window_size) if hasattr(packet.tcp, 'window_size') else 0)
@@ -192,7 +204,6 @@ def _extract_packet_fields(packet):
         src_port    = int(packet.udp.srcport)
         dst_port    = int(packet.udp.dstport)
         flags_syn = flags_ack = flags_fin = flags_rst = flags_urg = 0
-        l4_hdr_len  = 8
         win_size    = 0
     else:
         return None
@@ -203,9 +214,11 @@ def _extract_packet_fields(packet):
         'flags_syn': flags_syn, 'flags_ack': flags_ack,
         'flags_fin': flags_fin, 'flags_rst': flags_rst,
         'flags_urg': flags_urg,
-        'pkt_hdr_len': ip_hdr_len + l4_hdr_len,
         'pkt_len': int(packet.length),
-        'timestamp_ns': int(float(packet.sniff_timestamp) * 1_000_000_000),
+        # P4 ingress_global_timestamp has microsecond granularity (*1000 → ns).
+        # Truncate to microseconds here so training features match inference features
+        # exactly. Using Decimal avoids float precision loss for large Unix timestamps.
+        'timestamp_ns': int(Decimal(str(packet.sniff_timestamp)) * 1_000_000) * 1000,
         'win_size': win_size,
     }
 

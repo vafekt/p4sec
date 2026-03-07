@@ -38,7 +38,13 @@ echo "[3] Replaying PCAP with tcpreplay (preserving timing)..."
 if command -v tcpreplay &> /dev/null; then
     # Use multiplier=1 to preserve original PCAP timing
     # This ensures Duration, MaxIAT, MinIAT match the offline extraction
+    # Temporarily raise MTU to 9000 so oversized packets (e.g. DDoS amplification)
+    # don't fail with errno=90 on mininet veth interfaces (default MTU 1500).
+    ORIG_MTU=$(ip link show "$INTERFACE" 2>/dev/null | awk '/mtu/ {for(i=1;i<=NF;i++) if($i=="mtu") print $(i+1)}')
+    ORIG_MTU=${ORIG_MTU:-1500}
+    [ "${ORIG_MTU:-0}" -lt 9000 ] 2>/dev/null && sudo ip link set "$INTERFACE" mtu 9000 2>/dev/null || true
     tcpreplay --interface="$INTERFACE" --multiplier=1 "$PCAP_FILE" 2>/dev/null || true
+    [ "${ORIG_MTU:-0}" -lt 9000 ] 2>/dev/null && sudo ip link set "$INTERFACE" mtu "${ORIG_MTU}" 2>/dev/null || true
     echo "    PCAP replay complete"
 else
     echo "    WARNING: tcpreplay not installed - cannot replay PCAP"

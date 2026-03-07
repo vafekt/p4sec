@@ -62,8 +62,8 @@ parser.add_argument('-o',          default="tables/s1-commands.txt",
                     help='Path to output P4 commands file (appended)')
 parser.add_argument('--tree-out',  default="tables/xgb_trees.txt",
                     help='Path to human-readable tree rules')
-parser.add_argument('--bits', '-b', type=int, default=16,
-                    help='PCA quantisation bits (default: 16)')
+parser.add_argument('--bits', '-b', type=int, default=None,
+                    help='PCA quantisation bits. If omitted, read from tables/pca_encoding_params.json.')
 parser.add_argument('--params',    default="tables/xgb_params.json",
                     help='XGB params JSON written by 3_xgb_training_model.py')
 parser.add_argument('--csv',       default="tables/pca_integer_mapping.csv",
@@ -76,9 +76,22 @@ args = parser.parse_args()
 inputfile    = args.i
 outputfile   = args.o
 tree_output  = args.tree_out
-BITS         = args.bits
-MAX_VAL      = 2 ** BITS - 1
 csv_path     = args.csv
+
+# Auto-detect bits from pca_encoding_params.json if not explicitly provided
+if args.bits is None:
+    _params_path = os.path.join(os.path.dirname(__file__), 'tables', 'pca_encoding_params.json')
+    try:
+        with open(_params_path) as _f:
+            BITS = int(json.load(_f).get('bits', 16))
+        print(f"Auto-detected bits={BITS} from {_params_path}")
+    except Exception as _e:
+        print(f"WARNING: could not read bits from {_params_path} ({_e}), defaulting to 16")
+        BITS = 16
+else:
+    BITS = args.bits
+
+MAX_VAL      = 2 ** BITS - 1
 
 for d in [os.path.dirname(outputfile), os.path.dirname(tree_output)]:
     if d:

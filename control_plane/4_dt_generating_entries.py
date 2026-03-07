@@ -12,6 +12,7 @@ where class_id is a numeric encoding of the model classes.
 """
 
 import os
+import json
 import pandas as pd
 import argparse
 
@@ -23,14 +24,27 @@ parser = argparse.ArgumentParser(description="Generate P4 DT classification entr
 parser.add_argument('-i', default="model/dt.model", help='Path to the input DecisionTree model')
 parser.add_argument('-o', default="tables/s1-commands.txt", help='Path to the output P4 commands file')
 parser.add_argument('--tree-out', default="tables/dt_tree.txt", help='Path to the human-readable tree structure')
-parser.add_argument('--bits', '-b', type=int, default=16,
-                    help='Quantization bits for PCA codes (default: 16). Supports 8, 16, 24, 32 bits.')
+parser.add_argument('--bits', '-b', type=int, default=None,
+                    help='Quantization bits for PCA codes. If omitted, read from tables/pca_encoding_params.json.')
 
 args = parser.parse_args()
 inputfile  = args.i
 outputfile = args.o
 tree_output = args.tree_out
-BITS = args.bits
+
+# Auto-detect bits from pca_encoding_params.json if not explicitly provided
+if args.bits is None:
+    _params_path = os.path.join(os.path.dirname(__file__), 'tables', 'pca_encoding_params.json')
+    try:
+        with open(_params_path) as _f:
+            BITS = int(json.load(_f).get('bits', 16))
+        print(f"Auto-detected bits={BITS} from {_params_path}")
+    except Exception as _e:
+        print(f"WARNING: could not read bits from {_params_path} ({_e}), defaulting to 16")
+        BITS = 16
+else:
+    BITS = args.bits
+
 MAX_VAL = 2**BITS - 1  # Dynamic max value based on BITS (e.g., 255 for 8-bit, 65535 for 16-bit, 4294967295 for 32-bit)
 
 # Validate BITS parameter

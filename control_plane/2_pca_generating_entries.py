@@ -83,15 +83,17 @@ label_col = df.columns[-1]
 df_clean = df.replace([np.inf, -np.inf], np.nan).dropna()
 
 # ==========================================================
-# Select exactly the 8 P4-compatible features in the EXACT order
+# Select exactly the 9 P4-compatible features in the EXACT order
 # that the pca_component* tables declare their key fields.
 # 1_data_extraction.py now outputs these columns directly.
 # ==========================================================
 P4_FEATURE_COLS = [
+    "Protocol",
     "Duration", "MaxIAT", "UrgCount",
     "FwdPktCount", "BwdPktCount",
     "FwdBytes", "BwdBytes",
     "MaxWinSize",
+    "FlagsSyn", "FlagsAck", "FlagsFin", "FlagsRst",
 ]
 X_df = df_clean[P4_FEATURE_COLS].astype(int)
 
@@ -381,7 +383,11 @@ encoding_params = {
     "pc_max": pc_max.tolist(),
     "pc_range": pc_range.tolist(),
     "auto_selected": bool(USER_N_COMPONENTS is None),
-    "variance_target": float(VAR_TARGET) if USER_N_COMPONENTS is None else None
+    "variance_target": float(VAR_TARGET) if USER_N_COMPONENTS is None else None,
+    # PCA transform matrix — needed by 6_controller.py register drain to classify
+    # flows that are stuck in P4 registers (no FIN/RST, no timeout fired).
+    "pca_components": pca.components_.tolist(),  # shape (k, n_features)
+    "pca_mean":       pca.mean_.tolist(),         # shape (n_features,)
 }
 
 params_path = os.path.join(TABLES_DIR, "pca_encoding_params.json")
@@ -417,66 +423,38 @@ def format_feature_ranges(domain, feature_names, feature_max_map):
     Unconstrained range features get full range (0->FEATURE_MAX)
     Unconstrained flag features get wildcard (0->1)"""
     clauses = []
-    
-    # Define which features are flags (binary, 0 or 1)
-    flag_features = {"FlagsSyn", "FlagsAck", "FlagsFin", "FlagsRst"}
-    
+
     for feat_name in feature_names:
-        is_flag = feat_name in flag_features
-        
+        feature_max = feature_max_map.get(feat_name)
+        if feature_max is None:
+            feature_max = int(np.nanmax(X_df[feat_name])) if feat_name in X_df.columns else MAX_VAL
+
         if feat_name not in domain:
-            # Feature not constrained
-            if is_flag:
-                # For flags: unconstrained means wildcard (both 0 and 1)
-                clauses.append("0->1")
-            else:
-                # For numeric: unconstrained means full range
-                feature_max = feature_max_map.get(feat_name, MAX_VAL)
-                clauses.append(f"0->{feature_max}")
+            # Feature not constrained in this path — use full range
+            clauses.append(f"0->{feature_max}")
             continue
-            
+
         val = domain[feat_name]
         lo = val["min"]
         hi = val["max"]
-        
-        if is_flag:
-            # For binary flags: thresholds are typically 0.5
-            # lo=None, hi=0.5 means feature <= 0.5, so value is 0 (range: 0->0)
-            # lo=0.5, hi=None means feature > 0.5, so value is 1 (range: 1->1)
-            # Both bounds set shouldn't happen for binary features
-            
-            if lo is None and hi is not None:
-                # Feature <= threshold (value is 0)
-                clauses.append("0->0")
-            elif lo is not None and hi is None:
-                # Feature > threshold (value is 1)
-                clauses.append("1->1")
-            else:
-                # Unconstrained or both bounds (shouldn't happen)
-                clauses.append("0->1")
-        else:
-            # For numeric features, standard range conversion
-            feature_max = feature_max_map.get(feat_name)
-            if feature_max is None:
-                feature_max = int(np.nanmax(X_df[feat_name])) if feat_name in X_df.columns else MAX_VAL
 
-            if lo is None:
-                lo = -1  # will become 0 after +1
-            if hi is None:
-                hi = feature_max
+        if lo is None:
+            lo = -1  # will become 0 after +1
+        if hi is None:
+            hi = feature_max
 
-            # Decision tree uses (lo, hi]; convert to [lo+1, hi]
-            lo = int(lo) + 1
-            hi = int(hi)
+        # Decision tree splits use (lo, hi]; convert to [lo+1, hi]
+        lo = int(lo) + 1
+        hi = int(hi)
 
-            # Clamp to feature range
-            if lo < 0:
-                lo = 0
-            if hi > feature_max:
-                hi = feature_max
+        # Clamp to feature range
+        if lo < 0:
+            lo = 0
+        if hi > feature_max:
+            hi = feature_max
 
-            clauses.append(f"{lo}->{hi}")
-    
+        clauses.append(f"{lo}->{hi}")
+
     return clauses
 
 def write_pca_p4_commands(dt, feature_names, leaf_to_codes, k, max_val, feature_max_map, filename):
@@ -535,6 +513,7 @@ def write_pca_p4_commands(dt, feature_names, leaf_to_codes, k, max_val, feature_
 
 # Build feature max values based on P4 field widths (fallback to dataset max)
 FEATURE_MAX_DEFAULTS = {
+    "Protocol":    (2**8  - 1),   # bit<8>
     "Duration":    (2**48 - 1),
     "MaxIAT":      (2**48 - 1),
     "UrgCount":    (2**32 - 1),
@@ -543,6 +522,10 @@ FEATURE_MAX_DEFAULTS = {
     "FwdBytes":    (2**32 - 1),
     "BwdBytes":    (2**32 - 1),
     "MaxWinSize":  (2**16 - 1),
+    "FlagsSyn":    (2**32 - 1),   # bit<32> count
+    "FlagsAck":    (2**32 - 1),   # bit<32> count
+    "FlagsFin":    (2**32 - 1),   # bit<32> count
+    "FlagsRst":    (2**32 - 1),   # bit<32> count
 }
 
 feature_max_map = {}
@@ -611,3 +594,14 @@ def write_if_rules_for_pca(dt, feature_names, leaf_to_codes, filename):
 rules_if_path = os.path.join(TABLES_DIR, "pca_tree_if_rules.txt")
 write_if_rules_for_pca(tree, feature_cols, leaf_to_codes, rules_if_path)
 print(f"IF rules (feature ranges -> PC*_code) saved to: {rules_if_path}")
+
+print()
+print("=" * 60)
+print("IMPORTANT: s1-commands.txt now contains ONLY PCA table entries.")
+print("You MUST re-run the classifier entry generator next:")
+print("  python3 4_dt_generating_entries.py   (for DT model)")
+print("  python3 4_rf_generating_entries.py   (for RF model)")
+print("  python3 4_xgb_generating_entries.py  (for XGB model)")
+print("Skipping this step will result in all flows being classified")
+print("as class 0 (Benign) because RF/DT/XGB table entries are absent.")
+print("=" * 60)

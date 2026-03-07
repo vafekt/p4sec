@@ -5,10 +5,10 @@
   "trees_per_class": 8,
   "total_trees": 32,
   "classes": [
-    "Access",
-    "CC",
-    "Discovery",
-    "Evasion"
+    "Benign",
+    "DDoS",
+    "PasswordHacking",
+    "Reconnaissance"
   ],
   "feature_names": [
     "PC1_code",
@@ -18,8 +18,7 @@
     "PC5_code",
     "PC6_code",
     "PC7_code",
-    "PC8_code",
-    "PC9_code"
+    "PC8_code"
   ],
   "objective": "multi:softmax",
   "max_depth": 3,

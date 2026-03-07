@@ -38,48 +38,54 @@ tables {
   }
   match_fields {
     id: 1
+    name: "meta.protocol"
+    bitwidth: 8
+    match_type: RANGE
+  }
+  match_fields {
+    id: 2
     name: "meta.duration"
     bitwidth: 48
     match_type: RANGE
   }
   match_fields {
-    id: 2
+    id: 3
     name: "meta.max_iat"
     bitwidth: 48
     match_type: RANGE
   }
   match_fields {
-    id: 3
+    id: 4
     name: "meta.urg_count"
     bitwidth: 32
     match_type: RANGE
   }
   match_fields {
-    id: 4
+    id: 5
     name: "meta.fwd_pkt_count"
     bitwidth: 32
     match_type: RANGE
   }
   match_fields {
-    id: 5
+    id: 6
     name: "meta.bwd_pkt_count"
     bitwidth: 32
     match_type: RANGE
   }
   match_fields {
-    id: 6
+    id: 7
     name: "meta.fwd_bytes"
     bitwidth: 32
     match_type: RANGE
   }
   match_fields {
-    id: 7
+    id: 8
     name: "meta.bwd_bytes"
     bitwidth: 32
     match_type: RANGE
   }
   match_fields {
-    id: 8
+    id: 9
     name: "meta.max_win_size"
     bitwidth: 16
     match_type: RANGE
@@ -103,48 +109,54 @@ tables {
   }
   match_fields {
     id: 1
+    name: "meta.protocol"
+    bitwidth: 8
+    match_type: RANGE
+  }
+  match_fields {
+    id: 2
     name: "meta.duration"
     bitwidth: 48
     match_type: RANGE
   }
   match_fields {
-    id: 2
+    id: 3
     name: "meta.max_iat"
     bitwidth: 48
     match_type: RANGE
   }
   match_fields {
-    id: 3
+    id: 4
     name: "meta.urg_count"
     bitwidth: 32
     match_type: RANGE
   }
   match_fields {
-    id: 4
+    id: 5
     name: "meta.fwd_pkt_count"
     bitwidth: 32
     match_type: RANGE
   }
   match_fields {
-    id: 5
+    id: 6
     name: "meta.bwd_pkt_count"
     bitwidth: 32
     match_type: RANGE
   }
   match_fields {
-    id: 6
+    id: 7
     name: "meta.fwd_bytes"
     bitwidth: 32
     match_type: RANGE
   }
   match_fields {
-    id: 7
+    id: 8
     name: "meta.bwd_bytes"
     bitwidth: 32
     match_type: RANGE
   }
   match_fields {
-    id: 8
+    id: 9
     name: "meta.max_win_size"
     bitwidth: 16
     match_type: RANGE
@@ -168,48 +180,54 @@ tables {
   }
   match_fields {
     id: 1
+    name: "meta.protocol"
+    bitwidth: 8
+    match_type: RANGE
+  }
+  match_fields {
+    id: 2
     name: "meta.duration"
     bitwidth: 48
     match_type: RANGE
   }
   match_fields {
-    id: 2
+    id: 3
     name: "meta.max_iat"
     bitwidth: 48
     match_type: RANGE
   }
   match_fields {
-    id: 3
+    id: 4
     name: "meta.urg_count"
     bitwidth: 32
     match_type: RANGE
   }
   match_fields {
-    id: 4
+    id: 5
     name: "meta.fwd_pkt_count"
     bitwidth: 32
     match_type: RANGE
   }
   match_fields {
-    id: 5
+    id: 6
     name: "meta.bwd_pkt_count"
     bitwidth: 32
     match_type: RANGE
   }
   match_fields {
-    id: 6
+    id: 7
     name: "meta.fwd_bytes"
     bitwidth: 32
     match_type: RANGE
   }
   match_fields {
-    id: 7
+    id: 8
     name: "meta.bwd_bytes"
     bitwidth: 32
     match_type: RANGE
   }
   match_fields {
-    id: 8
+    id: 9
     name: "meta.max_win_size"
     bitwidth: 16
     match_type: RANGE
@@ -233,48 +251,54 @@ tables {
   }
   match_fields {
     id: 1
+    name: "meta.protocol"
+    bitwidth: 8
+    match_type: RANGE
+  }
+  match_fields {
+    id: 2
     name: "meta.duration"
     bitwidth: 48
     match_type: RANGE
   }
   match_fields {
-    id: 2
+    id: 3
     name: "meta.max_iat"
     bitwidth: 48
     match_type: RANGE
   }
   match_fields {
-    id: 3
+    id: 4
     name: "meta.urg_count"
     bitwidth: 32
     match_type: RANGE
   }
   match_fields {
-    id: 4
+    id: 5
     name: "meta.fwd_pkt_count"
     bitwidth: 32
     match_type: RANGE
   }
   match_fields {
-    id: 5
+    id: 6
     name: "meta.bwd_pkt_count"
     bitwidth: 32
     match_type: RANGE
   }
   match_fields {
-    id: 6
+    id: 7
     name: "meta.fwd_bytes"
     bitwidth: 32
     match_type: RANGE
   }
   match_fields {
-    id: 7
+    id: 8
     name: "meta.bwd_bytes"
     bitwidth: 32
     match_type: RANGE
   }
   match_fields {
-    id: 8
+    id: 9
     name: "meta.max_win_size"
     bitwidth: 16
     match_type: RANGE
@@ -298,54 +322,273 @@ tables {
   }
   match_fields {
     id: 1
+    name: "meta.protocol"
+    bitwidth: 8
+    match_type: RANGE
+  }
+  match_fields {
+    id: 2
     name: "meta.duration"
     bitwidth: 48
     match_type: RANGE
   }
   match_fields {
-    id: 2
+    id: 3
     name: "meta.max_iat"
     bitwidth: 48
     match_type: RANGE
   }
   match_fields {
-    id: 3
+    id: 4
     name: "meta.urg_count"
     bitwidth: 32
     match_type: RANGE
   }
   match_fields {
-    id: 4
+    id: 5
     name: "meta.fwd_pkt_count"
     bitwidth: 32
     match_type: RANGE
   }
   match_fields {
-    id: 5
+    id: 6
     name: "meta.bwd_pkt_count"
     bitwidth: 32
     match_type: RANGE
   }
   match_fields {
-    id: 6
+    id: 7
     name: "meta.fwd_bytes"
     bitwidth: 32
     match_type: RANGE
   }
   match_fields {
-    id: 7
+    id: 8
     name: "meta.bwd_bytes"
     bitwidth: 32
     match_type: RANGE
   }
   match_fields {
-    id: 8
+    id: 9
     name: "meta.max_win_size"
     bitwidth: 16
     match_type: RANGE
   }
   action_refs {
     id: 31539946
+  }
+  action_refs {
+    id: 21257015
+  }
+  initial_default_action {
+    action_id: 21257015
+  }
+  size: 8192
+}
+tables {
+  preamble {
+    id: 36742150
+    name: "MyIngress.pca_component6"
+    alias: "pca_component6"
+  }
+  match_fields {
+    id: 1
+    name: "meta.protocol"
+    bitwidth: 8
+    match_type: RANGE
+  }
+  match_fields {
+    id: 2
+    name: "meta.duration"
+    bitwidth: 48
+    match_type: RANGE
+  }
+  match_fields {
+    id: 3
+    name: "meta.max_iat"
+    bitwidth: 48
+    match_type: RANGE
+  }
+  match_fields {
+    id: 4
+    name: "meta.urg_count"
+    bitwidth: 32
+    match_type: RANGE
+  }
+  match_fields {
+    id: 5
+    name: "meta.fwd_pkt_count"
+    bitwidth: 32
+    match_type: RANGE
+  }
+  match_fields {
+    id: 6
+    name: "meta.bwd_pkt_count"
+    bitwidth: 32
+    match_type: RANGE
+  }
+  match_fields {
+    id: 7
+    name: "meta.fwd_bytes"
+    bitwidth: 32
+    match_type: RANGE
+  }
+  match_fields {
+    id: 8
+    name: "meta.bwd_bytes"
+    bitwidth: 32
+    match_type: RANGE
+  }
+  match_fields {
+    id: 9
+    name: "meta.max_win_size"
+    bitwidth: 16
+    match_type: RANGE
+  }
+  action_refs {
+    id: 32644180
+  }
+  action_refs {
+    id: 21257015
+  }
+  initial_default_action {
+    action_id: 21257015
+  }
+  size: 8192
+}
+tables {
+  preamble {
+    id: 41336979
+    name: "MyIngress.pca_component7"
+    alias: "pca_component7"
+  }
+  match_fields {
+    id: 1
+    name: "meta.protocol"
+    bitwidth: 8
+    match_type: RANGE
+  }
+  match_fields {
+    id: 2
+    name: "meta.duration"
+    bitwidth: 48
+    match_type: RANGE
+  }
+  match_fields {
+    id: 3
+    name: "meta.max_iat"
+    bitwidth: 48
+    match_type: RANGE
+  }
+  match_fields {
+    id: 4
+    name: "meta.urg_count"
+    bitwidth: 32
+    match_type: RANGE
+  }
+  match_fields {
+    id: 5
+    name: "meta.fwd_pkt_count"
+    bitwidth: 32
+    match_type: RANGE
+  }
+  match_fields {
+    id: 6
+    name: "meta.bwd_pkt_count"
+    bitwidth: 32
+    match_type: RANGE
+  }
+  match_fields {
+    id: 7
+    name: "meta.fwd_bytes"
+    bitwidth: 32
+    match_type: RANGE
+  }
+  match_fields {
+    id: 8
+    name: "meta.bwd_bytes"
+    bitwidth: 32
+    match_type: RANGE
+  }
+  match_fields {
+    id: 9
+    name: "meta.max_win_size"
+    bitwidth: 16
+    match_type: RANGE
+  }
+  action_refs {
+    id: 23321713
+  }
+  action_refs {
+    id: 21257015
+  }
+  initial_default_action {
+    action_id: 21257015
+  }
+  size: 8192
+}
+tables {
+  preamble {
+    id: 48360809
+    name: "MyIngress.pca_component8"
+    alias: "pca_component8"
+  }
+  match_fields {
+    id: 1
+    name: "meta.protocol"
+    bitwidth: 8
+    match_type: RANGE
+  }
+  match_fields {
+    id: 2
+    name: "meta.duration"
+    bitwidth: 48
+    match_type: RANGE
+  }
+  match_fields {
+    id: 3
+    name: "meta.max_iat"
+    bitwidth: 48
+    match_type: RANGE
+  }
+  match_fields {
+    id: 4
+    name: "meta.urg_count"
+    bitwidth: 32
+    match_type: RANGE
+  }
+  match_fields {
+    id: 5
+    name: "meta.fwd_pkt_count"
+    bitwidth: 32
+    match_type: RANGE
+  }
+  match_fields {
+    id: 6
+    name: "meta.bwd_pkt_count"
+    bitwidth: 32
+    match_type: RANGE
+  }
+  match_fields {
+    id: 7
+    name: "meta.fwd_bytes"
+    bitwidth: 32
+    match_type: RANGE
+  }
+  match_fields {
+    id: 8
+    name: "meta.bwd_bytes"
+    bitwidth: 32
+    match_type: RANGE
+  }
+  match_fields {
+    id: 9
+    name: "meta.max_win_size"
+    bitwidth: 16
+    match_type: RANGE
+  }
+  action_refs {
+    id: 24687896
   }
   action_refs {
     id: 21257015
@@ -388,6 +631,24 @@ tables {
   match_fields {
     id: 5
     name: "meta.pc5_code"
+    bitwidth: 16
+    match_type: RANGE
+  }
+  match_fields {
+    id: 6
+    name: "meta.pc6_code"
+    bitwidth: 16
+    match_type: RANGE
+  }
+  match_fields {
+    id: 7
+    name: "meta.pc7_code"
+    bitwidth: 16
+    match_type: RANGE
+  }
+  match_fields {
+    id: 8
+    name: "meta.pc8_code"
     bitwidth: 16
     match_type: RANGE
   }
@@ -438,6 +699,24 @@ tables {
     bitwidth: 16
     match_type: RANGE
   }
+  match_fields {
+    id: 6
+    name: "meta.pc6_code"
+    bitwidth: 16
+    match_type: RANGE
+  }
+  match_fields {
+    id: 7
+    name: "meta.pc7_code"
+    bitwidth: 16
+    match_type: RANGE
+  }
+  match_fields {
+    id: 8
+    name: "meta.pc8_code"
+    bitwidth: 16
+    match_type: RANGE
+  }
   action_refs {
     id: 31843804
   }
@@ -482,6 +761,24 @@ tables {
   match_fields {
     id: 5
     name: "meta.pc5_code"
+    bitwidth: 16
+    match_type: RANGE
+  }
+  match_fields {
+    id: 6
+    name: "meta.pc6_code"
+    bitwidth: 16
+    match_type: RANGE
+  }
+  match_fields {
+    id: 7
+    name: "meta.pc7_code"
+    bitwidth: 16
+    match_type: RANGE
+  }
+  match_fields {
+    id: 8
+    name: "meta.pc8_code"
     bitwidth: 16
     match_type: RANGE
   }
@@ -532,6 +829,24 @@ tables {
     bitwidth: 16
     match_type: RANGE
   }
+  match_fields {
+    id: 6
+    name: "meta.pc6_code"
+    bitwidth: 16
+    match_type: RANGE
+  }
+  match_fields {
+    id: 7
+    name: "meta.pc7_code"
+    bitwidth: 16
+    match_type: RANGE
+  }
+  match_fields {
+    id: 8
+    name: "meta.pc8_code"
+    bitwidth: 16
+    match_type: RANGE
+  }
   action_refs {
     id: 16866517
   }
@@ -576,6 +891,24 @@ tables {
   match_fields {
     id: 5
     name: "meta.pc5_code"
+    bitwidth: 16
+    match_type: RANGE
+  }
+  match_fields {
+    id: 6
+    name: "meta.pc6_code"
+    bitwidth: 16
+    match_type: RANGE
+  }
+  match_fields {
+    id: 7
+    name: "meta.pc7_code"
+    bitwidth: 16
+    match_type: RANGE
+  }
+  match_fields {
+    id: 8
+    name: "meta.pc8_code"
     bitwidth: 16
     match_type: RANGE
   }
@@ -626,6 +959,24 @@ tables {
     bitwidth: 16
     match_type: RANGE
   }
+  match_fields {
+    id: 6
+    name: "meta.pc6_code"
+    bitwidth: 16
+    match_type: RANGE
+  }
+  match_fields {
+    id: 7
+    name: "meta.pc7_code"
+    bitwidth: 16
+    match_type: RANGE
+  }
+  match_fields {
+    id: 8
+    name: "meta.pc8_code"
+    bitwidth: 16
+    match_type: RANGE
+  }
   action_refs {
     id: 23303926
   }
@@ -673,6 +1024,24 @@ tables {
     bitwidth: 16
     match_type: RANGE
   }
+  match_fields {
+    id: 6
+    name: "meta.pc6_code"
+    bitwidth: 16
+    match_type: RANGE
+  }
+  match_fields {
+    id: 7
+    name: "meta.pc7_code"
+    bitwidth: 16
+    match_type: RANGE
+  }
+  match_fields {
+    id: 8
+    name: "meta.pc8_code"
+    bitwidth: 16
+    match_type: RANGE
+  }
   action_refs {
     id: 24381519
   }
@@ -717,6 +1086,24 @@ tables {
   match_fields {
     id: 5
     name: "meta.pc5_code"
+    bitwidth: 16
+    match_type: RANGE
+  }
+  match_fields {
+    id: 6
+    name: "meta.pc6_code"
+    bitwidth: 16
+    match_type: RANGE
+  }
+  match_fields {
+    id: 7
+    name: "meta.pc7_code"
+    bitwidth: 16
+    match_type: RANGE
+  }
+  match_fields {
+    id: 8
+    name: "meta.pc8_code"
     bitwidth: 16
     match_type: RANGE
   }
@@ -860,6 +1247,42 @@ actions {
     id: 31539946
     name: "MyIngress.set_pc5_code"
     alias: "set_pc5_code"
+  }
+  params {
+    id: 1
+    name: "code"
+    bitwidth: 16
+  }
+}
+actions {
+  preamble {
+    id: 32644180
+    name: "MyIngress.set_pc6_code"
+    alias: "set_pc6_code"
+  }
+  params {
+    id: 1
+    name: "code"
+    bitwidth: 16
+  }
+}
+actions {
+  preamble {
+    id: 23321713
+    name: "MyIngress.set_pc7_code"
+    alias: "set_pc7_code"
+  }
+  params {
+    id: 1
+    name: "code"
+    bitwidth: 16
+  }
+}
+actions {
+  preamble {
+    id: 24687896
+    name: "MyIngress.set_pc8_code"
+    alias: "set_pc8_code"
   }
   params {
     id: 1
@@ -1413,6 +1836,36 @@ type_info {
       }
       members {
         name: "pc5_code"
+        type_spec {
+          bitstring {
+            bit {
+              bitwidth: 16
+            }
+          }
+        }
+      }
+      members {
+        name: "pc6_code"
+        type_spec {
+          bitstring {
+            bit {
+              bitwidth: 16
+            }
+          }
+        }
+      }
+      members {
+        name: "pc7_code"
+        type_spec {
+          bitstring {
+            bit {
+              bitwidth: 16
+            }
+          }
+        }
+      }
+      members {
+        name: "pc8_code"
         type_spec {
           bitstring {
             bit {

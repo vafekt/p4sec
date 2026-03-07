@@ -93,7 +93,7 @@ class FlowAggregator:
             entry["rf_votes"] = rf_votes or []
 
         # If FIN/RST seen, flush immediately
-        if flags.get("fin") == 1 or flags.get("rst") == 1:
+        if flags.get("fin", 0) > 0 or flags.get("rst", 0) > 0:
             self.flows.pop(key, None)
             return [entry]
 
@@ -115,18 +115,44 @@ class FlowAggregator:
         return remaining
 
 def load_switch_cli(sw, runtime_cli, thrift_port=9090):
-    """Load P4 table rules via simple_switch_CLI."""
+    """Load P4 table rules via simple_switch_CLI.
+
+    Waits for the CLI process to finish so all table entries are fully
+    installed before the controller starts listening for digests.
+    With ~73 k entries this can take 60–90 seconds.
+    """
     print(f"Loading P4 rules from {runtime_cli}...")
+    n_entries = 0
+    try:
+        with open(runtime_cli, 'r') as f:
+            for line in f:
+                if line.lstrip().startswith('table_'):
+                    n_entries += 1
+    except Exception:
+        pass
+    if n_entries:
+        print(f"  ({n_entries:,} table entries to install — please wait, this may take ~{max(10, n_entries // 800)} seconds)")
+
     os.makedirs('logs', exist_ok=True)
     try:
         with open(runtime_cli, 'r') as fin, open('logs/cli_output.log', 'w') as fout:
-            subprocess.Popen(
+            proc = subprocess.Popen(
                 ['simple_switch_CLI', '--thrift-port', str(thrift_port)],
                 stdin=fin,
                 stdout=fout,
                 stderr=subprocess.STDOUT
             )
-        print(f"Rules loaded. CLI output logged to logs/cli_output.log")
+            proc.wait()   # <-- BLOCK until all entries are installed
+        # Quick sanity check
+        errors = 0
+        with open('logs/cli_output.log', 'r') as log:
+            for line in log:
+                if line.startswith('RuntimeCmd: Error'):
+                    errors += 1
+        if errors:
+            print(f"WARNING: {errors} CLI errors during rule loading (check logs/cli_output.log)")
+        else:
+            print(f"Rules loaded successfully. CLI output logged to logs/cli_output.log")
     except FileNotFoundError as e:
         print(f"ERROR: Runtime CLI file not found: {e}")
         raise
@@ -422,6 +448,155 @@ class DigestClient:
         except Exception:
             pass
 
+def drain_p4_registers(p4info_helper, stub, device_id, pca_config,
+                       model_type, rf_model, xgb_model, xgb_class_mapping,
+                       CLASS_LABELS, n_components, pca_bits, out, pca_field_names):
+    """
+    Read every P4 register slot via P4Runtime and classify flows that are still
+    sitting in registers (no FIN/RST seen, 120-second timeout never fired because
+    no new packets arrived after tcpreplay ended).
+    Appends recovered flows to `out` (already-open CSV file in append mode).
+    Returns the number of flows drained.
+    """
+    # PCA transform parameters saved by 2_pca_generating_entries.py
+    pca_components = pca_config.get('pca_components')  # list[list[float]], shape (k, F)
+    pca_mean       = pca_config.get('pca_mean')        # list[float], shape (F,)
+    pc_min         = pca_config.get('pc_min')          # list[float], shape (k,)
+    pc_range       = pca_config.get('pc_range')        # list[float], shape (k,)
+    max_val        = pca_config.get('max_val', (1 << pca_bits) - 1)
+
+    can_classify = all(x is not None for x in [pca_components, pca_mean, pc_min, pc_range])
+    if not can_classify:
+        print("  NOTE: PCA components missing from pca_encoding_params.json — "
+              "re-run 2_pca_generating_entries.py, then restart the controller "
+              "to enable full drain classification.")
+
+    REGS = {
+        'time_first':    'MyIngress.reg_time_first_pkt',
+        'time_last':     'MyIngress.reg_time_last_pkt',
+        'max_iat':       'MyIngress.reg_max_iat',
+        'urg_count':     'MyIngress.reg_urg_count',
+        'fwd_pkt_count': 'MyIngress.reg_fwd_pkt_count',
+        'bwd_pkt_count': 'MyIngress.reg_bwd_pkt_count',
+        'fwd_bytes':     'MyIngress.reg_fwd_bytes',
+        'bwd_bytes':     'MyIngress.reg_bwd_bytes',
+        'max_win_size':  'MyIngress.reg_max_win_size',
+        'flags_syn':     'MyIngress.reg_flags_syn',
+        'flags_ack':     'MyIngress.reg_flags_ack',
+        'flags_fin':     'MyIngress.reg_flags_fin',
+        'flags_rst':     'MyIngress.reg_flags_rst',
+    }
+
+    # Read all entries of each register (no index set = read all slots)
+    reg_data = {}
+    for key, full_name in REGS.items():
+        try:
+            reg_id = p4info_helper.get_id('registers', full_name)
+            req = p4runtime_pb2.ReadRequest(device_id=device_id)
+            entity = req.entities.add()
+            entity.register_entry.register_id = reg_id
+            values = {}
+            for resp in stub.Read(req):
+                for ent in resp.entities:
+                    if ent.HasField('register_entry'):
+                        re = ent.register_entry
+                        idx = re.index.index
+                        val = bytes_to_int(re.data.bitstring)
+                        if val != 0:
+                            values[idx] = val
+            reg_data[key] = values
+        except Exception as e:
+            print(f"  WARNING: Could not read register {full_name}: {e}")
+            reg_data[key] = {}
+
+    time_first_map = reg_data.get('time_first', {})
+    fwd_count_map  = reg_data.get('fwd_pkt_count', {})
+    bwd_count_map  = reg_data.get('bwd_pkt_count', {})
+
+    active_slots = [
+        slot for slot, tf in time_first_map.items()
+        if tf != 0 and (fwd_count_map.get(slot, 0) + bwd_count_map.get(slot, 0)) >= 2
+    ]
+    if not active_slots:
+        return 0
+
+    print(f"  Found {len(active_slots)} stuck flows in P4 registers.")
+    pca_width = len(str(max_val))
+    drained = 0
+
+    for slot in active_slots:
+        time_first = time_first_map.get(slot, 0)
+        time_last  = reg_data.get('time_last',    {}).get(slot, 0)
+        duration   = time_last - time_first if time_last >= time_first else 0
+        max_iat    = reg_data.get('max_iat',       {}).get(slot, 0)
+        urg_count  = reg_data.get('urg_count',     {}).get(slot, 0)
+        fwd        = fwd_count_map.get(slot, 0)
+        bwd        = bwd_count_map.get(slot, 0)
+        fwd_bytes  = reg_data.get('fwd_bytes',    {}).get(slot, 0)
+        bwd_bytes  = reg_data.get('bwd_bytes',    {}).get(slot, 0)
+        win        = reg_data.get('max_win_size', {}).get(slot, 0)
+        f_syn      = reg_data.get('flags_syn',    {}).get(slot, 0)
+        f_ack      = reg_data.get('flags_ack',    {}).get(slot, 0)
+        f_fin      = reg_data.get('flags_fin',    {}).get(slot, 0)
+        f_rst      = reg_data.get('flags_rst',    {}).get(slot, 0)
+
+        class_id    = -1
+        class_label = 'unclassified'
+        pca_codes   = [0] * n_components
+
+        if can_classify:
+            try:
+                # Guess protocol from TCP flags; fall back to TCP (6) if any flag set
+                proto_guess = 6 if (f_syn or f_ack or f_fin or f_rst) else 17
+                # Feature order MUST match P4_FEATURE_COLS in 2_pca_generating_entries.py:
+                # Protocol, Duration, MaxIAT, UrgCount, FwdPktCount, BwdPktCount,
+                # FwdBytes, BwdBytes, MaxWinSize, FlagsSyn, FlagsAck, FlagsFin, FlagsRst
+                raw = np.array([[proto_guess, duration, max_iat, urg_count,
+                                  fwd, bwd, fwd_bytes, bwd_bytes, win,
+                                  f_syn, f_ack, f_fin, f_rst]], dtype=np.float64)
+                mean_vec      = np.array(pca_mean)
+                comps_mat     = np.array(pca_components)       # (k, n_features)
+                pc_floats     = (raw - mean_vec) @ comps_mat.T  # (1, k)
+                pc_min_arr    = np.array(pc_min)
+                pc_range_arr  = np.array(pc_range)
+                pc_range_safe = np.where(pc_range_arr == 0, 1, pc_range_arr)
+                pc_norm       = (pc_floats - pc_min_arr) / pc_range_safe
+                pc_int        = np.rint(np.clip(pc_norm * max_val, 0, max_val)).astype(int)[0]
+                pca_codes     = pc_int.tolist()[:n_components]
+                if len(pca_codes) < n_components:
+                    pca_codes += [0] * (n_components - len(pca_codes))
+
+                if model_type == 'rf' and rf_model is not None:
+                    x_np        = np.array([pca_codes[:rf_model.n_features_in_]], dtype=np.float64)
+                    pred_label  = rf_model.predict(x_np)[0]
+                    class_id    = list(rf_model.classes_).index(pred_label)
+                    class_label = pred_label
+                elif model_type == 'xgb' and xgb_model is not None:
+                    x_np        = np.array([pca_codes[:xgb_model.n_features_in_]], dtype=np.float64)
+                    class_id    = int(xgb_model.predict(x_np)[0])
+                    class_label = (xgb_class_mapping or {}).get(class_id, f'unknown({class_id})')
+            except Exception as _e:
+                class_label = 'drain-err'
+
+        pca_display = ' '.join([f'PCA{i+1}={pca_codes[i]:<{pca_width}}' for i in range(n_components)])
+        print(f"  [REG-SLOT {slot:<6}] "
+              f"Dur={duration:<12} MaxIAT={max_iat:<12} Urg={urg_count:<3} "
+              f"Fwd={fwd:<4} Bwd={bwd:<4} FwdB={fwd_bytes:<8} BwdB={bwd_bytes:<8} Win={win:<6} | "
+              f"Flags(S/A/F/R)={f_syn}/{f_ack}/{f_fin}/{f_rst} | "
+              f"{pca_display} | Class={class_label}({class_id}) [REG-DRAIN]", flush=True)
+        out.write(
+            f"reg-slot-{slot},0,reg-drain,0,unknown,"
+            f"{duration},{max_iat},{urg_count},{fwd},{bwd},"
+            f"{fwd_bytes},{bwd_bytes},{win},"
+            f"{f_syn},{f_ack},{f_fin},{f_rst},"
+            f"{','.join(str(c) for c in pca_codes)},"
+            f"{class_id},{class_label}\n"
+        )
+        drained += 1
+
+    return drained
+
+
 def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
     """Main controller logic: load rules, listen for digests, record predictions."""
     p4info_helper = p4runtime_lib.helper.P4InfoHelper(p4info_file_path)
@@ -547,6 +722,32 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
     else:
         CLASS_LABELS = load_class_labels(dt_model_path)
 
+    # -----------------------------------------------------------------------
+    # Stale-model check: verify that the loaded model's feature count matches
+    # the number of PCA components the current digest/P4 program produces.
+    # A mismatch means the pipeline (2_ → 3_ → 4_ → 5_ → make) was not fully
+    # rerun after adding/removing features.  Warn once here instead of crashing
+    # on every single flow during runtime verification.
+    # -----------------------------------------------------------------------
+    _verify_model = rf_model if model_type == 'rf' else (xgb_model if model_type == 'xgb' else None)
+    model_pca_mismatch = False
+    if _verify_model is not None and hasattr(_verify_model, 'n_features_in_'):
+        model_n_feat = _verify_model.n_features_in_
+        if model_n_feat != n_components:
+            model_pca_mismatch = True
+            print(f"\n{'='*65}")
+            print(f"WARNING: Model feature mismatch detected!")
+            print(f"  Digest/P4 produces {n_components} PCA component(s).")
+            print(f"  Loaded {model_type.upper()} model expects {model_n_feat} feature(s).")
+            print(f"  Runtime verification will be DISABLED until the pipeline")
+            print(f"  is rerun in order:")
+            print(f"    1. python3 2_pca_generating_entries.py")
+            print(f"    2. python3 3_{model_type}_training_model.py")
+            print(f"    3. python3 4_{model_type}_generating_entries.py")
+            print(f"    4. python3 5_generating_p4_code.py --model-type {model_type}")
+            print(f"    5. make")
+            print(f"{'='*65}\n")
+
     # Create logs directory
     os.makedirs('logs', exist_ok=True)
 
@@ -561,10 +762,34 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
     print("Connecting to P4 switch...")
     s1.MasterArbitrationUpdate()
 
+    # Reset all flow-state registers so stale state from any previous run
+    # (e.g. tcpreplay before the controller started) doesn't produce ghost flows.
+    print("Resetting switch flow-state registers...")
+    reset_registers = [
+        "reg_time_first_pkt", "reg_time_last_pkt", "reg_max_iat",
+        "reg_urg_count", "reg_fwd_pkt_count", "reg_bwd_pkt_count",
+        "reg_fwd_bytes", "reg_bwd_bytes", "reg_max_win_size",
+        "reg_flags_syn", "reg_flags_ack", "reg_flags_fin", "reg_flags_rst",
+        "bloom_filter",
+    ]
+    reset_cmds = "\n".join(f"register_reset MyIngress.{r}" for r in reset_registers) + "\n"
+    try:
+        import subprocess as _sp, tempfile as _tf
+        with _tf.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as _f:
+            _f.write(reset_cmds)
+            _reset_path = _f.name
+        with open(_reset_path, 'r') as _fin, open(os.devnull, 'w') as _devnull:
+            _p = _sp.Popen(['simple_switch_CLI', '--thrift-port', '9090'],
+                           stdin=_fin, stdout=_devnull, stderr=_devnull)
+            _p.wait()
+        os.unlink(_reset_path)
+        print("Registers reset.\n")
+    except Exception as _e:
+        print(f"WARNING: Could not reset registers: {_e}\n")
+
     # Load rules via CLI
     load_switch_cli(s1, runtime_cli_path)
-    sleep(2)
-    print("Waiting for rules to be installed...\n")
+    print("Rules installed. Installing digest listener...\n")
 
     # Install digest configuration
     install_digest(p4info_helper, s1, digest_name)
@@ -575,6 +800,10 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
     # Dedicated digest client
     dclient = DigestClient(address='127.0.0.1:50051', device_id=0, election_id=2)
     dclient.start()
+
+    _digest_count_raw  = 0   # total DigestList messages received
+    _digest_count_flow = 0   # flows actually printed
+    _filtered_count    = 0   # flows received but filtered (< 1 packets)
 
     os.makedirs('logs', exist_ok=True)
     try:
@@ -593,11 +822,13 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
             
             while True:
                 msg = dclient.get_digest(timeout=0.5)
+
                 if msg is None:
                     # Periodically flush expired flows
                     for entry in flow_aggregator.flush_expired():
-                        # Only output flows with 2+ packets (match offline extraction)
+                        # Skip flows with < 2 packets (matches training data filter)
                         if (entry["features"]["fwd_pkt_count"] + entry["features"]["bwd_pkt_count"]) < 2:
+                            _filtered_count += 1
                             continue
                         
                         packet_id += 1
@@ -610,9 +841,11 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
 
                         verify_note = ""
                         votes_or_scores_debug = ""
-                        if model_type == "rf" and rf_model is not None:
+                        if model_type == "rf" and rf_model is not None and not model_pca_mismatch:
                             try:
-                                x_np = np.array([entry["pca_codes"]], dtype=np.float64)
+                                x_np = np.array([entry["pca_codes"][:rf_model.n_features_in_]], dtype=np.float64)
+                                if x_np.shape[1] != rf_model.n_features_in_:
+                                    raise ValueError(f"X has {x_np.shape[1]} features, model expects {rf_model.n_features_in_}")
                                 pred_label = rf_model.predict(x_np)[0]
                                 pred_id = list(rf_model.classes_).index(pred_label)
 
@@ -643,19 +876,19 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
                                         f" | RF-VERIFY={pred_label}({pred_id})"
                                         f" PACK={packed} VOTES={votes}"
                                     )
-                            except Exception:
-                                verify_note = f" | RF-VERIFY=error"
-                        elif model_type == "xgb" and xgb_model is not None:
+                            except Exception as _ve:
+                                verify_note = f" | RF-VERIFY=error({type(_ve).__name__}: {_ve})"
+                        elif model_type == "xgb" and xgb_model is not None and not model_pca_mismatch:
                             try:
-                                x_np = np.array([entry["pca_codes"]], dtype=np.float64)
+                                x_np = np.array([entry["pca_codes"][:xgb_model.n_features_in_]], dtype=np.float64)
                                 pred_id = int(xgb_model.predict(x_np)[0])
                                 # XGBoost returns encoded int; decode to class name using mapping
                                 pred_label = xgb_class_mapping.get(pred_id, f"unknown({pred_id})")
 
                                 if pred_id != class_id:
                                     verify_note = f" | XGB-VERIFY={pred_label}({pred_id})"
-                            except Exception:
-                                verify_note = f" | XGB-VERIFY=error"
+                            except Exception as _ve:
+                                verify_note = f" | XGB-VERIFY=error({type(_ve).__name__}: {_ve})"
 
                             # Debug: show accumulated scores from dataplane (any class count)
                             votes_or_scores_debug = format_score_debug(entry.get("xgb_scores", {}))
@@ -677,10 +910,16 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
                         out.flush()
                     continue
 
+                _digest_count_raw += 1
+
                 digest = msg.digest
                 # Validate digest name
-                name = p4info_helper.get_digests_name(digest.digest_id)
+                try:
+                    name = p4info_helper.get_digests_name(digest.digest_id)
+                except Exception:
+                    name = f"id={digest.digest_id}"
                 if name != digest_name:
+                    print(f"[debug] Unexpected digest name '{name}' (expected '{digest_name}'), skipping")
                     continue
 
                 for el in digest.data:
@@ -858,10 +1097,12 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
                         flags,
                         xgb_scores,
                     ):
-                        # Only output flows with 2+ packets (match offline extraction)
+                        # Skip flows with < 2 packets (matches training data filter)
                         if (entry["features"]["fwd_pkt_count"] + entry["features"]["bwd_pkt_count"]) < 2:
+                            _filtered_count += 1
                             continue
                         packet_id += 1
+                        _digest_count_flow += 1
                         pca_width = len(str((1 << pca_bits) - 1))
                         pca_display = ' '.join([f'PCA{i+1}={entry["pca_codes"][i]:<{pca_width}}' for i in range(n_components)])
                         f = entry["features"]
@@ -871,9 +1112,11 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
 
                         verify_note = ""
                         votes_or_scores_debug = ""
-                        if model_type == "rf" and rf_model is not None:
+                        if model_type == "rf" and rf_model is not None and not model_pca_mismatch:
                             try:
-                                x_np = np.array([entry["pca_codes"]], dtype=np.float64)
+                                x_np = np.array([entry["pca_codes"][:rf_model.n_features_in_]], dtype=np.float64)
+                                if x_np.shape[1] != rf_model.n_features_in_:
+                                    raise ValueError(f"X has {x_np.shape[1]} features, model expects {rf_model.n_features_in_}")
                                 pred_label = rf_model.predict(x_np)[0]
                                 pred_id = list(rf_model.classes_).index(pred_label)
 
@@ -903,19 +1146,19 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
                                         f" | RF-VERIFY={pred_label}({pred_id})"
                                         f" PACK={packed} VOTES={votes}"
                                     )
-                            except Exception:
-                                verify_note = f" | RF-VERIFY=error"
-                        elif model_type == "xgb" and xgb_model is not None:
+                            except Exception as _ve:
+                                verify_note = f" | RF-VERIFY=error({type(_ve).__name__}: {_ve})"
+                        elif model_type == "xgb" and xgb_model is not None and not model_pca_mismatch:
                             try:
-                                x_np = np.array([entry["pca_codes"]], dtype=np.float64)
+                                x_np = np.array([entry["pca_codes"][:xgb_model.n_features_in_]], dtype=np.float64)
                                 pred_id = int(xgb_model.predict(x_np)[0])
                                 # XGBoost returns encoded int; decode to class name using mapping
                                 pred_label = xgb_class_mapping.get(pred_id, f"unknown({pred_id})")
 
                                 if pred_id != class_id:
                                     verify_note = f" | XGB-VERIFY={pred_label}({pred_id})"
-                            except Exception:
-                                verify_note = f" | XGB-VERIFY=error"
+                            except Exception as _ve:
+                                verify_note = f" | XGB-VERIFY=error({type(_ve).__name__}: {_ve})"
 
                             # Debug: show accumulated scores from dataplane (any class count)
                             votes_or_scores_debug = format_score_debug(entry.get("xgb_scores", {}))
@@ -926,16 +1169,16 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
                               f"FwdBytes={f['fwd_bytes']:<8} BwdBytes={f['bwd_bytes']:<8} Win={f['max_win_size']:<6} | "
                               f"Flags(S/A/F/R)={flags['syn']}/{flags['ack']}/{flags['fin']}/{flags['rst']} | "
                               f"{pca_display} | "
-                              f"Class={class_label}({class_id}){verify_note}")
+                              f"Class={class_label}({class_id}){verify_note}", flush=True)
                         if votes_or_scores_debug:
-                            print(votes_or_scores_debug)
+                            print(votes_or_scores_debug, flush=True)
 
                         out.write(f"{f['src_ip']},{f['src_port']},{f['dst_ip']},{f['dst_port']},{f['proto']},"
                                   f"{f['duration']},{f['max_iat']},{f['urg_count']},{f['fwd_pkt_count']},{f['bwd_pkt_count']},"
                                   f"{f['fwd_bytes']},{f['bwd_bytes']},{f['max_win_size']},{flags['syn']},{flags['ack']},{flags['fin']},{flags['rst']},"
                                   f"{','.join([str(code) for code in entry['pca_codes']])},{class_id},{class_label}\n")
                         out.flush()
-    except KeyboardInterrupt:
+
         print("\nShutting down...")
     except Exception as e:
         print(f"ERROR: {e}")
@@ -944,9 +1187,9 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
         # Flush any flows still in memory that never got a FIN/RST or timed out.
         # Reopen in append mode — the `with open()` above has already closed the file.
         remaining = flow_aggregator.flush_all()
-        if remaining:
-            print(f"Flushing {len(remaining)} remaining in-memory flows...")
-            with open("logs/predictions.csv", "a") as final_out:
+        with open("logs/predictions.csv", "a") as final_out:
+            if remaining:
+                print(f"Flushing {len(remaining)} remaining in-memory flows...")
                 for entry in remaining:
                     if (entry["features"]["fwd_pkt_count"] + entry["features"]["bwd_pkt_count"]) < 2:
                         continue
@@ -972,14 +1215,39 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
                         f"{','.join([str(code) for code in entry['pca_codes']])},"
                         f"{class_id},{class_label}\n"
                     )
-            print(f"Final flush complete. Total flows recorded: {packet_id}")
+                print(f"In-memory flush complete. Total flows so far: {packet_id}")
+
+            # Drain any flows still in P4 registers that never got a FIN/RST or
+            # 120-second timeout (the timeout only fires when a new packet arrives
+            # at the same register slot — after tcpreplay ends, nothing does).
+            print("\nDraining stuck flows from P4 registers...")
+            try:
+                _rf_m   = rf_model   if model_type == 'rf'  else None
+                _xgb_m  = xgb_model  if model_type == 'xgb' else None
+                _xgb_cm = xgb_class_mapping if model_type == 'xgb' else None
+                drained = drain_p4_registers(
+                    p4info_helper, s1.client_stub, s1.device_id,
+                    pca_config, model_type, _rf_m, _xgb_m, _xgb_cm,
+                    CLASS_LABELS, n_components, pca_bits, final_out, pca_field_names
+                )
+                if drained:
+                    packet_id += drained
+                    print(f"Register drain complete. Total flows recorded: {packet_id}")
+                else:
+                    print("Register drain: no stuck flows found.")
+            except Exception as _de:
+                print(f"WARNING: Register drain failed: {_de}")
         dclient.stop()
         ShutdownAllSwitchConnections()
 
 if __name__ == '__main__':
     # Default paths relative to script location
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    default_p4info = os.path.join(script_dir, '../basic.p4info')
+    # Prefer build/basic.p4.p4info.txtpb — always freshly written by `make`.
+    # Fall back to basic.p4info (project root) only if the build file is absent.
+    _build_p4info = os.path.join(script_dir, '../build/basic.p4.p4info.txtpb')
+    _root_p4info  = os.path.join(script_dir, '../basic.p4info')
+    default_p4info = _build_p4info if os.path.exists(_build_p4info) else _root_p4info
     default_bmv2_json = os.path.join(script_dir, '../build/basic.json')
     default_runtime_cli = os.path.join(script_dir, 'tables/s1-commands.txt')
     
