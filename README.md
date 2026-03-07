@@ -96,18 +96,22 @@ python3 1_data_extraction.py --mode pcap --pcap-dir pcaps --output dataset/datas
 sudo python3 1_data_extraction.py --mode live --interface eth0 --count 1000 --label skype --output dataset/live.csv
 ```
 
-**Extracts 9 Flow-Based Features:**
-- **IAT**: Sum of Inter-Arrival Times right-shifted by 2 (approximation for average, P4 cannot divide)
-- **Duration**: Flow duration (time from first to last packet in nanoseconds)
-- **SrcPort**: Source port number
-- **DstPort**: Destination port number
-- **TotalBytes**: Total bytes in flow (excluding Ethernet headers)
-- **FlagsSyn**: SYN flag presence (0 or 1)
-- **FlagsAck**: ACK flag presence (0 or 1)
-- **FlagsFin**: FIN flag presence (0 or 1)
-- **FlagsRst**: RST flag presence (0 or 1)
+**Extracts 13 Flow-Based Features:**
+- **Protocol**: IP protocol number (6=TCP, 17=UDP, etc.)
+- **Duration**: Flow duration in nanoseconds (time from first to last packet)
+- **MaxIAT**: Maximum inter-arrival time between consecutive packets in the flow
+- **UrgCount**: Number of packets with the TCP URG flag set
+- **FwdPktCount**: Number of packets in the forward direction
+- **BwdPktCount**: Number of packets in the backward/return direction
+- **FwdBytes**: Total payload bytes in the forward direction
+- **BwdBytes**: Total payload bytes in the backward direction
+- **MaxWinSize**: Maximum TCP window size observed across all packets in the flow
+- **FlagsSyn**: Count of packets with the TCP SYN flag set
+- **FlagsAck**: Count of packets with the TCP ACK flag set
+- **FlagsFin**: Count of packets with the TCP FIN flag set
+- **FlagsRst**: Count of packets with the TCP RST flag set
 
-**Flow Aggregation:** Packets are grouped by 5-tuple (src_ip, dst_ip, src_port, dst_port, protocol) to create per-flow statistics.
+**Flow Aggregation:** Packets are grouped by 5-tuple (src_ip, dst_ip, src_port, dst_port, protocol) to create per-flow statistics. The flow direction is canonicalized so that A→B and B→A map to the same flow entry.
 
 ---
 
@@ -201,10 +205,9 @@ python3 5_generating_p4_code.py --model-type xgb
 **Output:** `../basic.p4` (auto-generated with model-specific logic)
 
 **P4 Architecture:**
-- **Flow Tracking:** P4 registers maintain per-flow state (timestamps, byte counts, flags)
-- **Hash-Based Indexing:** CRC16/CRC32 hash of 5-tuple for flow identification
-- **Feature Extraction:** Calculates IAT, Duration, TotalBytes, Ports, Flags from register state
-- **PCA Tables:** N tables (pca_component1-N) map flow features to quantized PCA codes
+- **Flow Tracking:** P4 registers maintain per-flow state (timestamps, byte/packet counts, flag counts) indexed by CRC16/CRC32 hash of the 5-tuple
+- **13 Features in Hardware:** Protocol, Duration, MaxIAT, UrgCount, FwdPktCount, BwdPktCount, FwdBytes, BwdBytes, MaxWinSize, plus four TCP flag packet-count registers (SYN/ACK/FIN/RST as `bit<32>`)
+- **PCA Tables:** N tables (pca_component1-N) map the 13 raw features to quantized PCA codes via range-match rules
 - **Model-Specific Classification:**
   - **DT:** Single `ml_code` table lookup
   - **RF:** Multiple `rf_tree_i` tables + `rf_vote_classify` for majority voting
@@ -231,9 +234,10 @@ cd /tutorials/exercises/p4-pca-dt/control_plane
 ```
 
 **Controller Features:**
-- Automatically detects model type from P4Info digest structure
+- Automatically detects model type from P4Info digest structure (reads `build/basic.p4.p4info.txtpb` — always fresh after `make`)
 - Dynamically loads class labels from model parameters
-- For **RF**: Shows per-tree vote labels (e.g., `[Tree Votes: T0=Access T1=CC T2=Access...]`)
+- **Startup mismatch detection:** compares `model.n_features_in_` against the digest's PCA component count; prints a clear one-time warning with remediation steps if they differ and suppresses per-flow error spam
+- For **RF**: Shows per-tree vote labels (e.g., `[Tree Votes: T0=Benign T1=DDoS T2=Benign...]`)
 - For **XGB**: Shows per-class score accumulation (e.g., `[Scores: c0=150 c1=200 c2=100 c3=80]`)
 - Records all predictions to `logs/predictions.csv`
 - Universal digest parsing adapts to any number of PCA components and features
@@ -308,19 +312,19 @@ cd .. && make clean && make
 
 **Expected Output (Controller with DT):**
 ```
-[1   ]     172.16.66.1:51954 ->    172.16.66.36:445   | IAT=58    Dur=232   Bytes=374  Pkts=2 | Flags(S/A/F/R)=0/1/0/0 | PCA1=9678  PCA2=37800 ... | Class=CC(1)
+[1   ] 192.168.1.3:50102 -> 192.168.1.205:21 | Dur=100761000 MaxIAT=100699000 Urg=0 FwdPkts=4 BwdPkts=0 FwdBytes=291 BwdBytes=0 Win=251 | Flags(S/A/F/R)=0/4/1/0 | PCA1=99 PCA2=26638 ... | Class=Benign(0)
 ```
 
 **Expected Output (Controller with RF):**
 ```
-[1   ]     172.16.66.1:51954 ->    172.16.66.36:445   | IAT=58    Dur=232   Bytes=374  Pkts=2 | Flags(S/A/F/R)=0/1/0/0 | PCA1=9678  PCA2=37800 ... | Class=CC(1)
-  [Tree Votes: T0=CC T1=CC T2=Access T3=CC T4=CC T5=CC T6=CC T7=CC]
+[1   ] 192.168.1.3:50102 -> 192.168.1.205:21 | Dur=100761000 MaxIAT=100699000 Urg=0 FwdPkts=4 BwdPkts=0 FwdBytes=291 BwdBytes=0 Win=251 | Flags(S/A/F/R)=0/4/1/0 | PCA1=99 PCA2=26638 ... | Class=Benign(0)
+  [Tree Votes: T0=Benign T1=Benign T2=DDoS T3=Benign T4=Benign ...]
 ```
 
 **Expected Output (Controller with XGB):**
 ```
-[1   ]     172.16.66.1:51954 ->    172.16.66.36:445   | IAT=58    Dur=232   Bytes=374  Pkts=2 | Flags(S/A/F/R)=0/1/0/0 | PCA1=9678  PCA2=37800 ... | Class=CC(1)
-  [Scores: c0=120 c1=185 c2=95 c3=80]
+[1   ] 192.168.1.3:50102 -> 192.168.1.205:21 | Dur=100761000 MaxIAT=100699000 Urg=0 FwdPkts=4 BwdPkts=0 FwdBytes=291 BwdBytes=0 Win=251 | Flags(S/A/F/R)=0/4/1/0 | PCA1=99 PCA2=26638 ... | Class=Benign(0)
+  [Scores: c0=185 c1=120 c2=95 c3=80]
 ```
 
 ### Custom PCA Components
@@ -345,6 +349,22 @@ cd .. && make clean && make
 
 ## Recent Improvements
 
+### TCP Flag Packet Counts as PCA Features
+- **Expanded feature set from 9 to 13** by adding SYN/ACK/FIN/RST as per-packet **counts** (not booleans)
+- `FlagsSyn/Ack/Fin/Rst` represent the number of packets in a flow that had each flag set
+- **Universal formula:** both Python extraction (`state[...] += 1`) and P4 register accumulation (`flags_syn + (bit<32>)hdr.tcp.ctrl[1:1]`) use identical `+= 1` logic
+- P4 registers upgraded from `register<bit<1>>` to `register<bit<32>>` for all four flag counters
+- FIN/RST flow-termination detection uses `> 0` (count) instead of `== 1` (boolean)
+
+### Robust Controller Startup
+- **Model/digest mismatch detection:** at startup, `model.n_features_in_` is compared against the P4 digest's PCA component count; a clear one-time warning with remediation steps is printed if they differ
+- Per-flow `RF/XGB-VERIFY=error(...)` spam is suppressed when a mismatch is already known at startup
+- Controller now reads `build/basic.p4.p4info.txtpb` (always regenerated by `make`) instead of the potentially stale project-root `basic.p4info`
+
+### MTU Handling for Large PCAPs
+- `send_pcap.sh` and `test_with_pcap.sh` automatically raise the replay interface MTU to 9000 before replaying and restore it afterwards
+- Fixes `errno=90 Message too long` errors with DDoS amplification PCAPs containing packets larger than 1500 bytes (tcpreplay 4.3.x does not support `--mtu-trunc`)
+
 ### Multi-Model Architecture
 - **Three Classification Backends:** Decision Tree, Random Forest, XGBoost
 - **Unified Pipeline:** Same feature extraction and PCA training for all models
@@ -354,45 +374,17 @@ cd .. && make clean && make
 ### Universal and Scalable Design
 - **Dynamic Feature Count:** Digest parsing adapts to any number of PCA components
 - **Schema-Driven:** Reads field layout from P4Info instead of hardcoded offsets
-- **Extensible:** Add new features by updating P4 code and field parsers adapt automatically
-- **No Feature Name Warnings:** Uses numpy arrays for predictions to avoid sklearn warnings
-
-### Multi-Model Architecture
-- **Three Classification Backends:** Decision Tree, Random Forest, XGBoost
-- **Unified Pipeline:** Same feature extraction and PCA training for all models
-- **Auto-Detection:** Controller automatically detects model type from P4Info digest schema
-- **Model-Specific Outputs:** RF shows per-tree votes, XGB shows per-class scores
-
-### Universal and Scalable Design
-- **Dynamic Feature Count:** Digest parsing adapts to any number of PCA components
-- **Schema-Driven:** Reads field layout from P4Info instead of hardcoded offsets
-- **Extensible:** Add new features by updating P4 code and field parsers adapt automatically
+- **Extensible:** Add new features by updating extraction, PCA, and P4 generator — controller adapts automatically
 - **No Feature Name Warnings:** Uses numpy arrays for predictions to avoid sklearn warnings
 
 ### Flow-Based Feature Extraction
-- **Converted from packet-level to flow-level features** for better traffic characterization
-- Tracks 9 flow-based features: IAT, Duration, SrcPort, DstPort, TotalBytes, TCP Flags (Syn/Ack/Fin/Rst)
-- **P4 Flow State Management:** Uses registers to maintain per-flow statistics indexed by flow hash
-- **IAT Approximation:** Uses `sum_iat >> 2` instead of division (P4 limitation) - training data matches this calculation
+- Bidirectional flow tracking with canonical 5-tuple (smaller endpoint always first)
+- P4 registers maintain per-flow state (timestamps, byte/packet counts, flag counts) indexed by CRC hash
 - **Benefit:** More accurate traffic classification using flow context rather than individual packets
 
-### Range Matching for All Features
-- **Flag Fields:** Use range matching (0->0, 1->1, 0->1 for wildcards) instead of exact matching
-- **Benefit:** Decision tree can use wildcards in rules, improving coverage and reducing table entries
-
-### Flexible Label Support
-- **Controller (6_controller.py)** dynamically loads class labels from trained model parameters
-- Works with any classification labels automatically
-- **Benefit:** No code modifications needed when changing dataset labels
-
 ### Multi-Format Capture Support
-- **Feature Extractor (1_data_extraction.py)** supports both `.pcap` and `.pcapng` file formats
-- Automatically globs for both formats when processing directories
+- Supports both `.pcap` and `.pcapng` file formats in both extraction and tcpreplay scripts
 - **Benefit:** Works with any modern packet capture format without reconfiguration
-
-### Improved PCA Tree Resolution
-- DecisionTreeRegressor now uses max_depth=12, min_samples_split=2, min_samples_leaf=1
-- **Benefit:** Better PCA code approximation with more granular feature space partitioning
 
 ---
 
@@ -418,6 +410,8 @@ p4-pca-dt/
 │   ├── 5_generating_p4_code.py         # P4 code generation (model-specific)
 │   ├── 6_controller.py                 # Runtime controller (auto-detects model)
 │   ├── pcaps/                          # PCAP/PCAPNG files
+│   │   ├── AttackIDS/                 # AttackIDS dataset (Access, CC, Discovery, Evasion)
+│   │   └── Mu-IoT/                    # Mu-IoT dataset (Benign, DDoS, PasswordHacking, Reconnaissance)
 │   ├── dataset/                        # Extracted features
 │   ├── model/                          # Trained models (dt.model, rf.model, xgb.model)
 │   ├── tables/                         # Generated rules & configs
