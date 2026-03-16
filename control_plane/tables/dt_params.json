@@ -1,21 +1,11 @@
 {
-  "model_type": "dt",
-  "n_classes": 4,
+  "model_type": "svm",
   "classes": [
-    "ARP-Spoofing",
     "Benign",
-    "MQTT",
-    "Recon"
+    "DDoS",
+    "PasswordHacking",
+    "Reconnaissance"
   ],
-  "feature_names": [
-    "PC1_code",
-    "PC2_code",
-    "PC3_code",
-    "PC4_code",
-    "PC5_code",
-    "PC6_code",
-    "PC7_code",
-    "PC8_code",
-    "PC9_code"
-  ]
+  "proxy_accuracy": 1.0,
+  "proxy_max_depth": null
 }

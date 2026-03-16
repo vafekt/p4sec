@@ -142,12 +142,12 @@
     ]
   },
   "quantized_codes": {
-    "accuracy": 1.0,
+    "accuracy": 0.9949645227740902,
     "classification_report": {
       "Benign": {
-        "precision": 1.0,
-        "recall": 1.0,
-        "f1-score": 1.0,
+        "precision": 0.9848101265822785,
+        "recall": 0.9873096446700508,
+        "f1-score": 0.9860583016476553,
         "support": 788.0
       },
       "DDoS": {
@@ -157,36 +157,36 @@
         "support": 2360.0
       },
       "PasswordHacking": {
-        "precision": 1.0,
-        "recall": 1.0,
-        "f1-score": 1.0,
+        "precision": 0.9833887043189369,
+        "recall": 0.9817578772802653,
+        "f1-score": 0.9825726141078838,
         "support": 603.0
       },
       "Reconnaissance": {
         "precision": 1.0,
-        "recall": 1.0,
-        "f1-score": 1.0,
+        "recall": 0.9983818770226537,
+        "f1-score": 0.9991902834008097,
         "support": 618.0
       },
-      "accuracy": 1.0,
+      "accuracy": 0.9949645227740902,
       "macro avg": {
-        "precision": 1.0,
-        "recall": 1.0,
-        "f1-score": 1.0,
+        "precision": 0.9920497077253039,
+        "recall": 0.9918623497432425,
+        "f1-score": 0.9919552997890873,
         "support": 4369.0
       },
       "weighted avg": {
-        "precision": 1.0,
-        "recall": 1.0,
-        "f1-score": 1.0,
+        "precision": 0.994967674170555,
+        "recall": 0.9949645227740902,
+        "f1-score": 0.9949656267216997,
         "support": 4369.0
       }
     },
     "confusion_matrix": [
       [
-        788,
+        778,
         0,
-        0,
+        10,
         0
       ],
       [
@@ -196,84 +196,84 @@
         0
       ],
       [
+        11,
         0,
-        0,
-        603,
+        592,
         0
       ],
       [
+        1,
         0,
         0,
-        0,
-        618
+        617
       ]
     ]
   },
   "tree_approx_codes": {
-    "accuracy": 0.9679560540169375,
+    "accuracy": 0.9752803845273518,
     "classification_report": {
       "Benign": {
-        "precision": 0.8745800671892497,
-        "recall": 0.9911167512690355,
-        "f1-score": 0.9292088042831648,
+        "precision": 0.9262782401902497,
+        "recall": 0.9885786802030457,
+        "f1-score": 0.956414978514426,
         "support": 788.0
       },
       "DDoS": {
-        "precision": 0.9936548223350253,
-        "recall": 0.9953389830508474,
-        "f1-score": 0.9944961896697714,
+        "precision": 0.9841468502294535,
+        "recall": 0.9995762711864407,
+        "f1-score": 0.9918015556022703,
         "support": 2360.0
       },
       "PasswordHacking": {
-        "precision": 0.9758364312267658,
-        "recall": 0.8706467661691543,
-        "f1-score": 0.9202453987730062,
+        "precision": 0.9852125693160814,
+        "recall": 0.8839137645107794,
+        "f1-score": 0.9318181818181818,
         "support": 603.0
       },
       "Reconnaissance": {
         "precision": 1.0,
-        "recall": 0.9288025889967637,
-        "f1-score": 0.9630872483221476,
+        "recall": 0.9546925566343042,
+        "f1-score": 0.9768211920529801,
         "support": 618.0
       },
-      "accuracy": 0.9679560540169375,
+      "accuracy": 0.9752803845273518,
       "macro avg": {
-        "precision": 0.9610178301877602,
-        "recall": 0.9464762723714502,
-        "f1-score": 0.9517594102620225,
+        "precision": 0.9739094149339462,
+        "recall": 0.9566903181336425,
+        "f1-score": 0.9642139769969647,
         "support": 4369.0
       },
       "weighted avg": {
-        "precision": 0.9706165808389857,
-        "recall": 0.9679560540169375,
-        "f1-score": 0.9680300847605869,
+        "precision": 0.9760991071432876,
+        "recall": 0.9752803845273518,
+        "f1-score": 0.975021408701266,
         "support": 4369.0
       }
     },
     "confusion_matrix": [
       [
-        781,
-        4,
+        779,
         3,
+        6,
         0
       ],
       [
+        0,
+        2359,
         1,
-        2349,
+        0
+      ],
+      [
+        60,
         10,
+        533,
         0
       ],
       [
-        67,
-        11,
-        525,
-        0
-      ],
-      [
-        44,
-        0,
-        0,
-        574
+        2,
+        25,
+        1,
+        590
       ]
     ]
   }

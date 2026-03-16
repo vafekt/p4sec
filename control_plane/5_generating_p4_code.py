@@ -1,65 +1,182 @@
 #!/usr/bin/env python3
 """
-P4 Code Generator for Scalable PCA-based ML Classification with Flow-Based Features
-Automatically generates basic.p4 with support for N PCA components and three
-classifier back-ends:
+Universal P4 Code Generator for ML Classification with Flow-Based Features.
 
-  --model-type dt   DecisionTree   (default)   single ml_code table
-  --model-type rf   RandomForest               N rf_tree_i tables + rf_vote_classify
-  --model-type xgb  XGBoost                    N*K xgb_tree_i tables + xgb_classify
+Supports five dimensionality-reduction methods:
+    PCA               → pca_component* transform tables + classifier on pc*_code
+    LDA               → pca_component* transform tables + classifier on ld*_code
+    Autoencoder       → pca_component* transform tables + classifier on ae*_code
+    UMAP              → pca_component* transform tables + classifier on um*_code
+    Feature Selection → NO transform tables, classifier matches raw flow features
 
-Reads model parameters from:
-  tables/pca_encoding_params.json   (PCA metadata — always required)
-  tables/rf_params.json             (RF  metadata — for --model-type rf)
-  tables/xgb_params.json            (XGB metadata — for --model-type xgb)
+Supports six classifier back-ends:
+  --model-type dt   DecisionTree    single ml_code table
+  --model-type rf   RandomForest    N rf_tree_i tables + rf_vote_classify
+  --model-type xgb  XGBoost         N*K xgb_tree_i tables + xgb_classify
+  --model-type gb   GradientBoost   (same P4 architecture as XGB)
+  --model-type knn  KNN             (deploys as DT proxy in P4)
+  --model-type svm  SVM             (deploys as DT proxy in P4)
+  --model-type cnn  1D CNN          neural lookup tables (P4 deployable)
+
+Reads configuration from:
+  tables/reduction_config.json     (written by any step 2 — method, features, max values)
+    tables/pca_encoding_params.json  (transform encoding params — fallback)
+  tables/rf_params.json            (RF metadata)
+  tables/xgb_params.json           (XGB/GB metadata)
 """
 
 import json
 import os
 import argparse
+import sys
 import logging
 import re
 
-# Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Flow-based features being extracted
+LOGO = """---------------------------------------------------------------------------
+------PPPPPPPP------4444------SSSSSSSS------EEEEEEEE------CCCCCCCC---------
+------PP-----PP----44--44----SS-------------EE------------CC---------------
+------PP-----PP---44---44----SS-------------EE------------CC---------------
+------PPPPPPPP---44----44-----SSSSSS--------EEEEEEE-------CC---------------
+------PP---------444444444----------SS------EE------------CC---------------
+------PP---------------44-----------SS------EE------------CC---------------
+------PP---------------44----SSSSSSSS-------EEEEEEEE------CCCCCCCC---------
+---------------------------------------------------------------------------"""
+
+
+class P4secArgumentParser(argparse.ArgumentParser):
+    def print_help(self, file=None):
+        if file is None:
+            file = sys.stdout
+        print(LOGO, file=file)
+        super().print_help(file)
+
+# ─── All 13 P4 raw flow features ────────────────────────────────────────────
 FLOW_FEATURES = [
-    "Protocol",    # IP protocol number (6=TCP, 17=UDP)
-    "Duration",    # Flow duration (ns)
-    "MaxIAT",      # Maximum inter-arrival time (ns)
-    "UrgCount",    # URG flag packet count
-    "FwdPktCount", # Forward packet count
-    "BwdPktCount", # Backward packet count
-    "FwdBytes",    # Forward bytes
-    "BwdBytes",    # Backward bytes
-    "MaxWinSize",  # Maximum TCP window size
-    "FlagsSyn",    # SYN flag packet count
-    "FlagsAck",    # ACK flag packet count
-    "FlagsFin",    # FIN flag packet count
-    "FlagsRst",    # RST flag packet count
+    "Protocol", "Duration", "MaxIAT", "UrgCount",
+    "FwdPktCount", "BwdPktCount", "FwdBytes", "BwdBytes",
+    "MaxWinSize", "FlagsSyn", "FlagsAck", "FlagsFin", "FlagsRst",
 ]
+
+# Map raw feature name → P4 metadata field name
+FEATURE_TO_META = {
+    "Protocol":    "protocol",
+    "Duration":    "duration",
+    "MaxIAT":      "max_iat",
+    "UrgCount":    "urg_count",
+    "FwdPktCount": "fwd_pkt_count",
+    "BwdPktCount": "bwd_pkt_count",
+    "FwdBytes":    "fwd_bytes",
+    "BwdBytes":    "bwd_bytes",
+    "MaxWinSize":  "max_win_size",
+    "FlagsSyn":    "flags_syn",
+    "FlagsAck":    "flags_ack",
+    "FlagsFin":    "flags_fin",
+    "FlagsRst":    "flags_rst",
+}
+
+# P4 bit widths for raw features
+FEATURE_P4_TYPE = {
+    "Protocol":    "bit<8>",
+    "Duration":    "duration_t",    # bit<48>
+    "MaxIAT":      "iat_t",         # bit<48>
+    "UrgCount":    "bit<32>",
+    "FwdPktCount": "bit<32>",
+    "BwdPktCount": "bit<32>",
+    "FwdBytes":    "bytes_t",       # bit<32>
+    "BwdBytes":    "bytes_t",       # bit<32>
+    "MaxWinSize":  "bit<16>",
+    "FlagsSyn":    "bit<32>",
+    "FlagsAck":    "bit<32>",
+    "FlagsFin":    "bit<32>",
+    "FlagsRst":    "bit<32>",
+}
+
+FEATURE_P4_WIDTH = {
+    "Protocol": 8,
+    "Duration": 48,
+    "MaxIAT": 48,
+    "UrgCount": 32,
+    "FwdPktCount": 32,
+    "BwdPktCount": 32,
+    "FwdBytes": 32,
+    "BwdBytes": 32,
+    "MaxWinSize": 16,
+    "FlagsSyn": 32,
+    "FlagsAck": 32,
+    "FlagsFin": 32,
+    "FlagsRst": 32,
+}
+
 
 class P4CodeGenerator:
     def __init__(self, n_components=2, bits=16, output_file='basic.p4',
-                 model_type='dt', rf_params=None, xgb_params=None,
-                 n_registers=65536, flow_timeout_s=120):
+                 model_type='dt', rf_params=None, xgb_params=None, cnn_params=None,
+                 n_registers=65536, flow_timeout_s=120,
+                 reduction_config=None):
         self.n_components    = n_components
         self.bits            = bits
         self.output_file     = output_file
-        self.model_type      = model_type          # 'dt' | 'rf' | 'xgb'
-        self.rf_params       = rf_params  or {}    # from rf_params.json
-        self.xgb_params      = xgb_params or {}    # from xgb_params.json
+        self.model_type      = model_type
+        self.rf_params       = rf_params  or {}
+        self.xgb_params      = xgb_params or {}
+        self.cnn_params      = cnn_params or {}
         self.n_registers     = n_registers
         self.flow_timeout_ns = int(flow_timeout_s * 1_000_000_000)
-        
+        self.reduction_config = reduction_config or {}
+
+        # Derived from reduction_config
+        method = self.reduction_config.get('method', 'pca')
+        self.needs_transform = self.reduction_config.get('needs_transform_tables', True)
+
+        # Code prefix: "pc" for PCA, "ld" for LDA, "ae" for Autoencoder, "um" for UMAP.
+        if method == 'lda':
+            self.code_prefix = 'ld'
+        elif method == 'autoencoder':
+            self.code_prefix = 'ae'
+        elif method == 'umap':
+            self.code_prefix = 'um'
+        else:
+            self.code_prefix = 'pc'
+
+        # Transform table/action prefixes (keep legacy pca_component for PCA/LDA/AE)
+        if method == 'umap':
+            self.table_prefix = 'umap'
+            self.action_prefix = 'um'
+        else:
+            self.table_prefix = 'pca'
+            self.action_prefix = 'pc'
+
+        # Classifier feature names (what the ml_code / rf_tree / xgb_tree keys match on)
+        self.classifier_features = self.reduction_config.get('feature_columns', None)
+        if self.classifier_features is None:
+            # Fallback: pc*_code
+            self.classifier_features = [f'PC{i+1}_code' for i in range(n_components)]
+
+        if self.model_type == 'cnn' and self.cnn_params.get('feature_names'):
+            self.classifier_features = self.cnn_params['feature_names']
+
+    def _meta_field_for_feature(self, feat_name):
+        """Map a feature name to a P4 meta.* field reference."""
+        # Raw feature (Duration, FwdBytes, etc.)
+        if feat_name in FEATURE_TO_META:
+            return f'meta.{FEATURE_TO_META[feat_name]}'
+        # Transform code (PC1_code, LD2_code, AE3_code, etc.)
+        return f'meta.{feat_name.lower()}'
+
+    def _feature_bit_width(self, feat_name):
+        if feat_name in FEATURE_P4_WIDTH:
+            return FEATURE_P4_WIDTH[feat_name]
+        return int(self.bits or 16)
+
+    # ─────────────────────────────────────────────────────────────────────
     def generate_header(self):
-        """Generate P4 file header with includes and constants."""
         return '''/* -*- P4_16 -*- */
 /*
  * P4 Flow-Based ML Classification
- * Extracts flow-based features and applies PCA + Decision Tree classification
+ * Auto-generated - supports PCA / LDA / Autoencoder / UMAP / Feature Selection + DT / RF / XGB / GB / CNN
  */
 
 #include <core.p4>
@@ -72,11 +189,9 @@ const bit<8>  TYPE_UDP  = 17;
 const bit<32> NB_ENTRIES = ''' + str(self.n_registers) + ''';
 const bit<32> MAX_REGISTER_ENTRIES = ''' + str(self.n_registers) + ''';
 
-// Bloom filter for flow detection
 #define BLOOM_FILTER_BIT_WIDTH 32
-#define FLOW_TIMEOUT ''' + str(self.flow_timeout_ns) + '''  // ''' + str(self.flow_timeout_ns // 1_000_000_000) + ''' seconds in nanoseconds
+#define FLOW_TIMEOUT ''' + str(self.flow_timeout_ns) + '''  // ''' + str(self.flow_timeout_ns // 1_000_000_000) + '''s in nanoseconds
 
-// Macros for register operations
 #define FIRST_INDEX ((bit<32>)0)
 #define WRITE_REG(r, v) r.write(FIRST_INDEX, v)
 #define READ_REG(r,  v) r.read(v, FIRST_INDEX)
@@ -89,13 +204,12 @@ typedef bit<9>  egressSpec_t;
 typedef bit<48> macAddr_t;
 typedef bit<32> ip4Addr_t;
 
-// Flow-based feature types
-typedef bit<48> iat_t;          // Inter-Arrival Time (nanoseconds)
-typedef bit<48> duration_t;     // Flow duration (nanoseconds)
-typedef bit<16> port_t;         // Port number
-typedef bit<32> bytes_t;        // Byte count
-typedef bit<''' + str(self.bits) + '''> pca_code_t;   // PCA component code (quantized)
-typedef bit<8>  inference_result_t; // DT classification result
+typedef bit<48> iat_t;
+typedef bit<48> duration_t;
+typedef bit<16> port_t;
+typedef bit<32> bytes_t;
+''' + (f'typedef bit<{self.bits}> pca_code_t;   // Quantized code ({self.code_prefix.upper()})\n'
+       if self.needs_transform else '') + '''typedef bit<8>  inference_result_t;
 
 header ethernet_t {
     macAddr_t dstAddr;
@@ -140,31 +254,31 @@ header udp_t {
 }
 '''
 
+    # ─────────────────────────────────────────────────────────────────────
     def generate_metadata(self):
-        """Generate metadata struct with dynamic PCA component codes."""
+        pfx = self.code_prefix
         code = '''
 struct metadata {
-    // Flow identification (5-tuple) — raw, as parsed from headers
+    // Flow identification (5-tuple)
     ip4Addr_t src_ip;
     ip4Addr_t dst_ip;
     port_t src_port;
     port_t dst_port;
     bit<8>  protocol;
 
-    // Canonical (direction-normalized) bidirectional flow key.
-    // compute_flow_hash() fills these so A->B and B->A map to the same slot.
+    // Canonical bidirectional flow key
     ip4Addr_t canon_src_ip;
     ip4Addr_t canon_dst_ip;
     port_t    canon_src_port;
     port_t    canon_dst_port;
-    bit<1>    is_reverse_dir;   // 1 = packet in reverse direction
+    bit<1>    is_reverse_dir;
 
     // Flow state tracking
     bit<32> flow_hash;
     bit<32> flow_hash_2;
     bit<1>  is_first_packet;
     bit<1>  hash_collision;
-    bit<1>  flow_ended;     // 1 = flow is complete (timeout or FIN/RST) — gate classify+digest
+    bit<1>  flow_ended;
     
     // Flow-based features
     duration_t duration;
@@ -175,17 +289,17 @@ struct metadata {
     bytes_t    fwd_bytes;
     bytes_t    bwd_bytes;
     bit<16>    max_win_size;
-    bit<32>    flags_syn;    // SYN flag packet count
-    bit<32>    flags_ack;    // ACK flag packet count
-    bit<32>    flags_fin;    // FIN flag packet count
-    bit<32>    flags_rst;    // RST flag packet count
-    
-    // PCA-transformed features (quantized)
+    bit<32>    flags_syn;
+    bit<32>    flags_ack;
+    bit<32>    flags_fin;
+    bit<32>    flags_rst;
 '''
-        # Add PCA component codes dynamically
-        for i in range(1, self.n_components + 1):
-            code += f'    pca_code_t pc{i}_code;\n'
-        
+        # Transformed feature codes (PCA, LDA, or Autoencoder)
+        if self.needs_transform:
+            code += f'\n    // {pfx.upper()} transformed features (quantized)\n'
+            for i in range(1, self.n_components + 1):
+                code += f'    pca_code_t {pfx}{i}_code;\n'
+
         code += '''    
     // Classification result
     inference_result_t ml_result;
@@ -193,20 +307,47 @@ struct metadata {
     // Timestamp
     bit<48> ingress_timestamp;
 '''
-        # ---- RF packed vote field ----
+        # RF packed votes
         if self.model_type == 'rf':
-            n_est        = self.rf_params.get('n_estimators', 8)
-            vote_bits    = self.rf_params.get('vote_bits',    2)
-            total_v_bits = n_est * vote_bits
+            n_est     = self.rf_params.get('n_estimators', 8)
+            vote_bits = self.rf_params.get('vote_bits', 2)
+            total_vb  = n_est * vote_bits
             code += f'\n    // RF packed vote field ({n_est} trees x {vote_bits} bits)\n'
-            code += f'    bit<{total_v_bits}> rf_votes;\n'
+            code += f'    bit<{total_vb}> rf_votes;\n'
 
-        # ---- XGB per-class score accumulators ----
+        # XGB per-class accumulators
         if self.model_type == 'xgb':
             n_cls = self.xgb_params.get('n_classes', 2)
-            code += f'\n    // XGB per-class score accumulators (16-bit, bias=128)\n'
+            code += f'\n    // XGB per-class score accumulators\n'
             for c in range(n_cls):
                 code += f'    bit<16> xgb_score_c{c};\n'
+
+        # CNN inputs, hidden activations, and class scores
+        if self.model_type == 'cnn':
+            input_bits = int(self.cnn_params.get('input_bits', 8))
+            hidden_bits = int(self.cnn_params.get('hidden_bits', 8))
+            hidden1_units = int(self.cnn_params.get('hidden1_units', 0))
+            hidden2_units = int(self.cnn_params.get('hidden2_units', 0))
+            pool = int(self.cnn_params.get('pool', 2))
+            n_cls = len(self.cnn_params.get('classes', []))
+            code += f'\n    // CNN quantized inputs\n'
+            for i in range(len(self.classifier_features)):
+                code += f'    bit<{input_bits}> cnn_in{i};\n'
+            code += f'\n    // CNN hidden accumulators + activations\n'
+            for h in range(hidden1_units):
+                code += f'    bit<32>  cnn1_h{h}_sum;\n'
+                code += f'    bit<{hidden_bits}> cnn1_h{h};\n'
+            pooled = hidden1_units // max(1, pool)
+            code += f'\n    // CNN pooled activations\n'
+            for p in range(pooled):
+                code += f'    bit<{hidden_bits}> cnn_p{p};\n'
+            code += f'\n    // CNN hidden2 accumulators + activations\n'
+            for h in range(hidden2_units):
+                code += f'    bit<32>  cnn2_h{h}_sum;\n'
+                code += f'    bit<{hidden_bits}> cnn2_h{h};\n'
+            code += f'\n    // CNN class scores\n'
+            for c in range(n_cls):
+                code += f'    bit<32> cnn_score_c{c};\n'
 
         code += '''}
 
@@ -218,14 +359,12 @@ struct headers {
 }
 
 struct digest_t {
-    // Flow identification (5-tuple)
     ip4Addr_t srcAddr;
     ip4Addr_t dstAddr;
     port_t srcPort;
     port_t dstPort;
     bit<8>  protocol;
     
-    // Flow-based features
     duration_t duration;
     iat_t      max_iat;
     bit<32>    urg_count;
@@ -234,32 +373,28 @@ struct digest_t {
     bytes_t    fwd_bytes;
     bytes_t    bwd_bytes;
     bit<16>    max_win_size;
-    bit<32>    flags_syn;    // SYN flag packet count
-    bit<32>    flags_ack;    // ACK flag packet count
-    bit<32>    flags_fin;    // FIN flag packet count
-    bit<32>    flags_rst;    // RST flag packet count
-    
-    // PCA component codes
+    bit<32>    flags_syn;
+    bit<32>    flags_ack;
+    bit<32>    flags_fin;
+    bit<32>    flags_rst;
 '''
-        # Add PCA component codes to digest
-        for i in range(1, self.n_components + 1):
-            code += f'    pca_code_t pc{i}_code;\n'
-        
-        # Add XGB scores if model_type is 'xgb'
+        if self.needs_transform:
+            for i in range(1, self.n_components + 1):
+                code += f'    pca_code_t {pfx}{i}_code;\n'
+
         if self.model_type == 'xgb':
             n_cls = self.xgb_params.get('n_classes', 2)
             for c in range(n_cls):
                 code += f'    bit<16> xgb_score_c{c};\n'
-        
+
         code += '''    
-    // Classification result
     inference_result_t ml_result;
 }
 '''
         return code
 
+    # ─────────────────────────────────────────────────────────────────────
     def generate_parser(self):
-        """Generate parser logic."""
         return '''
 /*************************************************************************
 *********************** P A R S E R  ***********************************
@@ -309,17 +444,18 @@ parser MyParser(packet_in packet,
     }
 }
 
-/*************************************************************************
-************   C H E C K S U M    V E R I F I C A T I O N   *************
-*************************************************************************/
-
 control MyVerifyChecksum(inout headers hdr, inout metadata meta) {   
     apply {  }
 }
 '''
 
+    # ─────────────────────────────────────────────────────────────────────
     def generate_ingress_forwarding(self):
-        """Generate ingress control with flow tracking and feature extraction."""
+        pfx = self.code_prefix
+        if self.model_type == 'cnn':
+            pool = int(self.cnn_params.get('pool', 2))
+            if pool not in (1, 2):
+                raise ValueError("CNN P4 generation currently supports only pool=1 or 2.")
         code = '''
 /*************************************************************************
 **************  I N G R E S S   P R O C E S S I N G   *******************
@@ -330,24 +466,22 @@ control MyIngress(inout headers hdr,
                   inout standard_metadata_t standard_metadata) {
 
     // Registers for flow state tracking
-    register<bit<48>>(MAX_REGISTER_ENTRIES) reg_time_first_pkt;   // Time of first packet
-    register<bit<48>>(MAX_REGISTER_ENTRIES) reg_time_last_pkt;    // Time of last packet
-    register<iat_t>(MAX_REGISTER_ENTRIES)   reg_max_iat;          // Max inter-arrival time
-    register<bit<32>>(MAX_REGISTER_ENTRIES) reg_urg_count;        // URG packet count
-    register<bit<32>>(MAX_REGISTER_ENTRIES) reg_fwd_pkt_count;    // Forward packet count
-    register<bit<32>>(MAX_REGISTER_ENTRIES) reg_bwd_pkt_count;    // Backward packet count
-    register<bytes_t>(MAX_REGISTER_ENTRIES) reg_fwd_bytes;        // Forward bytes
-    register<bytes_t>(MAX_REGISTER_ENTRIES) reg_bwd_bytes;        // Backward bytes
-    register<bit<16>>(MAX_REGISTER_ENTRIES) reg_max_win_size;     // Max TCP window size
-    register<bit<32>>(MAX_REGISTER_ENTRIES) reg_flags_syn;        // SYN flag packet count
-    register<bit<32>>(MAX_REGISTER_ENTRIES) reg_flags_ack;        // ACK flag packet count
-    register<bit<32>>(MAX_REGISTER_ENTRIES) reg_flags_fin;        // FIN flag packet count
-    register<bit<32>>(MAX_REGISTER_ENTRIES) reg_flags_rst;        // RST flag packet count
+    register<bit<48>>(MAX_REGISTER_ENTRIES) reg_time_first_pkt;
+    register<bit<48>>(MAX_REGISTER_ENTRIES) reg_time_last_pkt;
+    register<iat_t>(MAX_REGISTER_ENTRIES)   reg_max_iat;
+    register<bit<32>>(MAX_REGISTER_ENTRIES) reg_urg_count;
+    register<bit<32>>(MAX_REGISTER_ENTRIES) reg_fwd_pkt_count;
+    register<bit<32>>(MAX_REGISTER_ENTRIES) reg_bwd_pkt_count;
+    register<bytes_t>(MAX_REGISTER_ENTRIES) reg_fwd_bytes;
+    register<bytes_t>(MAX_REGISTER_ENTRIES) reg_bwd_bytes;
+    register<bit<16>>(MAX_REGISTER_ENTRIES) reg_max_win_size;
+    register<bit<32>>(MAX_REGISTER_ENTRIES) reg_flags_syn;
+    register<bit<32>>(MAX_REGISTER_ENTRIES) reg_flags_ack;
+    register<bit<32>>(MAX_REGISTER_ENTRIES) reg_flags_fin;
+    register<bit<32>>(MAX_REGISTER_ENTRIES) reg_flags_rst;
     
-    // Bloom filter for efficient flow tracking
     register<bit<1>>(MAX_REGISTER_ENTRIES) bloom_filter;
 
-    // Forwarding actions
     action drop() {
         mark_to_drop(standard_metadata);
     }
@@ -372,8 +506,6 @@ control MyIngress(inout headers hdr,
         default_action = drop();
     }
 
-    // Bidirectional canonical flow hash.
-    // Normalises direction so A->B and B->A map to the same register slot.
     action compute_flow_hash() {
         if (meta.src_ip < meta.dst_ip) {
             meta.canon_src_ip   = meta.src_ip;
@@ -413,12 +545,9 @@ control MyIngress(inout headers hdr,
         bloom_filter.write(meta.flow_hash, 1w1);
     }
 
-    // Helper to update flow state
-    // TCP flag counts (FlagsSyn/Ack/Fin/Rst) are accumulated here via register +=
-    // matching exactly the per-packet += logic in 1_data_extraction.py.
     action update_flow_state() {
         bit<48> current_time_us = standard_metadata.ingress_global_timestamp;
-        bit<48> current_time = current_time_us * 1000;  // convert to nanoseconds
+        bit<48> current_time = current_time_us * 1000;
         bit<48> time_first;
         bit<48> time_last;
         iat_t   max_iat;
@@ -433,7 +562,6 @@ control MyIngress(inout headers hdr,
         bit<32> flags_fin;
         bit<32> flags_rst;
 
-        // Read current state
         reg_time_first_pkt.read(time_first, meta.flow_hash);
         reg_time_last_pkt.read(time_last, meta.flow_hash);
         reg_max_iat.read(max_iat, meta.flow_hash);
@@ -448,11 +576,11 @@ control MyIngress(inout headers hdr,
         reg_flags_fin.read(flags_fin, meta.flow_hash);
         reg_flags_rst.read(flags_rst, meta.flow_hash);
 
-        if (time_last != 0 && (current_time - time_last) > FLOW_TIMEOUT) {
-            // Flow timeout: the previous flow is complete — classify it before resetting.
-            // Snapshot the old accumulated features into meta so PCA+classify runs on them.
+        // Timeout check — previous flow on this slot has been idle
+        if (time_first != 0 && time_last != 0 &&
+                (current_time - time_last) > FLOW_TIMEOUT) {
             meta.flow_ended    = 1w1;
-            meta.duration      = current_time - time_first;  // full duration of old flow
+            meta.duration      = time_last - time_first;
             meta.max_iat       = max_iat;
             meta.urg_count     = urg_count;
             meta.fwd_pkt_count = fwd_pkt_count;
@@ -460,109 +588,79 @@ control MyIngress(inout headers hdr,
             meta.fwd_bytes     = fwd_bytes;
             meta.bwd_bytes     = bwd_bytes;
             meta.max_win_size  = max_win_size;
-            // Snapshot accumulated flag counts BEFORE clearing the registers
-            meta.flags_syn = flags_syn;
-            meta.flags_ack = flags_ack;
-            meta.flags_fin = flags_fin;
-            meta.flags_rst = flags_rst;
+            meta.flags_syn     = flags_syn;
+            meta.flags_ack     = flags_ack;
+            meta.flags_fin     = flags_fin;
+            meta.flags_rst     = flags_rst;
+            // Reset for new flow
+            time_first    = current_time;
+            time_last     = current_time;
+            max_iat       = 0;
+            fwd_pkt_count = 0;
+            bwd_pkt_count = 0;
+            fwd_bytes     = 0;
+            bwd_bytes     = 0;
+            max_win_size  = 0;
+            urg_count     = 0;
+            flags_syn     = 0;
+            flags_ack     = 0;
+            flags_fin     = 0;
+            flags_rst     = 0;
+        }
 
-            // Now reset registers for the new flow starting with this packet
+        // First packet for a new flow
+        if (time_first == 0) {
+            time_first = current_time;
             meta.is_first_packet = 1w1;
             reg_time_first_pkt.write(meta.flow_hash, current_time);
-            reg_time_last_pkt.write(meta.flow_hash, current_time);
-            reg_max_iat.write(meta.flow_hash, 0);
-            reg_urg_count.write(meta.flow_hash, 0);
-            reg_fwd_pkt_count.write(meta.flow_hash,
-                meta.is_reverse_dir == 1w0 ? 32w1 : 32w0);
-            reg_bwd_pkt_count.write(meta.flow_hash,
-                meta.is_reverse_dir == 1w1 ? 32w1 : 32w0);
-            reg_fwd_bytes.write(meta.flow_hash,
-                meta.is_reverse_dir == 1w0 ? (bytes_t)standard_metadata.packet_length : 32w0);
-            reg_bwd_bytes.write(meta.flow_hash,
-                meta.is_reverse_dir == 1w1 ? (bytes_t)standard_metadata.packet_length : 32w0);
-            reg_max_win_size.write(meta.flow_hash,
-                (meta.protocol == TYPE_TCP) ? hdr.tcp.window : 16w0);
-            reg_flags_syn.write(meta.flow_hash, 32w0);
-            reg_flags_ack.write(meta.flow_hash, 32w0);
-            reg_flags_fin.write(meta.flow_hash, 32w0);
-            reg_flags_rst.write(meta.flow_hash, 32w0);
-        } else if (time_first == 0) {
-            // First packet of flow
-            meta.flow_ended    = 1w0;
-            meta.is_first_packet = 1w1;
-            meta.duration      = 0;
-            meta.max_iat       = 0;
-            meta.urg_count     = 0;
-            meta.fwd_pkt_count = meta.is_reverse_dir == 1w0 ? 32w1 : 32w0;
-            meta.bwd_pkt_count = meta.is_reverse_dir == 1w1 ? 32w1 : 32w0;
-            meta.fwd_bytes     = meta.is_reverse_dir == 1w0 ? (bytes_t)standard_metadata.packet_length : 32w0;
-            meta.bwd_bytes     = meta.is_reverse_dir == 1w1 ? (bytes_t)standard_metadata.packet_length : 32w0;
-            meta.max_win_size  = (meta.protocol == TYPE_TCP) ? hdr.tcp.window : 16w0;
-            meta.flags_syn     = 32w0;
-            meta.flags_ack     = 32w0;
-            meta.flags_fin     = 32w0;
-            meta.flags_rst     = 32w0;
+        }
 
-            reg_time_first_pkt.write(meta.flow_hash, current_time);
-            reg_fwd_pkt_count.write(meta.flow_hash, meta.fwd_pkt_count);
-            reg_bwd_pkt_count.write(meta.flow_hash, meta.bwd_pkt_count);
-            reg_fwd_bytes.write(meta.flow_hash, meta.fwd_bytes);
-            reg_bwd_bytes.write(meta.flow_hash, meta.bwd_bytes);
-            reg_max_win_size.write(meta.flow_hash, meta.max_win_size);
-        } else {
-            // Subsequent packet
-            meta.flow_ended      = 1w0;
-            meta.is_first_packet = 1w0;
-
-            // Max IAT
+        // IAT update
+        if (time_last != 0) {
             iat_t current_iat = current_time - time_last;
             if (current_iat > max_iat) {
                 max_iat = current_iat;
+                reg_max_iat.write(meta.flow_hash, max_iat);
             }
-            reg_max_iat.write(meta.flow_hash, max_iat);
-            meta.max_iat = max_iat;
-
-            // Duration
-            meta.duration = current_time - time_first;
-
-            // Directional packet counts and bytes
-            if (meta.is_reverse_dir == 1w0) {
-                fwd_pkt_count = fwd_pkt_count + 1;
-                fwd_bytes = fwd_bytes + (bytes_t)standard_metadata.packet_length;
-                reg_fwd_pkt_count.write(meta.flow_hash, fwd_pkt_count);
-                reg_fwd_bytes.write(meta.flow_hash, fwd_bytes);
-            } else {
-                bwd_pkt_count = bwd_pkt_count + 1;
-                bwd_bytes = bwd_bytes + (bytes_t)standard_metadata.packet_length;
-                reg_bwd_pkt_count.write(meta.flow_hash, bwd_pkt_count);
-                reg_bwd_bytes.write(meta.flow_hash, bwd_bytes);
-            }
-            meta.fwd_pkt_count = fwd_pkt_count;
-            meta.bwd_pkt_count = bwd_pkt_count;
-            meta.fwd_bytes = fwd_bytes;
-            meta.bwd_bytes = bwd_bytes;
-
-            // Max window size
-            if (meta.protocol == TYPE_TCP) {
-                if (hdr.tcp.window > max_win_size) {
-                    max_win_size = hdr.tcp.window;
-                    reg_max_win_size.write(meta.flow_hash, max_win_size);
-                }
-            }
-            meta.max_win_size = max_win_size;
         }
+        meta.max_iat = max_iat;
 
-        // Always update last packet time
+        // Direction-based counters
+        if (meta.is_reverse_dir == 1w0) {
+            fwd_pkt_count = fwd_pkt_count + 1;
+            fwd_bytes = fwd_bytes + (bytes_t)hdr.ipv4.totalLen;
+            reg_fwd_pkt_count.write(meta.flow_hash, fwd_pkt_count);
+            reg_fwd_bytes.write(meta.flow_hash, fwd_bytes);
+        } else {
+            bwd_pkt_count = bwd_pkt_count + 1;
+            bwd_bytes = bwd_bytes + (bytes_t)hdr.ipv4.totalLen;
+            reg_bwd_pkt_count.write(meta.flow_hash, bwd_pkt_count);
+            reg_bwd_bytes.write(meta.flow_hash, bwd_bytes);
+        }
+        meta.fwd_pkt_count = fwd_pkt_count;
+        meta.bwd_pkt_count = bwd_pkt_count;
+        meta.fwd_bytes     = fwd_bytes;
+        meta.bwd_bytes     = bwd_bytes;
+
+        // Window size
+        if (meta.protocol == TYPE_TCP) {
+            if (hdr.tcp.window > max_win_size) {
+                max_win_size = hdr.tcp.window;
+                reg_max_win_size.write(meta.flow_hash, max_win_size);
+            }
+        }
+        meta.max_win_size = max_win_size;
+
         reg_time_last_pkt.write(meta.flow_hash, current_time);
 
-        // URG count (TCP only)
+        // URG count
         if (meta.protocol == TYPE_TCP && hdr.tcp.ctrl[5:5] == 1w1) {
             urg_count = urg_count + 1;
             reg_urg_count.write(meta.flow_hash, urg_count);
         }
         meta.urg_count = urg_count;
 
-        // TCP flag counts: accumulate per-packet counts (mirrors P4 register += logic)
+        // TCP flag counts
         if (meta.protocol == TYPE_TCP) {
             flags_syn = flags_syn + (bit<32>)hdr.tcp.ctrl[1:1];
             flags_ack = flags_ack + (bit<32>)hdr.tcp.ctrl[4:4];
@@ -578,8 +676,7 @@ control MyIngress(inout headers hdr,
         meta.flags_fin = flags_fin;
         meta.flags_rst = flags_rst;
 
-        // FIN or RST ends the flow — snapshot current accumulated state and mark ended.
-        // (Only when flow_ended not already set by timeout branch above)
+        // FIN/RST ends the flow
         if (meta.flow_ended == 1w0 &&
                 meta.protocol == TYPE_TCP &&
                 (meta.flags_fin > 32w0 || meta.flags_rst > 32w0)) {
@@ -592,8 +689,7 @@ control MyIngress(inout headers hdr,
             reg_fwd_bytes.read(meta.fwd_bytes, meta.flow_hash);
             reg_bwd_bytes.read(meta.bwd_bytes, meta.flow_hash);
             reg_max_win_size.read(meta.max_win_size, meta.flow_hash);
-            // All flag counts already accumulated into meta.flags_* above
-            // Reset register slot so next flow on same 5-tuple starts fresh
+            // Reset registers
             reg_time_first_pkt.write(meta.flow_hash, 0);
             reg_time_last_pkt.write(meta.flow_hash, 0);
             reg_max_iat.write(meta.flow_hash, 0);
@@ -612,43 +708,31 @@ control MyIngress(inout headers hdr,
 
 '''
 
-        # Add PCA transformation tables
-        for i in range(1, self.n_components + 1):
-            code += f'''
-    // PCA component {i} transformation
-    action set_pc{i}_code(pca_code_t code) {{
-        meta.pc{i}_code = code;
+        # ── Transform tables (PCA / LDA / Autoencoder / UMAP) ────────────
+        if self.needs_transform:
+            for i in range(1, self.n_components + 1):
+                code += f'''
+    // {pfx.upper()} component {i} transformation
+    action set_{self.action_prefix}{i}_code(pca_code_t code) {{
+        meta.{pfx}{i}_code = code;
     }}
 
-    table pca_component{i} {{
+    table {self.table_prefix}_component{i} {{
         key = {{
-            meta.protocol        : range;
-            meta.duration        : range;
-            meta.max_iat         : range;
-            meta.urg_count       : range;
-            meta.fwd_pkt_count   : range;
-            meta.bwd_pkt_count   : range;
-            meta.fwd_bytes       : range;
-            meta.bwd_bytes       : range;
-            meta.max_win_size    : range;
-            meta.flags_syn       : range;
-            meta.flags_ack       : range;
-            meta.flags_fin       : range;
-            meta.flags_rst       : range;
-        }}
+'''
+                for feat in FLOW_FEATURES:
+                    meta_f = FEATURE_TO_META[feat]
+                    code += f'            meta.{meta_f:20s}: range;\n'
+                code += f'''        }}
         actions = {{
-            set_pc{i}_code;
+            set_{self.action_prefix}{i}_code;
             NoAction;
         }}
         size = NB_ENTRIES;
     }}
 '''
 
-        # -------------------------------------------------------------------------
-        # Classification tables — model-type specific
-        # -------------------------------------------------------------------------
-
-        # Shared set_result action (used by all model types)
+        # ── Classification tables ────────────────────────────────────────
         code += '''
     // Shared classification result action
     action set_result(inference_result_t val) {
@@ -656,15 +740,21 @@ control MyIngress(inout headers hdr,
     }
 '''
 
+        # Helper: generate range-match key block from classifier features
+        def _classifier_key_block():
+            lines = ''
+            for feat_name in self.classifier_features:
+                meta_f = self._meta_field_for_feature(feat_name)
+                lines += f'            {meta_f:30s}: range;\n'
+            return lines
+
         if self.model_type == 'dt':
-            # ---- DT: single ml_code range-match table ----
             code += '''
-    // Decision Tree classification using PCA component codes
+    // Decision Tree classification
     table ml_code {
         key = {
 '''
-            for i in range(1, self.n_components + 1):
-                code += f'            meta.pc{i}_code : range;\n'
+            code += _classifier_key_block()
             code += '''        }
         actions = {
             set_result;
@@ -675,19 +765,14 @@ control MyIngress(inout headers hdr,
 '''
 
         elif self.model_type == 'rf':
-            # ---- RF: one table per tree + vote aggregation table ----
             n_est     = self.rf_params.get('n_estimators', 8)
-            vote_bits = self.rf_params.get('vote_bits',    2)
-
-            # Determine which PCA code fields this RF model actually uses
-            rf_feature_names = self.rf_params.get('feature_names',
-                [f'PC{j}_code' for j in range(1, self.n_components + 1)])
+            vote_bits = self.rf_params.get('vote_bits', 2)
+            rf_feats  = self.rf_params.get('feature_names', self.classifier_features)
 
             for i in range(n_est):
                 lo_bit = i * vote_bits
                 hi_bit = lo_bit + vote_bits - 1
                 code += f'''
-    // RF tree {i} — range match on PCA codes, output vote to rf_votes[{hi_bit}:{lo_bit}]
     action set_rf_tree_{i}_vote(bit<{vote_bits}> vote) {{
         meta.rf_votes[{hi_bit}:{lo_bit}] = vote;
     }}
@@ -695,9 +780,9 @@ control MyIngress(inout headers hdr,
     table rf_tree_{i} {{
         key = {{
 '''
-                for feat_name in rf_feature_names:
-                    meta_field = feat_name.lower()   # e.g. "PC1_code" -> "pc1_code"
-                    code += f'            meta.{meta_field} : range;\n'
+                for feat_name in rf_feats:
+                    meta_f = self._meta_field_for_feature(feat_name)
+                    code += f'            {meta_f:30s}: range;\n'
                 code += f'''        }}
         actions = {{
             set_rf_tree_{i}_vote;
@@ -707,9 +792,8 @@ control MyIngress(inout headers hdr,
     }}
 '''
 
-            total_vote_bits = n_est * vote_bits
+            total_vb = n_est * vote_bits
             code += f'''
-    // RF vote aggregation — exact match on packed vote field ({total_vote_bits} bits)
     table rf_vote_classify {{
         key = {{
             meta.rf_votes : exact;
@@ -718,56 +802,46 @@ control MyIngress(inout headers hdr,
             set_result;
             NoAction;
         }}
-        size = {2**total_vote_bits};
+        size = {2**total_vb};
     }}
 '''
 
         elif self.model_type == 'xgb':
-            # ---- XGB: one table per tree accumulates class scores ----
             total_trees = self.xgb_params.get('total_trees', 0)
-            n_cls       = self.xgb_params.get('n_classes',   2)
+            n_cls       = self.xgb_params.get('n_classes', 2)
+            xgb_feats   = self.xgb_params.get('feature_names', self.classifier_features)
 
-            # Define all class score accumulator actions once (not repeated per tree)
-            for class_idx in range(n_cls):
+            for c in range(n_cls):
                 code += f'''
-    // XGB accumulator action for class {class_idx}
-    action add_xgb_score_c{class_idx}(bit<8> delta) {{
-        meta.xgb_score_c{class_idx} = meta.xgb_score_c{class_idx} + (bit<16>)delta;
+    action add_xgb_score_c{c}(bit<8> delta) {{
+        meta.xgb_score_c{c} = meta.xgb_score_c{c} + (bit<16>)delta;
     }}
 '''
-
-            # Generate one table per tree
-            for tree_idx in range(total_trees):
-                class_idx = tree_idx % n_cls
-                # Determine which PCA code fields this model actually uses
-                xgb_feature_names = self.xgb_params.get('feature_names',
-                    [f'PC{j}_code' for j in range(1, self.n_components + 1)])
-
+            for tidx in range(total_trees):
+                cidx = tidx % n_cls
                 code += f'''
-    // XGB tree {tree_idx} (class {class_idx}) — adds quantised leaf delta to score accumulator
-    table xgb_tree_{tree_idx} {{
+    table xgb_tree_{tidx} {{
         key = {{
 '''
-                for feat_name in xgb_feature_names:
-                    meta_field = feat_name.lower()   # e.g. "PC1_code" -> "pc1_code"
-                    code += f'            meta.{meta_field} : range;\n'
+                for feat_name in xgb_feats:
+                    meta_f = self._meta_field_for_feature(feat_name)
+                    code += f'            {meta_f:30s}: range;\n'
                 code += f'''        }}
         actions = {{
-            add_xgb_score_c{class_idx};
+            add_xgb_score_c{cidx};
             NoAction;
         }}
         size = NB_ENTRIES;
     }}
 '''
 
-            # Final proxy-DT classify table — range match on accumulated scores
             code += '''
-    // XGB final classification — range match on per-class accumulated scores
     table xgb_classify {
         key = {
 '''
             for c in range(n_cls):
-                code += f'            meta.xgb_score_c{c} : range;\n'
+                code += f'            meta.xgb_score_c{c:30s}: range;\n' if False else \
+                        f'            meta.xgb_score_c{c} : range;\n'
             code += '''        }
         actions = {
             set_result;
@@ -777,91 +851,302 @@ control MyIngress(inout headers hdr,
     }
 '''
 
-        # -------------------------------------------------------------------------
-        # Apply block
-        # -------------------------------------------------------------------------
+        elif self.model_type == 'cnn':
+            input_bits = int(self.cnn_params.get('input_bits', 8))
+            hidden_bits = int(self.cnn_params.get('hidden_bits', 8))
+            hidden1_units = int(self.cnn_params.get('hidden1_units', 0))
+            hidden2_units = int(self.cnn_params.get('hidden2_units', 0))
+            pool = int(self.cnn_params.get('pool', 2))
+            n_cls = len(self.cnn_params.get('classes', []))
+            use_quanti = bool(self.cnn_params.get('use_quanti', False))
+
+            for h in range(hidden1_units):
+                code += f'''
+    action cnn1_add_h{h}(bit<32> delta) {{
+        meta.cnn1_h{h}_sum = meta.cnn1_h{h}_sum + delta;
+    }}
+'''
+            if use_quanti:
+                for h in range(hidden1_units):
+                    code += f'''
+    action set_cnn1_h{h}(bit<{hidden_bits}> val) {{
+        meta.cnn1_h{h} = val;
+    }}
+'''
+            for h in range(hidden2_units):
+                code += f'''
+    action cnn2_add_h{h}(bit<32> delta) {{
+        meta.cnn2_h{h}_sum = meta.cnn2_h{h}_sum + delta;
+    }}
+'''
+            if use_quanti:
+                for h in range(hidden2_units):
+                    code += f'''
+    action set_cnn2_h{h}(bit<{hidden_bits}> val) {{
+        meta.cnn2_h{h} = val;
+    }}
+'''
+            for c in range(n_cls):
+                code += f'''
+    action cnn_out_add_c{c}(bit<32> delta) {{
+        meta.cnn_score_c{c} = meta.cnn_score_c{c} + delta;
+    }}
+'''
+            for h in range(hidden1_units):
+                for fi in range(len(self.classifier_features)):
+                    code += f'''
+    table cnn1_h{h}_f{fi} {{
+        key = {{
+            meta.cnn_in{fi} : exact;
+        }}
+        actions = {{
+            cnn1_add_h{h};
+            NoAction;
+        }}
+        size = {2**input_bits};
+    }}
+'''
+            if use_quanti:
+                for h in range(hidden1_units):
+                    code += f'''
+    table cnn1_quant_h{h} {{
+        key = {{
+            meta.cnn1_h{h}_sum : range;
+        }}
+        actions = {{
+            set_cnn1_h{h};
+            NoAction;
+        }}
+        size = 65535;
+    }}
+'''
+            pooled = hidden1_units // max(1, pool)
+            for h in range(hidden2_units):
+                for pi in range(pooled):
+                    code += f'''
+    table cnn2_h{h}_p{pi} {{
+        key = {{
+            meta.cnn_p{pi} : exact;
+        }}
+        actions = {{
+            cnn2_add_h{h};
+            NoAction;
+        }}
+        size = {2**hidden_bits};
+    }}
+'''
+            if use_quanti:
+                for h in range(hidden2_units):
+                    code += f'''
+    table cnn2_quant_h{h} {{
+        key = {{
+            meta.cnn2_h{h}_sum : range;
+        }}
+        actions = {{
+            set_cnn2_h{h};
+            NoAction;
+        }}
+        size = 65535;
+    }}
+'''
+            for c in range(n_cls):
+                for h in range(hidden2_units):
+                    code += f'''
+    table cnn_out_c{c}_h{h} {{
+        key = {{
+            meta.cnn2_h{h} : exact;
+        }}
+        actions = {{
+            cnn_out_add_c{c};
+            NoAction;
+        }}
+        size = {2**hidden_bits};
+    }}
+'''
+
+        # ── Apply block ──────────────────────────────────────────────────
         code += '''
     apply {
         if (hdr.ipv4.isValid() && (meta.protocol == TYPE_TCP || meta.protocol == TYPE_UDP)) {
-            // Step 1: Compute bidirectional flow hash (canonical direction)
             compute_flow_hash();
-
-            // Step 2: Update flow state.
-            //         Flag counts are accumulated inside update_flow_state().
-            //         meta.flow_ended is set to 1 when the flow is complete
-            //         (timeout exposing previous flow, or FIN/RST ending current flow).
             update_flow_state();
 
-            // Step 3–6 only run when a complete flow is ready for classification.
-            // Require at least 2 packets to match training data filtering.
             if (meta.flow_ended == 1w1 &&
                     (meta.fwd_pkt_count + meta.bwd_pkt_count) >= 2) {
-                // (Flag counts already snapshotted inside update_flow_state before register clear)
-
-                // Step 3: Apply PCA transformations
 '''
-        for i in range(1, self.n_components + 1):
-            code += f'            pca_component{i}.apply();\n'
 
-        code += '\n            // Step 5: Apply classifier\n'
+        # Transform tables (PCA/LDA/Autoencoder/UMAP only)
+        if self.needs_transform:
+            code += f'\n                // Apply {pfx.upper()} transformations\n'
+            for i in range(1, self.n_components + 1):
+                code += f'                {self.table_prefix}_component{i}.apply();\n'
 
+        if self.model_type == 'cnn':
+            input_bits = int(self.cnn_params.get('input_bits', 8))
+            code += '\n                // Quantize CNN inputs\n'
+            for i, feat_name in enumerate(self.classifier_features):
+                meta_f = self._meta_field_for_feature(feat_name)
+                width = self._feature_bit_width(feat_name)
+                shift = max(0, width - input_bits)
+                if shift > 0:
+                    code += f'                meta.cnn_in{i} = (bit<{input_bits}>)({meta_f} >> {shift});\n'
+                else:
+                    code += f'                meta.cnn_in{i} = (bit<{input_bits}>){meta_f};\n'
+
+        # Classifier
+        code += '\n                // Apply classifier\n'
         if self.model_type == 'dt':
-            code += '            ml_code.apply();\n'
-
+            code += '                ml_code.apply();\n'
         elif self.model_type == 'rf':
             n_est = self.rf_params.get('n_estimators', 8)
-            code += '            // Initialize packed vote field\n'
-            total_vote_bits = self.rf_params.get('n_estimators', 8) * self.rf_params.get('vote_bits', 2)
-            code += f'            meta.rf_votes = {total_vote_bits}w0;\n'
+            total_vb = n_est * self.rf_params.get('vote_bits', 2)
+            code += f'                meta.rf_votes = {total_vb}w0;\n'
             for i in range(n_est):
-                code += f'            rf_tree_{i}.apply();\n'
-            code += '            rf_vote_classify.apply();\n'
-
+                code += f'                rf_tree_{i}.apply();\n'
+            code += '                rf_vote_classify.apply();\n'
         elif self.model_type == 'xgb':
             total_trees = self.xgb_params.get('total_trees', 0)
-            n_cls       = self.xgb_params.get('n_classes',   2)
-            code += '            // Initialize per-class score accumulators\n'
+            n_cls = self.xgb_params.get('n_classes', 2)
             for c in range(n_cls):
-                code += f'            meta.xgb_score_c{c} = 16w0;\n'
-            for tree_idx in range(total_trees):
-                code += f'            xgb_tree_{tree_idx}.apply();\n'
-            code += '            xgb_classify.apply();\n'
+                code += f'                meta.xgb_score_c{c} = 16w0;\n'
+            for tidx in range(total_trees):
+                code += f'                xgb_tree_{tidx}.apply();\n'
+            code += '                xgb_classify.apply();\n'
+        elif self.model_type == 'cnn':
+            hidden1_units = int(self.cnn_params.get('hidden1_units', 0))
+            hidden2_units = int(self.cnn_params.get('hidden2_units', 0))
+            hidden_bits = int(self.cnn_params.get('hidden_bits', 8))
+            pool = int(self.cnn_params.get('pool', 2))
+            h1_shift = int(self.cnn_params.get('h1_shift', 0))
+            h2_shift = int(self.cnn_params.get('h2_shift', 0))
+            use_quanti = bool(self.cnn_params.get('use_quanti', False))
+            h_max = (1 << hidden_bits) - 1
+            n_cls = len(self.cnn_params.get('classes', []))
+            b1_int = self.cnn_params.get('b1_int', [0] * hidden1_units)
+            b2_int = self.cnn_params.get('b2_int', [0] * hidden2_units)
+            b3_int = self.cnn_params.get('b3_int', [0] * n_cls)
 
+            code += '                // CNN hidden accumulators init\n'
+            for h in range(hidden1_units):
+                bias = int(b1_int[h]) if h < len(b1_int) else 0
+                bias_u = (bias + (1 << 32)) % (1 << 32)
+                code += f'                meta.cnn1_h{h}_sum = 32w{bias_u};\n'
+
+            code += '                // CNN class scores init\n'
+            for c in range(n_cls):
+                bias = int(b3_int[c]) if c < len(b3_int) else 0
+                bias_u = (bias + (1 << 32)) % (1 << 32)
+                code += f'                meta.cnn_score_c{c} = 32w{bias_u};\n'
+
+            code += '                // CNN hidden1 layer lookups\n'
+            for h in range(hidden1_units):
+                for fi in range(len(self.classifier_features)):
+                    code += f'                cnn1_h{h}_f{fi}.apply();\n'
+
+            if use_quanti:
+                code += '                // CNN quantize hidden1 (table)\n'
+                for h in range(hidden1_units):
+                    code += (f'                if (meta.cnn1_h{h}_sum[31:31] == 1w1) '
+                             f'{{ meta.cnn1_h{h} = {hidden_bits}w0; }}\n')
+                    code += (f'                else {{ cnn1_quant_h{h}.apply(); }}\n')
+            else:
+                code += '                // CNN ReLU + quantize hidden1\n'
+                for h in range(hidden1_units):
+                    code += (f'                if (meta.cnn1_h{h}_sum[31:31] == 1w1) '
+                             f'{{ meta.cnn1_h{h} = {hidden_bits}w0; }}\n')
+                    code += (f'                else if ((meta.cnn1_h{h}_sum >> {h1_shift}) > {h_max}) '
+                             f'{{ meta.cnn1_h{h} = {hidden_bits}w{h_max}; }}\n')
+                    code += (f'                else {{ meta.cnn1_h{h} = '
+                             f'(bit<{hidden_bits}>)(meta.cnn1_h{h}_sum >> {h1_shift}); }}\n')
+
+            pooled = hidden1_units // max(1, pool)
+            code += '                // CNN maxpool\n'
+            for p in range(pooled):
+                idx0 = p * pool
+                if pool == 1:
+                    code += f'                meta.cnn_p{p} = meta.cnn1_h{idx0};\n'
+                else:
+                    idx1 = idx0 + 1
+                    code += (f'                if (meta.cnn1_h{idx0} >= meta.cnn1_h{idx1}) '
+                             f'{{ meta.cnn_p{p} = meta.cnn1_h{idx0}; }} '
+                             f'else {{ meta.cnn_p{p} = meta.cnn1_h{idx1}; }}\n')
+
+            code += '                // CNN hidden2 accumulators init\n'
+            for h in range(hidden2_units):
+                bias = int(b2_int[h]) if h < len(b2_int) else 0
+                bias_u = (bias + (1 << 32)) % (1 << 32)
+                code += f'                meta.cnn2_h{h}_sum = 32w{bias_u};\n'
+
+            code += '                // CNN hidden2 layer lookups\n'
+            for h in range(hidden2_units):
+                for p in range(pooled):
+                    code += f'                cnn2_h{h}_p{p}.apply();\n'
+
+            if use_quanti:
+                code += '                // CNN quantize hidden2 (table)\n'
+                for h in range(hidden2_units):
+                    code += (f'                if (meta.cnn2_h{h}_sum[31:31] == 1w1) '
+                             f'{{ meta.cnn2_h{h} = {hidden_bits}w0; }}\n')
+                    code += (f'                else {{ cnn2_quant_h{h}.apply(); }}\n')
+            else:
+                code += '                // CNN ReLU + quantize hidden2\n'
+                for h in range(hidden2_units):
+                    code += (f'                if (meta.cnn2_h{h}_sum[31:31] == 1w1) '
+                             f'{{ meta.cnn2_h{h} = {hidden_bits}w0; }}\n')
+                    code += (f'                else if ((meta.cnn2_h{h}_sum >> {h2_shift}) > {h_max}) '
+                             f'{{ meta.cnn2_h{h} = {hidden_bits}w{h_max}; }}\n')
+                    code += (f'                else {{ meta.cnn2_h{h} = '
+                             f'(bit<{hidden_bits}>)(meta.cnn2_h{h}_sum >> {h2_shift}); }}\n')
+
+            code += '                // CNN output layer lookups\n'
+            for c in range(n_cls):
+                for h in range(hidden2_units):
+                    code += f'                cnn_out_c{c}_h{h}.apply();\n'
+
+            code += '                // CNN argmax (signed compare)\n'
+            if n_cls > 0:
+                code += '                meta.ml_result = 0;\n'
+                code += '                bit<32> best = meta.cnn_score_c0;\n'
+                for c in range(1, n_cls):
+                    code += (f'                if ((best[31:31] == 1w1 && meta.cnn_score_c{c}[31:31] == 1w0) || '
+                             f'(best[31:31] == meta.cnn_score_c{c}[31:31] && meta.cnn_score_c{c} > best)) '
+                             f'{{ best = meta.cnn_score_c{c}; meta.ml_result = {c}; }}\n')
+
+        # Digest
         code += '''
-            // Step 6: Send digest with flow features and classification result
-            digest<digest_t>(1, {
-                meta.canon_src_ip,
-                meta.canon_dst_ip,
-                meta.canon_src_port,
-                meta.canon_dst_port,
-                meta.protocol,
-                meta.duration,
-                meta.max_iat,
-                meta.urg_count,
-                meta.fwd_pkt_count,
-                meta.bwd_pkt_count,
-                meta.fwd_bytes,
-                meta.bwd_bytes,
-                meta.max_win_size,
-                meta.flags_syn,
-                meta.flags_ack,
-                meta.flags_fin,
-                meta.flags_rst,
+                // Send digest
+                digest<digest_t>(1, {
+                    meta.canon_src_ip,
+                    meta.canon_dst_ip,
+                    meta.canon_src_port,
+                    meta.canon_dst_port,
+                    meta.protocol,
+                    meta.duration,
+                    meta.max_iat,
+                    meta.urg_count,
+                    meta.fwd_pkt_count,
+                    meta.bwd_pkt_count,
+                    meta.fwd_bytes,
+                    meta.bwd_bytes,
+                    meta.max_win_size,
+                    meta.flags_syn,
+                    meta.flags_ack,
+                    meta.flags_fin,
+                    meta.flags_rst,
 '''
-        for i in range(1, self.n_components + 1):
-            code += f'                meta.pc{i}_code,\n'
-        
-        # Add XGB scores if model_type is 'xgb'
+        if self.needs_transform:
+            for i in range(1, self.n_components + 1):
+                code += f'                    meta.{pfx}{i}_code,\n'
+
         if self.model_type == 'xgb':
             n_cls = self.xgb_params.get('n_classes', 2)
             for c in range(n_cls):
-                code += f'                meta.xgb_score_c{c},\n'
+                code += f'                    meta.xgb_score_c{c},\n'
 
-        code += '''                meta.ml_result
-            });
-            } // end if (meta.flow_ended == 1w1 && >= 2 packets)
+        code += '''                    meta.ml_result
+                });
+            } // end if flow_ended
 
-            // Step 7: Forward packet (always, regardless of flow state)
             ipv4_lpm.apply();
         }
     }
@@ -869,25 +1154,16 @@ control MyIngress(inout headers hdr,
 '''
         return code
 
-
+    # ─────────────────────────────────────────────────────────────────────
     def generate_egress_and_tail(self):
-        """Generate egress, checksum, deparser, and main switch."""
         return '''
-/*************************************************************************
-****************  E G R E S S   P R O C E S S I N G   *******************
-*************************************************************************/
-
 control MyEgress(inout headers hdr,
                  inout metadata meta,
                  inout standard_metadata_t standard_metadata) {
     apply {  }
 }
 
-/*************************************************************************
-*************   C H E C K S U M    C O M P U T A T I O N   **************
-*************************************************************************/
-
-control MyComputeChecksum(inout headers  hdr, inout metadata meta) {
+control MyComputeChecksum(inout headers hdr, inout metadata meta) {
      apply {
          update_checksum(
             hdr.ipv4.isValid(),
@@ -907,10 +1183,6 @@ control MyComputeChecksum(inout headers  hdr, inout metadata meta) {
     }
 }
 
-/*************************************************************************
-***********************  D E P A R S E R  *******************************
-*************************************************************************/
-
 control MyDeparser(packet_out packet, in headers hdr) {
     apply {
         packet.emit(hdr.ethernet);
@@ -919,10 +1191,6 @@ control MyDeparser(packet_out packet, in headers hdr) {
         packet.emit(hdr.udp);
     }
 }
-
-/*************************************************************************
-***********************  S W I T C H  *******************************
-*************************************************************************/
 
 V1Switch(
     MyParser(),
@@ -934,10 +1202,12 @@ V1Switch(
 ) main;
 '''
 
+    # ─────────────────────────────────────────────────────────────────────
     def generate(self):
-        """Generate complete P4 code."""
-        logger.info(f"Generating P4 code: model_type={self.model_type}, "
-                    f"{self.n_components} PCA components, {self.bits}-bit codes")
+        method_label = self.reduction_config.get('method', 'pca').upper()
+        logger.info(f"Generating P4: method={method_label}, model={self.model_type}, "
+                    f"transform={self.needs_transform}, "
+                    f"components={self.n_components}, bits={self.bits}")
 
         code = self.generate_header()
         code += self.generate_metadata()
@@ -947,121 +1217,157 @@ V1Switch(
         return code
 
     def write_to_file(self):
-        """Write generated P4 code to file."""
         code = self.generate()
         with open(self.output_file, 'w') as f:
             f.write(code)
+        logger.info(f"Generated {self.output_file}")
 
-        logger.info(f"Successfully generated {self.output_file}")
-        logger.info(f"  Model type   : {self.model_type}")
-        logger.info(f"  PCA components: {self.n_components}")
-        logger.info(f"  Quantization  : {self.bits}-bit codes")
-        if self.model_type == 'rf':
-            logger.info(f"  RF trees      : {self.rf_params.get('n_estimators')}")
-            logger.info(f"  Vote bits     : {self.rf_params.get('vote_bits')}")
-        elif self.model_type == 'xgb':
-            logger.info(f"  XGB trees     : {self.xgb_params.get('total_trees')}")
-            logger.info(f"  XGB classes   : {self.xgb_params.get('n_classes')}")
 
+# ─── Parameter loading utilities ─────────────────────────────────────────
+
+def load_reduction_config(config_file='tables/reduction_config.json'):
+    """Load the universal reduction config written by any step 2."""
+    if os.path.exists(config_file):
+        try:
+            with open(config_file) as f:
+                cfg = json.load(f)
+            logger.info(f"Loaded reduction_config: method={cfg.get('method')}, "
+                        f"features={cfg.get('feature_columns')}, "
+                        f"transform={cfg.get('needs_transform_tables')}")
+            return cfg
+        except Exception as e:
+            logger.warning(f"Could not read {config_file}: {e}")
+    return None
 
 
 def detect_n_components(params_file='tables/pca_encoding_params.json',
-                        commands_file='tables/s1-commands.txt'):
-    """
-    Detect PCA component count and bit-width from saved parameter files.
-    Priority: pca_encoding_params.json → s1-commands.txt heuristic → default.
-    """
+                        commands_file='tables/s1-commands.txt',
+                        table_prefix='pca'):
+    """Detect component count and bit-width from transform encoding params."""
     if os.path.exists(params_file):
         try:
-            with open(params_file, 'r') as f:
+            with open(params_file) as f:
                 params = json.load(f)
-            n_components = params.get('n_components')
-            bits         = params.get('bits', 16)
-            if n_components:
-                logger.info(f"Detected {n_components} PCA components ({bits}-bit) from {params_file}")
-                return n_components, bits
+            n = params.get('n_components')
+            bits = params.get('bits', 16)
+            if n and bits:
+                logger.info(f"Detected {n} components ({bits}-bit) from {params_file}")
+                return n, bits
         except Exception as e:
             logger.warning(f"Could not read {params_file}: {e}")
 
     if os.path.exists(commands_file):
         try:
-            with open(commands_file, 'r') as f:
+            with open(commands_file) as f:
                 tables = set()
                 for line in f:
-                    m = re.search(r'pca_component(\d+)', line)
+                    m = re.search(rf'{table_prefix}_component(\d+)', line)
                     if m:
                         tables.add(int(m.group(1)))
             if tables:
                 n = max(tables)
-                logger.info(f"Detected {n} PCA components from {commands_file}")
+                logger.info(f"Detected {n} components from {commands_file}")
                 return n, 16
         except Exception as e:
             logger.warning(f"Could not parse {commands_file}: {e}")
 
-    logger.warning("Could not auto-detect PCA components — defaulting to 2 (16-bit)")
+    logger.warning("Could not auto-detect components — defaulting to 2 (16-bit)")
     return 2, 16
 
 
-def load_rf_params(rf_params_file='tables/rf_params.json'):
-    """Load RF deployment parameters saved by 3_rf_training_model.py."""
-    if os.path.exists(rf_params_file):
+def load_rf_params(path='tables/rf_params.json'):
+    if os.path.exists(path):
         try:
-            with open(rf_params_file) as f:
-                params = json.load(f)
-            logger.info(f"Loaded RF params: n_estimators={params.get('n_estimators')}, "
-                        f"vote_bits={params.get('vote_bits')}, "
-                        f"n_classes={params.get('n_classes')}")
-            return params
+            with open(path) as f:
+                p = json.load(f)
+            logger.info(f"RF params: n_estimators={p.get('n_estimators')}, vote_bits={p.get('vote_bits')}")
+            return p
         except Exception as e:
-            logger.warning(f"Could not read {rf_params_file}: {e}")
-    logger.warning("RF params file not found — using defaults (8 estimators, 2 vote_bits)")
+            logger.warning(f"Could not read {path}: {e}")
     return {"n_estimators": 8, "vote_bits": 2, "n_classes": 4}
 
 
-def load_xgb_params(xgb_params_file='tables/xgb_params.json'):
-    """Load XGB deployment parameters saved by 3_xgb_training_model.py."""
-    if os.path.exists(xgb_params_file):
+def load_xgb_params(path='tables/xgb_params.json'):
+    if os.path.exists(path):
         try:
-            with open(xgb_params_file) as f:
-                params = json.load(f)
-            logger.info(f"Loaded XGB params: total_trees={params.get('total_trees')}, "
-                        f"n_classes={params.get('n_classes')}")
-            return params
+            with open(path) as f:
+                p = json.load(f)
+            logger.info(f"XGB params: total_trees={p.get('total_trees')}, n_classes={p.get('n_classes')}")
+            return p
         except Exception as e:
-            logger.warning(f"Could not read {xgb_params_file}: {e}")
-    logger.warning("XGB params file not found — using defaults")
+            logger.warning(f"Could not read {path}: {e}")
     return {"total_trees": 16, "n_classes": 2, "n_estimators": 8}
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        description='Generate P4 code for PCA + ML classification (DT / RF / XGB)')
-    parser.add_argument('--output', default='../basic.p4',
-                        help='Output P4 file path (default: ../basic.p4)')
-    parser.add_argument('--params-file', default='tables/pca_encoding_params.json',
-                        help='PCA encoding parameters JSON')
-    parser.add_argument('--commands-file', default='tables/s1-commands.txt',
-                        help='S1 commands file (fallback for component detection)')
-    parser.add_argument('--model-type', default='dt',
-                        choices=['dt', 'rf', 'xgb'],
-                        help='Classifier back-end: dt (default) | rf | xgb')
-    parser.add_argument('--rf-params',  default='tables/rf_params.json',
-                        help='RF params JSON (used when --model-type rf)')
-    parser.add_argument('--xgb-params', default='tables/xgb_params.json',
-                        help='XGB params JSON (used when --model-type xgb)')
-    parser.add_argument('--register-entries', type=int, default=65536,
-                        help='MAX_REGISTER_ENTRIES constant in generated P4 (default: 65536)')
-    parser.add_argument('--flow-timeout-s', type=int, default=120,
-                        help='FLOW_TIMEOUT in seconds for generated P4 (default: 120)')
+def load_cnn_params(path='tables/cnn_params.json'):
+    if os.path.exists(path):
+        try:
+            with open(path) as f:
+                p = json.load(f)
+            logger.info(f"CNN params: hidden_units={p.get('hidden_units')}, "
+                        f"input_bits={p.get('input_bits')}, hidden_bits={p.get('hidden_bits')}")
+            return p
+        except Exception as e:
+            logger.warning(f"Could not read {path}: {e}")
+    return {}
 
+
+# ─── Main ────────────────────────────────────────────────────────────────
+
+def main():
+    parser = P4secArgumentParser(
+        description='Generate P4 code for ML classification (universal)',
+        formatter_class=argparse.RawTextHelpFormatter,
+        epilog=(
+            "Notes:\n"
+            "  - Reduction method is read from tables/reduction_config.json.\n"
+            "  - GB uses the XGB P4 architecture (auto-mapped).\n"
+            "  - Also emits a Tofino P4 file via --tofino-output.\n"
+        )
+    )
+    parser.add_argument('--output', default='../basic.p4',
+                        help='BMv2 P4 output (default: ../basic.p4)')
+    parser.add_argument('--tofino-output', default='../p4sec_tofino.p4',
+                        help='Tofino P4 output (default: ../p4sec_tofino.p4)')
+    parser.add_argument('--params-file', default='tables/pca_encoding_params.json')
+    parser.add_argument('--commands-file', default='tables/s1-commands.txt')
+    parser.add_argument('--reduction-config', default='tables/reduction_config.json')
+    parser.add_argument('-m', '--model-type', default='dt',
+                        choices=['dt', 'rf', 'xgb', 'gb', 'knn', 'svm', 'cnn'],
+                        help='Classifier: dt | rf | xgb | gb (uses XGB arch) | knn | svm | cnn')
+    parser.add_argument('--rf-params', default='tables/rf_params.json')
+    parser.add_argument('--xgb-params', default='tables/xgb_params.json')
+    parser.add_argument('--register-entries', type=int, default=65536)
+    parser.add_argument('--flow-timeout-s', type=int, default=120)
     args = parser.parse_args()
 
-    # Auto-detect PCA config
-    n_components, bits = detect_n_components(args.params_file, args.commands_file)
+    # Map GB → XGB (identical P4 architecture)
+    user_model_type = args.model_type
+    if args.model_type == 'gb':
+        args.model_type = 'xgb'
+    if args.model_type in ('knn', 'svm'):
+        # Deploy as DT proxy in P4
+        args.model_type = 'dt'
+        logger.info("GB uses XGB P4 architecture — generating XGB tables.")
+
+    # Load universal reduction config (may be None for old PCA pipeline)
+    red_cfg = load_reduction_config(args.reduction_config)
+
+    # Determine n_components and bits
+    if red_cfg and red_cfg.get('needs_transform_tables', True):
+        table_prefix = 'umap' if (red_cfg or {}).get('method') == 'umap' else 'pca'
+        n_components, bits = detect_n_components(args.params_file, args.commands_file, table_prefix=table_prefix)
+    elif red_cfg and not red_cfg.get('needs_transform_tables', True):
+        n_components = red_cfg.get('n_components', 0)
+        bits = 16
+    else:
+        table_prefix = 'umap' if (red_cfg or {}).get('method') == 'umap' else 'pca'
+        n_components, bits = detect_n_components(args.params_file, args.commands_file, table_prefix=table_prefix)
 
     # Load model-specific params
     rf_params  = load_rf_params(args.rf_params)   if args.model_type == 'rf'  else {}
     xgb_params = load_xgb_params(args.xgb_params) if args.model_type == 'xgb' else {}
+    cnn_params = load_cnn_params('tables/cnn_params.json') if args.model_type == 'cnn' else {}
 
     generator = P4CodeGenerator(
         n_components=n_components,
@@ -1070,20 +1376,35 @@ def main():
         model_type=args.model_type,
         rf_params=rf_params,
         xgb_params=xgb_params,
+        cnn_params=cnn_params,
         n_registers=args.register_entries,
         flow_timeout_s=args.flow_timeout_s,
+        reduction_config=red_cfg or {},
     )
     generator.write_to_file()
 
-    logger.info("\nGeneration complete!")
-    logger.info(f"Model type : {args.model_type.upper()}")
-    if args.model_type == 'dt':
-        logger.info("Entry gen  : run 4_dt_generating_entries.py to populate tables/s1-commands.txt")
-    elif args.model_type == 'rf':
-        logger.info("Entry gen  : run 4_rf_generating_entries.py to populate tables/s1-commands.txt")
-    elif args.model_type == 'xgb':
-        logger.info("Entry gen  : run 4_xgb_generating_entries.py to populate tables/s1-commands.txt")
-    logger.info(f"To compile : make")
+    # Also emit a Tofino-target P4 file (same P4_16 source, different filename)
+    if args.tofino_output:
+        tofino_gen = P4CodeGenerator(
+            n_components=n_components,
+            bits=bits,
+            output_file=args.tofino_output,
+            model_type=args.model_type,
+            rf_params=rf_params,
+            xgb_params=xgb_params,
+            cnn_params=cnn_params,
+            n_registers=args.register_entries,
+            flow_timeout_s=args.flow_timeout_s,
+            reduction_config=red_cfg or {},
+        )
+        tofino_gen.write_to_file()
+
+    method_str = (red_cfg or {}).get('method', 'pca').upper()
+    logger.info(f"\nGeneration complete!")
+    logger.info(f"  Reduction : {method_str}")
+    logger.info(f"  Model     : {user_model_type.upper()}"
+                f"{' (P4 arch: ' + args.model_type.upper() + ')' if user_model_type != args.model_type else ''}")
+    logger.info(f"  Transform : {'yes' if generator.needs_transform else 'no (direct features)'}")
 
 
 if __name__ == '__main__':

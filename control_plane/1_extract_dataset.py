@@ -47,6 +47,7 @@ import ipaddress
 import pyshark
 import csv
 import argparse
+import sys
 import logging
 import time
 from collections import defaultdict
@@ -56,6 +57,24 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 FLOW_TIMEOUT_NS = 120 * 1_000_000_000  # 120 seconds in nanoseconds
+
+LOGO = """---------------------------------------------------------------------------
+------PPPPPPPP------4444------SSSSSSSS------EEEEEEEE------CCCCCCCC---------
+------PP-----PP----44--44----SS-------------EE------------CC---------------
+------PP-----PP---44---44----SS-------------EE------------CC---------------
+------PPPPPPPP---44----44-----SSSSSS--------EEEEEEE-------CC---------------
+------PP---------444444444----------SS------EE------------CC---------------
+------PP---------------44-----------SS------EE------------CC---------------
+------PP---------------44----SSSSSSSS-------EEEEEEEE------CCCCCCCC---------
+---------------------------------------------------------------------------"""
+
+
+class P4secArgumentParser(argparse.ArgumentParser):
+    def print_help(self, file=None):
+        if file is None:
+            file = sys.stdout
+        print(LOGO, file=file)
+        super().print_help(file)
 
 
 # ---------------------------------------------------------------------------
@@ -422,8 +441,15 @@ def extract_features_from_interface(interface, output_csv, label=None,
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description='Extract bidirectional flow features from PCAP/PCAPNG files or live capture')
+    parser = P4secArgumentParser(
+        description='Extract bidirectional flow features from PCAP/PCAPNG files or live capture',
+        formatter_class=argparse.RawTextHelpFormatter,
+        epilog=(
+            "Mode-specific options:\n"
+            "  pcap : --input or --pcap-dir\n"
+            "  live : --interface (required), --count, --duration, --label\n"
+        )
+    )
     parser.add_argument('--mode', choices=['pcap', 'live'], required=True)
     parser.add_argument('--input',    help='Input PCAP file (single file mode)')
     parser.add_argument('--pcap-dir', default='pcaps')

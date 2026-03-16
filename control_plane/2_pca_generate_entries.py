@@ -5,17 +5,47 @@ import json
 import os
 import glob
 import argparse
+import sys
 
 from sklearn.decomposition import PCA
 from sklearn.tree import DecisionTreeRegressor, DecisionTreeClassifier
 from sklearn.model_selection import train_test_split, cross_val_score
 from sklearn.metrics import r2_score, accuracy_score
 
+LOGO = """---------------------------------------------------------------------------
+------PPPPPPPP------4444------SSSSSSSS------EEEEEEEE------CCCCCCCC---------
+------PP-----PP----44--44----SS-------------EE------------CC---------------
+------PP-----PP---44---44----SS-------------EE------------CC---------------
+------PPPPPPPP---44----44-----SSSSSS--------EEEEEEE-------CC---------------
+------PP---------444444444----------SS------EE------------CC---------------
+------PP---------------44-----------SS------EE------------CC---------------
+------PP---------------44----SSSSSSSS-------EEEEEEEE------CCCCCCCC---------
+---------------------------------------------------------------------------"""
+
+
+class P4secArgumentParser(argparse.ArgumentParser):
+    def print_help(self, file=None):
+        if file is None:
+            file = sys.stdout
+        print(LOGO, file=file)
+        super().print_help(file)
+
 # ==========================================================
 # 0. CONFIG / CLI
 # ==========================================================
 def parse_args():
-    parser = argparse.ArgumentParser(description="PCA + DT pipeline with quantization")
+    parser = P4secArgumentParser(
+        description="PCA pipeline with quantization (works with any classifier in step 3)",
+        formatter_class=argparse.RawTextHelpFormatter,
+        epilog=(
+            "Outputs:\n"
+            "  tables/s1-commands.txt           (P4 transform entries)\n"
+            "  tables/pca_encoding_params.json  (transform params; legacy filename used by all methods)\n"
+            "  tables/pca_integer_mapping.csv   (codes + labels; legacy filename used by all methods)\n"
+            "  tables/reduction_config.json     (universal config)\n"
+            "Code prefix: PC*_code\n"
+        )
+    )
     parser.add_argument("--components", "-k", type=int, default=None,
                         help="Number of PCA components (if omitted, auto-select for high explained variance)")
     parser.add_argument("--bits", "-b", type=int, default=16,
@@ -85,7 +115,7 @@ df_clean = df.replace([np.inf, -np.inf], np.nan).dropna()
 # ==========================================================
 # Select exactly the 9 P4-compatible features in the EXACT order
 # that the pca_component* tables declare their key fields.
-# 1_data_extraction.py now outputs these columns directly.
+# 1_extract_dataset.py now outputs these columns directly.
 # ==========================================================
 P4_FEATURE_COLS = [
     "Protocol",
@@ -397,6 +427,25 @@ with open(params_path, "w") as f:
 print(f"Encoding parameters saved to: {params_path}")
 
 # ==========================================================
+# 11b. Save universal reduction_config.json
+# ==========================================================
+feature_columns = [f"PC{j+1}_code" for j in range(k)]
+feature_max_values = {col: int(MAX_VAL) for col in feature_columns}
+
+reduction_config = {
+    "method": "pca",
+    "feature_columns": feature_columns,
+    "feature_max_values": feature_max_values,
+    "needs_transform_tables": True,
+    "n_components": int(k),
+    "bits": int(BITS),
+}
+reduction_config_path = os.path.join(TABLES_DIR, "reduction_config.json")
+with open(reduction_config_path, "w") as f:
+    json.dump(reduction_config, f, indent=2)
+print(f"Reduction config saved to: {reduction_config_path}")
+
+# ==========================================================
 # 12. Export P4 table_add commands for PCA transformation
 #     Maps raw feature ranges to each PCA component code
 #     Generates separate commands for each PCA component (scalable design)
@@ -597,11 +646,16 @@ print(f"IF rules (feature ranges -> PC*_code) saved to: {rules_if_path}")
 
 print()
 print("=" * 60)
-print("IMPORTANT: s1-commands.txt now contains ONLY PCA table entries.")
-print("You MUST re-run the classifier entry generator next:")
-print("  python3 4_dt_generating_entries.py   (for DT model)")
-print("  python3 4_rf_generating_entries.py   (for RF model)")
-print("  python3 4_xgb_generating_entries.py  (for XGB model)")
-print("Skipping this step will result in all flows being classified")
-print("as class 0 (Benign) because RF/DT/XGB table entries are absent.")
+print("IMPORTANT: s1-commands.txt now contains ONLY PCA transform entries.")
+print("You MUST re-run the unified classifier pipeline next:")
+print("  python3 3_train_model.py --model-type dt")
+print("  python3 3_train_model.py --model-type rf")
+print("  python3 3_train_model.py --model-type xgb")
+print("  python3 3_train_model.py --model-type gb")
+print("  python3 3_train_model.py --model-type knn")
+print("  python3 3_train_model.py --model-type svm")
+print("  python3 3_train_model.py --model-type cnn")
+print("Then run the matching 4_generate_model_entries.py and 5_generating_p4_code.py steps.")
+print("Skipping the classifier-entry regeneration step will result in all flows")
+print("being classified as class 0 (Benign) because model table entries are absent.")
 print("=" * 60)

@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
 """
-P4 Runtime Controller for PCA + Decision Tree Traffic Classification.
+P4 Runtime Controller for ML Traffic Classification (universal).
+
+Supports all reduction methods (PCA / LDA / Autoencoder / UMAP / Feature Selection)
+and all deployable classifier back-ends (DT / RF / XGB / GB / CNN, plus KNN/SVM via DT proxy).
 
 This controller:
 1. Loads P4 program rules into a BMv2 switch via simple_switch_CLI
-2. Listens for digest messages containing packet features and classifications
+2. Listens for digest messages containing flow features and classifications
 3. Records predictions to CSV for analysis
 """
 
 import argparse
+import sys
 import os
 import sys
 import time
@@ -34,6 +38,24 @@ import p4runtime_lib.helper
 from p4runtime_lib.switch import ShutdownAllSwitchConnections
 from p4.v1 import p4runtime_pb2, p4runtime_pb2_grpc
 
+LOGO = """---------------------------------------------------------------------------
+------PPPPPPPP------4444------SSSSSSSS------EEEEEEEE------CCCCCCCC---------
+------PP-----PP----44--44----SS-------------EE------------CC---------------
+------PP-----PP---44---44----SS-------------EE------------CC---------------
+------PPPPPPPP---44----44-----SSSSSS--------EEEEEEE-------CC---------------
+------PP---------444444444----------SS------EE------------CC---------------
+------PP---------------44-----------SS------EE------------CC---------------
+------PP---------------44----SSSSSSSS-------EEEEEEEE------CCCCCCCC---------
+---------------------------------------------------------------------------"""
+
+
+class P4secArgumentParser(argparse.ArgumentParser):
+    def print_help(self, file=None):
+        if file is None:
+            file = sys.stdout
+        print(LOGO, file=file)
+        super().print_help(file)
+
 # Traffic class label mapping will be loaded dynamically from model
 CLASS_LABELS = {}
 
@@ -43,7 +65,7 @@ def make_canonical_key(src_ip, src_port, dst_ip, dst_port, proto):
     digest messages aggregate into the same flow entry.
 
     Uses INTEGER IP comparison — matches P4 (bit<32> comparison) and
-    1_data_extraction.py (ipaddress.ip_address integer conversion) exactly.
+    1_extract_dataset.py (ipaddress.ip_address integer conversion) exactly.
     String comparison (e.g. '192.168.1.100' < '192.168.1.52') disagrees with
     integer comparison and would split a bidirectional flow into two entries.
     """
@@ -261,6 +283,27 @@ def load_class_labels_from_xgb_params(params_path, model_path):
     # Fallback to model if params are missing or invalid
     return load_class_labels(model_path)
 
+def load_class_labels_from_dt_params(params_path, model_path):
+    """Load class labels for DT or DT-proxy models (KNN/SVM) from params JSON, fallback to model if needed."""
+    try:
+        with open(params_path, 'r') as f:
+            params = json.load(f)
+        classes = params.get("classes")
+        if classes:
+            label_mapping = {idx: label for idx, label in enumerate(classes)}
+            print("=== Class Label Mapping (from dt_params.json) ===")
+            for class_id, label in sorted(label_mapping.items()):
+                print(f"  {class_id}: {label}")
+            print()
+            return label_mapping
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        print(f"WARNING: Error reading DT params from {params_path}: {e}")
+
+    # Fallback to model if params are missing or invalid
+    return load_class_labels(model_path)
+
 def load_digest_schema(p4info_path, digest_name):
     """Load digest field names from P4Info.
 
@@ -302,16 +345,22 @@ def find_first_field(name_to_index, candidates):
             return name
     return None
 
-def parse_pca_field_names(digest_fields):
-    """Return PCA field names sorted by numeric suffix (pc1_code, pc2_code, ...)."""
-    pca = []
+def parse_transform_field_names(digest_fields):
+    """Return code field names sorted by numeric suffix.
+
+    Detects PCA (pc1_code, pc2_code, ...), LDA (ld1_code, ld2_code, ...),
+    Autoencoder (ae1_code, ae2_code, ...), and UMAP (um1_code, um2_code, ...).
+    When Feature Selection is used
+    there are no code fields in the digest.
+    """
+    codes = []
     for name in digest_fields:
-        m = re.match(r"^pc(\d+)_code$", name)
+        m = re.match(r"^(pc|ld|ae|um)(\d+)_code$", name)
         if m:
-            pca.append((int(m.group(1)), name))
-    if not pca:
+            codes.append((int(m.group(2)), name))
+    if not codes:
         return []
-    return [name for _, name in sorted(pca, key=lambda x: x[0])]
+    return [name for _, name in sorted(codes, key=lambda x: x[0])]
 
 def parse_score_field_names(digest_fields):
     """Return score fields mapped by class index (e.g., score_c0, xgb_c1)."""
@@ -346,6 +395,112 @@ def format_votes_debug(votes, class_labels):
         return ""
     vote_strs = [f"T{i}={class_labels.get(v, f'{v}')}" for i, v in enumerate(votes)]
     return f"  [Tree Votes: {' '.join(vote_strs)}]"
+
+def format_codes_display(codes, display_names, bits=16):
+    """Universal display formatter for transform codes or empty for FS."""
+    if not codes or not display_names:
+        return ""
+    width = len(str((1 << bits) - 1)) if bits else 8
+    parts = [f'{display_names[i]}={codes[i]:<{width}}' for i in range(min(len(codes), len(display_names)))]
+    return ' '.join(parts)
+
+def format_codes_csv(codes):
+    """Format codes for CSV output. Returns empty string if no codes."""
+    if not codes:
+        return ""
+    return ','.join(str(c) for c in codes) + ','
+
+
+def apply_hidden_activation(values, activation_name):
+    values = np.asarray(values, dtype=np.float64)
+    if activation_name == 'identity':
+        return values
+    if activation_name == 'relu':
+        return np.maximum(values, 0.0)
+    if activation_name == 'tanh':
+        return np.tanh(values)
+    if activation_name == 'logistic':
+        clipped = np.clip(values, -60.0, 60.0)
+        return 1.0 / (1.0 + np.exp(-clipped))
+    raise ValueError(f"Unsupported autoencoder activation: {activation_name}")
+
+
+def encode_autoencoder_codes(raw_features, encoding_config, max_val):
+    scaler_mean = encoding_config.get('scaler_mean')
+    scaler_scale = encoding_config.get('scaler_scale')
+    encoder_weights = encoding_config.get('encoder_weights')
+    encoder_bias = encoding_config.get('encoder_bias')
+    activation_name = encoding_config.get('encoder_activation', 'tanh')
+    pc_min = encoding_config.get('pc_min')
+    pc_range = encoding_config.get('pc_range')
+
+    required = [scaler_mean, scaler_scale, encoder_weights, encoder_bias, pc_min, pc_range]
+    if any(x is None for x in required):
+        raise ValueError('Autoencoder encoding parameters are incomplete')
+
+    mean_vec = np.array(scaler_mean, dtype=np.float64)
+    scale_vec = np.array(scaler_scale, dtype=np.float64)
+    safe_scale = np.where(scale_vec == 0, 1.0, scale_vec)
+    weight_mat = np.array(encoder_weights, dtype=np.float64)
+    bias_vec = np.array(encoder_bias, dtype=np.float64)
+    pc_min_arr = np.array(pc_min, dtype=np.float64)
+    pc_range_arr = np.array(pc_range, dtype=np.float64)
+    pc_range_safe = np.where(pc_range_arr == 0, 1.0, pc_range_arr)
+
+    scaled = (raw_features - mean_vec) / safe_scale
+    latent_linear = scaled @ weight_mat + bias_vec
+    latent = apply_hidden_activation(latent_linear, activation_name)
+    latent_norm = (latent - pc_min_arr) / pc_range_safe
+    codes = np.rint(np.clip(latent_norm * max_val, 0, max_val)).astype(int)
+    return codes.tolist()
+
+
+# Map canonical feature names (from reduction_config) to entry["features"] / entry["flags"] keys
+_FEATURE_TO_ENTRY_KEY = {
+    "Protocol":    ("features", "proto"),
+    "Duration":    ("features", "duration"),
+    "MaxIAT":      ("features", "max_iat"),
+    "UrgCount":    ("features", "urg_count"),
+    "FwdPktCount": ("features", "fwd_pkt_count"),
+    "BwdPktCount": ("features", "bwd_pkt_count"),
+    "FwdBytes":    ("features", "fwd_bytes"),
+    "BwdBytes":    ("features", "bwd_bytes"),
+    "MaxWinSize":  ("features", "max_win_size"),
+    "FlagsSyn":    ("flags", "syn"),
+    "FlagsAck":    ("flags", "ack"),
+    "FlagsFin":    ("flags", "fin"),
+    "FlagsRst":    ("flags", "rst"),
+}
+
+
+def build_model_input(entry, needs_transform, reduction_feature_columns):
+    """
+    Build the correct numpy model input from a flow entry.
+
+    - PCA / LDA / Autoencoder / UMAP (needs_transform=True): returns entry["pca_codes"] (the quantized codes).
+    - Feature Selection (needs_transform=False): returns the selected raw features
+      extracted from entry["features"] + entry["flags"] in the correct order.
+
+    Returns a list of numeric values ready for np.array([...]).
+    """
+    if needs_transform:
+        return list(entry.get("pca_codes", []))
+
+    # Feature Selection: build input from raw features
+    if not reduction_feature_columns:
+        return list(entry.get("pca_codes", []))
+
+    values = []
+    for feat_name in reduction_feature_columns:
+        mapping = _FEATURE_TO_ENTRY_KEY.get(feat_name)
+        if mapping:
+            section, key = mapping
+            values.append(entry.get(section, {}).get(key, 0))
+        else:
+            # Unknown feature name — try lowercase in features dict
+            values.append(entry.get("features", {}).get(feat_name.lower(), 0))
+    return values
+
 
 class DigestClient:
     """Dedicated P4Runtime client for receiving digest messages from the switch.
@@ -450,7 +605,9 @@ class DigestClient:
 
 def drain_p4_registers(p4info_helper, stub, device_id, pca_config,
                        model_type, rf_model, xgb_model, xgb_class_mapping,
-                       CLASS_LABELS, n_components, pca_bits, out, pca_field_names):
+                       CLASS_LABELS, n_components, pca_bits, out, pca_field_names,
+                       needs_transform=True, code_display_names=None,
+                       reduction_feature_columns=None):
     """
     Read every P4 register slot via P4Runtime and classify flows that are still
     sitting in registers (no FIN/RST seen, 120-second timeout never fired because
@@ -458,18 +615,39 @@ def drain_p4_registers(p4info_helper, stub, device_id, pca_config,
     Appends recovered flows to `out` (already-open CSV file in append mode).
     Returns the number of flows drained.
     """
-    # PCA transform parameters saved by 2_pca_generating_entries.py
+    transform_method = str(pca_config.get('method', 'pca')).lower()
+
+    # PCA/LDA/UMAP transform parameters
     pca_components = pca_config.get('pca_components')  # list[list[float]], shape (k, F)
     pca_mean       = pca_config.get('pca_mean')        # list[float], shape (F,)
-    pc_min         = pca_config.get('pc_min')          # list[float], shape (k,)
-    pc_range       = pca_config.get('pc_range')        # list[float], shape (k,)
+    pc_min         = pca_config.get('pc_min')           # list[float], shape (k,)
+    pc_range       = pca_config.get('pc_range')         # list[float], shape (k,)
     max_val        = pca_config.get('max_val', (1 << pca_bits) - 1)
+    umap_tree      = pca_config.get('_umap_tree')
+    umap_model     = pca_config.get('_umap_model')
 
-    can_classify = all(x is not None for x in [pca_components, pca_mean, pc_min, pc_range])
-    if not can_classify:
-        print("  NOTE: PCA components missing from pca_encoding_params.json — "
-              "re-run 2_pca_generating_entries.py, then restart the controller "
-              "to enable full drain classification.")
+    if needs_transform:
+        if transform_method == 'autoencoder':
+            can_classify = all(x is not None for x in [
+                pca_config.get('scaler_mean'),
+                pca_config.get('scaler_scale'),
+                pca_config.get('encoder_weights'),
+                pca_config.get('encoder_bias'),
+                pc_min,
+                pc_range,
+            ])
+        elif transform_method == 'umap':
+            can_classify = umap_tree is not None or (
+                umap_model is not None and pc_min is not None and pc_range is not None
+            )
+        else:
+            can_classify = all(x is not None for x in [pca_components, pca_mean, pc_min, pc_range])
+        if not can_classify:
+            print("  NOTE: Transform components missing from encoding params — "
+                  "re-run step 2, then restart controller for drain classification.")
+    else:
+        # Feature Selection: can classify if we have a model
+        can_classify = True
 
     REGS = {
         'time_first':    'MyIngress.reg_time_first_pkt',
@@ -542,54 +720,89 @@ def drain_p4_registers(p4info_helper, stub, device_id, pca_config,
 
         class_id    = -1
         class_label = 'unclassified'
-        pca_codes   = [0] * n_components
+        pca_codes   = [0] * max(n_components, 1)
 
         if can_classify:
             try:
-                # Guess protocol from TCP flags; fall back to TCP (6) if any flag set
                 proto_guess = 6 if (f_syn or f_ack or f_fin or f_rst) else 17
-                # Feature order MUST match P4_FEATURE_COLS in 2_pca_generating_entries.py:
-                # Protocol, Duration, MaxIAT, UrgCount, FwdPktCount, BwdPktCount,
-                # FwdBytes, BwdBytes, MaxWinSize, FlagsSyn, FlagsAck, FlagsFin, FlagsRst
+                # All 13 raw features in canonical order
                 raw = np.array([[proto_guess, duration, max_iat, urg_count,
                                   fwd, bwd, fwd_bytes, bwd_bytes, win,
                                   f_syn, f_ack, f_fin, f_rst]], dtype=np.float64)
-                mean_vec      = np.array(pca_mean)
-                comps_mat     = np.array(pca_components)       # (k, n_features)
-                pc_floats     = (raw - mean_vec) @ comps_mat.T  # (1, k)
-                pc_min_arr    = np.array(pc_min)
-                pc_range_arr  = np.array(pc_range)
-                pc_range_safe = np.where(pc_range_arr == 0, 1, pc_range_arr)
-                pc_norm       = (pc_floats - pc_min_arr) / pc_range_safe
-                pc_int        = np.rint(np.clip(pc_norm * max_val, 0, max_val)).astype(int)[0]
-                pca_codes     = pc_int.tolist()[:n_components]
-                if len(pca_codes) < n_components:
-                    pca_codes += [0] * (n_components - len(pca_codes))
+
+                if needs_transform:
+                    if transform_method == 'autoencoder':
+                        pca_codes = encode_autoencoder_codes(raw, pca_config, max_val)[:n_components]
+                    elif transform_method == 'umap':
+                        if umap_tree is not None:
+                            pred = umap_tree.predict(raw)
+                            pc_int = np.rint(np.clip(pred, 0, max_val)).astype(int)[0]
+                            pca_codes = pc_int.tolist()[:n_components]
+                        elif umap_model is not None:
+                            um_floats = umap_model.transform(raw)
+                            pc_min_arr    = np.array(pc_min)
+                            pc_range_arr  = np.array(pc_range)
+                            pc_range_safe = np.where(pc_range_arr == 0, 1, pc_range_arr)
+                            pc_norm       = (um_floats - pc_min_arr) / pc_range_safe
+                            pc_int        = np.rint(np.clip(pc_norm * max_val, 0, max_val)).astype(int)[0]
+                            pca_codes     = pc_int.tolist()[:n_components]
+                        else:
+                            pca_codes = [0] * max(n_components, 1)
+                    else:
+                        mean_vec      = np.array(pca_mean)
+                        comps_mat     = np.array(pca_components)
+                        pc_floats     = (raw - mean_vec) @ comps_mat.T
+                        pc_min_arr    = np.array(pc_min)
+                        pc_range_arr  = np.array(pc_range)
+                        pc_range_safe = np.where(pc_range_arr == 0, 1, pc_range_arr)
+                        pc_norm       = (pc_floats - pc_min_arr) / pc_range_safe
+                        pc_int        = np.rint(np.clip(pc_norm * max_val, 0, max_val)).astype(int)[0]
+                        pca_codes     = pc_int.tolist()[:n_components]
+                    if len(pca_codes) < n_components:
+                        pca_codes += [0] * (n_components - len(pca_codes))
+                    model_input = pca_codes
+                else:
+                    # Feature Selection: classify directly on selected raw features
+                    pca_codes = []  # no codes to report
+                    if reduction_feature_columns:
+                        # Build raw feature dict for lookup
+                        all_raw = {
+                            "Protocol": proto_guess, "Duration": duration,
+                            "MaxIAT": max_iat, "UrgCount": urg_count,
+                            "FwdPktCount": fwd, "BwdPktCount": bwd,
+                            "FwdBytes": fwd_bytes, "BwdBytes": bwd_bytes,
+                            "MaxWinSize": win, "FlagsSyn": f_syn,
+                            "FlagsAck": f_ack, "FlagsFin": f_fin, "FlagsRst": f_rst,
+                        }
+                        model_input = [all_raw.get(f, 0) for f in reduction_feature_columns]
+                    else:
+                        model_input = raw[0].tolist()
 
                 if model_type == 'rf' and rf_model is not None:
-                    x_np        = np.array([pca_codes[:rf_model.n_features_in_]], dtype=np.float64)
+                    x_np        = np.array([model_input[:rf_model.n_features_in_]], dtype=np.float64)
                     pred_label  = rf_model.predict(x_np)[0]
                     class_id    = list(rf_model.classes_).index(pred_label)
                     class_label = pred_label
                 elif model_type == 'xgb' and xgb_model is not None:
-                    x_np        = np.array([pca_codes[:xgb_model.n_features_in_]], dtype=np.float64)
+                    x_np        = np.array([model_input[:xgb_model.n_features_in_]], dtype=np.float64)
                     class_id    = int(xgb_model.predict(x_np)[0])
                     class_label = (xgb_class_mapping or {}).get(class_id, f'unknown({class_id})')
             except Exception as _e:
                 class_label = 'drain-err'
 
-        pca_display = ' '.join([f'PCA{i+1}={pca_codes[i]:<{pca_width}}' for i in range(n_components)])
+        code_display = format_codes_display(pca_codes, code_display_names or [], pca_bits)
         print(f"  [REG-SLOT {slot:<6}] "
               f"Dur={duration:<12} MaxIAT={max_iat:<12} Urg={urg_count:<3} "
               f"Fwd={fwd:<4} Bwd={bwd:<4} FwdB={fwd_bytes:<8} BwdB={bwd_bytes:<8} Win={win:<6} | "
               f"Flags(S/A/F/R)={f_syn}/{f_ack}/{f_fin}/{f_rst} | "
-              f"{pca_display} | Class={class_label}({class_id}) [REG-DRAIN]", flush=True)
+              f"{code_display + ' | ' if code_display else ''}"
+              f"Class={class_label}({class_id}) [REG-DRAIN]", flush=True)
         out.write(
             f"reg-slot-{slot},0,reg-drain,0,unknown,"
             f"{duration},{max_iat},{urg_count},{fwd},{bwd},"
             f"{fwd_bytes},{bwd_bytes},{win},"
             f"{f_syn},{f_ack},{f_fin},{f_rst},"
-            f"{','.join(str(c) for c in pca_codes)},"
+            f"{format_codes_csv(pca_codes)}"
             f"{class_id},{class_label}\n"
         )
         drained += 1
@@ -607,75 +820,178 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
     print(f"BMv2 JSON: {bmv2_file_path}")
     print(f"Runtime CLI: {runtime_cli_path}\n")
 
-    # Load PCA configuration to determine number of components
+    # Load reduction / transform configuration
     script_dir = os.path.dirname(os.path.abspath(__file__))
     pca_config_path = os.path.join(script_dir, 'tables/pca_encoding_params.json')
+    reduction_config_path = os.path.join(script_dir, 'tables/reduction_config.json')
     flow_aggregator = FlowAggregator(timeout_s=flow_timeout_s)
 
+    # Load universal reduction config (determines method: pca/lda/autoencoder/umap/feature_selection)
+    reduction_method = 'pca'   # default fallback
+    needs_transform = True
+    reduction_feature_columns = None
+    try:
+        with open(reduction_config_path, 'r') as f:
+            reduction_cfg = json.load(f)
+            reduction_method = reduction_cfg.get('method', 'pca')
+            needs_transform = reduction_cfg.get('needs_transform_tables', True)
+            reduction_feature_columns = reduction_cfg.get('feature_columns')
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+
+    # Determine display prefix: PCA / LD / AE / UM / raw feature names
+    if reduction_method == 'lda':
+        code_display_prefix = 'LD'
+    elif reduction_method == 'autoencoder':
+        code_display_prefix = 'AE'
+    elif reduction_method == 'umap':
+        code_display_prefix = 'UM'
+    elif reduction_method == 'feature_selection':
+        code_display_prefix = ''   # will use actual feature names
+    else:
+        code_display_prefix = 'PCA'
+
+    pca_config = {}
     try:
         with open(pca_config_path, 'r') as f:
             pca_config = json.load(f)
             n_components = pca_config.get('n_components', 2)
-            pca_bits = pca_config.get('bits', 16)
+            pca_bits = pca_config.get('bits', 16) or 16
     except FileNotFoundError:
-        print(f"WARNING: PCA config not found at {pca_config_path}, defaulting to 2 components")
+        print(f"WARNING: Encoding config not found at {pca_config_path}, defaulting to 2 components")
         n_components = 2
         pca_bits = 16
     except json.JSONDecodeError:
         print(f"WARNING: Invalid JSON in {pca_config_path}, defaulting to 2 components")
         n_components = 2
         pca_bits = 16
+
+    # Optional: load UMAP models for register drain classification
+    if reduction_method == 'umap':
+        def _resolve_path(path):
+            if not path:
+                return None
+            return path if os.path.isabs(path) else os.path.join(script_dir, path)
+
+        umap_tree_path = _resolve_path(pca_config.get('umap_tree_path'))
+        umap_model_path = _resolve_path(pca_config.get('umap_model_path'))
+
+        if umap_tree_path and os.path.exists(umap_tree_path):
+            try:
+                with open(umap_tree_path, 'rb') as f:
+                    pca_config['_umap_tree'] = pickle.load(f)
+                print(f"Loaded UMAP tree model: {umap_tree_path}")
+            except Exception as e:
+                print(f"WARNING: Unable to load UMAP tree model: {e}")
+
+        if umap_model_path and os.path.exists(umap_model_path):
+            try:
+                with open(umap_model_path, 'rb') as f:
+                    pca_config['_umap_model'] = pickle.load(f)
+                print(f"Loaded UMAP model: {umap_model_path}")
+            except Exception as e:
+                print(f"WARNING: Unable to load UMAP model: {e}")
     
     # Load digest schema from P4Info for dynamic parsing
     digest_fields = load_digest_schema(p4info_file_path, digest_name)
     name_to_index = build_digest_field_index(digest_fields) if digest_fields else {}
-    pca_field_names = parse_pca_field_names(digest_fields)
+    transform_field_names = parse_transform_field_names(digest_fields)
     score_field_names = parse_score_field_names(digest_fields)
 
-    if pca_field_names:
-        n_components = len(pca_field_names)
+    if transform_field_names:
+        n_components = len(transform_field_names)
+
+    # Build universal display names for the code/feature columns.
+    # PCA: ["PCA1", ...], LDA: ["LD1", ...], AE: ["AE1", ...], FS: []
+    if transform_field_names:
+        # Transform codes are in digest
+        code_csv_headers = transform_field_names
+        code_display_names = []
+        for name in transform_field_names:
+            m = re.match(r"^(pc|ld|ae|um)(\d+)_code$", name)
+            if m:
+                pfx = {'pc': 'PCA', 'ld': 'LD', 'ae': 'AE', 'um': 'UM'}.get(m.group(1), m.group(1).upper())
+                code_display_names.append(f"{pfx}{m.group(2)}")
+            else:
+                code_display_names.append(name)
+    elif reduction_feature_columns and not needs_transform:
+        # Feature Selection — no codes in digest, classifier ran on raw features
+        code_csv_headers = []   # no extra columns in digest
+        code_display_names = [] # nothing to display beyond raw features
+        n_components = 0        # no transform components
+    else:
+        # Fallback: naming based on reduction method
+        prefix_map = {'pca': 'pc', 'lda': 'ld', 'autoencoder': 'ae', 'umap': 'um'}
+        code_prefix = prefix_map.get(reduction_method, 'pc')
+        code_csv_headers = [f'{code_prefix}{i}_code' for i in range(1, n_components + 1)]
+        code_display_names = [f'{code_display_prefix or "PCA"}{i}' for i in range(1, n_components + 1)]
 
     if digest_fields:
         print(f"Digest schema loaded: {len(digest_fields)} fields")
     else:
         print("WARNING: Digest schema not found; using fallback parsing")
 
-    print(f"PCA Components: {n_components} (bits={pca_bits})\n")
+    print(f"Reduction method: {reduction_method.upper()} | Components: {n_components} (bits={pca_bits})\n")
 
-    # Load class labels dynamically from trained model (DT, RF, or XGB)
+    # Load class labels dynamically from trained model
     global CLASS_LABELS
     dt_params_path = os.path.join(script_dir, 'tables/dt_params.json')
     rf_params_path = os.path.join(script_dir, 'tables/rf_params.json')
     xgb_params_path = os.path.join(script_dir, 'tables/xgb_params.json')
+    gb_params_path = os.path.join(script_dir, 'tables/gb_params.json')
     dt_model_path = os.path.join(script_dir, 'model/dt.model')
     rf_model_path = os.path.join(script_dir, 'model/rf.model')
     xgb_model_path = os.path.join(script_dir, 'model/xgb.model')
+    gb_model_path = os.path.join(script_dir, 'model/gb.model')
 
     # Infer model type from digest structure (most reliable when multiple params exist)
+    # RF and XGB have distinctive extra fields in the digest; DT has neither.
+    # If the digest was loaded successfully and neither marker is present, it is
+    # definitively DT — do NOT fall through to the file-based heuristic which
+    # would wrongly pick up leftover rf_params.json from a
+    # previous run.
     model_type = None
+    declared_dt_type = None
+    digest_based_detection = False
     if digest_fields:
+        digest_based_detection = True
         if any(re.match(r"^xgb_score_c\d+$", f) for f in digest_fields):
             model_type = "xgb"
         elif "rf_votes" in digest_fields:
             model_type = "rf"
-    
-    # Fallback: check params files (prioritize rf > xgb > dt)
+        else:
+            model_type = "dt"   # No RF/XGB markers → must be DT
+            try:
+                with open(dt_params_path, 'r') as f:
+                    _dtp = json.load(f)
+                declared_dt_type = _dtp.get("model_type")
+            except Exception:
+                declared_dt_type = None
+
+    # Fallback: check params files only when digest info was unavailable
+    # (prioritize rf > xgb/gb > dt/knn/svm)
     if model_type is None:
         for params_path, mtype in [
             (rf_params_path, "rf"),
             (xgb_params_path, "xgb"),
+            (gb_params_path, "xgb"),   # GB deploys as XGB
             (dt_params_path, "dt"),
         ]:
             if os.path.exists(params_path):
                 try:
                     with open(params_path, 'r') as f:
                         params = json.load(f)
-                    if params.get("model_type") == mtype:
+                    pmt = params.get("model_type", "")
+                    if mtype == "dt" and pmt in ("dt", "knn", "svm"):
+                        model_type = "dt"
+                        declared_dt_type = pmt
+                        break
+                    if pmt in (mtype, os.path.basename(params_path).split('_')[0]):
                         model_type = mtype
                         break
                 except Exception:
                     pass
-    
+
     # Final default
     if model_type is None:
         model_type = "dt"
@@ -704,12 +1020,18 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
             rf_vote_bits = None
     elif model_type == "xgb":
         CLASS_LABELS = load_class_labels_from_xgb_params(xgb_params_path, xgb_model_path)
+        if not CLASS_LABELS:
+            CLASS_LABELS = load_class_labels_from_xgb_params(gb_params_path, gb_model_path)
         try:
             xgb_model = pd.read_pickle(xgb_model_path)
             print("XGB model loaded for runtime verification.")
-        except Exception as e:
-            print(f"WARNING: Unable to load XGB model for verification: {e}")
-            xgb_model = None
+        except Exception:
+            try:
+                xgb_model = pd.read_pickle(gb_model_path)
+                print("GB model loaded for runtime verification (XGB-compatible).")
+            except Exception as e:
+                print(f"WARNING: Unable to load XGB/GB model for verification: {e}")
+                xgb_model = None
         try:
             with open(xgb_params_path, 'r') as f:
                 xgb_params = json.load(f)
@@ -720,7 +1042,14 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
             xgb_params = None
             xgb_class_mapping = None
     else:
-        CLASS_LABELS = load_class_labels(dt_model_path)
+        # DT-like (includes KNN/SVM proxies). Prefer dt_params.json classes or
+        # the declared model file if present.
+        dt_model_for_labels = dt_model_path
+        if declared_dt_type in ("knn", "svm"):
+            candidate = os.path.join(script_dir, f"model/{declared_dt_type}.model")
+            if os.path.exists(candidate):
+                dt_model_for_labels = candidate
+        CLASS_LABELS = load_class_labels_from_dt_params(dt_params_path, dt_model_for_labels)
 
     # -----------------------------------------------------------------------
     # Stale-model check: verify that the loaded model's feature count matches
@@ -733,19 +1062,17 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
     model_pca_mismatch = False
     if _verify_model is not None and hasattr(_verify_model, 'n_features_in_'):
         model_n_feat = _verify_model.n_features_in_
-        if model_n_feat != n_components:
+        # For transform methods: model features should match n_components
+        # For FS: model features should match len(reduction_feature_columns)
+        expected_feat = n_components if needs_transform else len(reduction_feature_columns or [])
+        if expected_feat > 0 and model_n_feat != expected_feat:
             model_pca_mismatch = True
             print(f"\n{'='*65}")
             print(f"WARNING: Model feature mismatch detected!")
-            print(f"  Digest/P4 produces {n_components} PCA component(s).")
+            print(f"  Pipeline produces {expected_feat} feature(s) ({reduction_method.upper()}).")
             print(f"  Loaded {model_type.upper()} model expects {model_n_feat} feature(s).")
             print(f"  Runtime verification will be DISABLED until the pipeline")
-            print(f"  is rerun in order:")
-            print(f"    1. python3 2_pca_generating_entries.py")
-            print(f"    2. python3 3_{model_type}_training_model.py")
-            print(f"    3. python3 4_{model_type}_generating_entries.py")
-            print(f"    4. python3 5_generating_p4_code.py --model-type {model_type}")
-            print(f"    5. make")
+            print(f"  is rerun in order (step 2 → step 3 → step 4 → step 5 → make).")
             print(f"{'='*65}\n")
 
     # Create logs directory
@@ -808,12 +1135,12 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
     os.makedirs('logs', exist_ok=True)
     try:
         with open("logs/predictions.csv", "w") as out:
-            # Build CSV header dynamically based on number of PCA components
-            if pca_field_names:
-                pca_headers = ','.join(pca_field_names)
+            # Build CSV header dynamically based on reduction method
+            if code_csv_headers:
+                extra_headers = ','.join(code_csv_headers) + ','
             else:
-                pca_headers = ','.join([f'pc{i}_code' for i in range(1, n_components + 1)])
-            out.write(f"src_ip,src_port,dst_ip,dst_port,proto,duration,max_iat,urg_count,fwd_pkt_count,bwd_pkt_count,fwd_bytes,bwd_bytes,max_win_size,flags_syn,flags_ack,flags_fin,flags_rst,{pca_headers},class_id,class_label\n")
+                extra_headers = ''   # Feature Selection: no code columns
+            out.write(f"src_ip,src_port,dst_ip,dst_port,proto,duration,max_iat,urg_count,fwd_pkt_count,bwd_pkt_count,fwd_bytes,bwd_bytes,max_win_size,flags_syn,flags_ack,flags_fin,flags_rst,{extra_headers}class_id,class_label\n")
             packet_id = 0
             warn_once = {
                 "missing_fields": False,
@@ -832,8 +1159,7 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
                             continue
                         
                         packet_id += 1
-                        pca_width = len(str((1 << pca_bits) - 1))
-                        pca_display = ' '.join([f'PCA{i+1}={entry["pca_codes"][i]:<{pca_width}}' for i in range(n_components)])
+                        pca_display = format_codes_display(entry['pca_codes'], code_display_names, pca_bits)
                         f = entry["features"]
                         flags = entry["flags"]
                         class_id = entry["class_id"]
@@ -843,7 +1169,7 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
                         votes_or_scores_debug = ""
                         if model_type == "rf" and rf_model is not None and not model_pca_mismatch:
                             try:
-                                x_np = np.array([entry["pca_codes"][:rf_model.n_features_in_]], dtype=np.float64)
+                                x_np = np.array([build_model_input(entry, needs_transform, reduction_feature_columns)[:rf_model.n_features_in_]], dtype=np.float64)
                                 if x_np.shape[1] != rf_model.n_features_in_:
                                     raise ValueError(f"X has {x_np.shape[1]} features, model expects {rf_model.n_features_in_}")
                                 pred_label = rf_model.predict(x_np)[0]
@@ -880,7 +1206,7 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
                                 verify_note = f" | RF-VERIFY=error({type(_ve).__name__}: {_ve})"
                         elif model_type == "xgb" and xgb_model is not None and not model_pca_mismatch:
                             try:
-                                x_np = np.array([entry["pca_codes"][:xgb_model.n_features_in_]], dtype=np.float64)
+                                x_np = np.array([build_model_input(entry, needs_transform, reduction_feature_columns)[:xgb_model.n_features_in_]], dtype=np.float64)
                                 pred_id = int(xgb_model.predict(x_np)[0])
                                 # XGBoost returns encoded int; decode to class name using mapping
                                 pred_label = xgb_class_mapping.get(pred_id, f"unknown({pred_id})")
@@ -893,12 +1219,13 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
                             # Debug: show accumulated scores from dataplane (any class count)
                             votes_or_scores_debug = format_score_debug(entry.get("xgb_scores", {}))
 
+                        _code_sfx = (pca_display + " | ") if pca_display else ""
                         print(f"[{packet_id:<4}] {f['src_ip']:>15}:{f['src_port']:<5} -> {f['dst_ip']:>15}:{f['dst_port']:<5} | "
                               f"Dur={f['duration']:<12} MaxIAT={f['max_iat']:<12} Urg={f['urg_count']:<4} "
                               f"FwdPkts={f['fwd_pkt_count']:<4} BwdPkts={f['bwd_pkt_count']:<4} "
                               f"FwdBytes={f['fwd_bytes']:<8} BwdBytes={f['bwd_bytes']:<8} Win={f['max_win_size']:<6} | "
                               f"Flags(S/A/F/R)={flags['syn']}/{flags['ack']}/{flags['fin']}/{flags['rst']} | "
-                              f"{pca_display} | "
+                            f"{_code_sfx}"
                               f"Class={class_label}({class_id}){verify_note}")
                         if votes_or_scores_debug:
                             print(votes_or_scores_debug)
@@ -906,7 +1233,7 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
                         out.write(f"{f['src_ip']},{f['src_port']},{f['dst_ip']},{f['dst_port']},{f['proto']},"
                                   f"{f['duration']},{f['max_iat']},{f['urg_count']},{f['fwd_pkt_count']},{f['bwd_pkt_count']},"
                                   f"{f['fwd_bytes']},{f['bwd_bytes']},{f['max_win_size']},{flags['syn']},{flags['ack']},{flags['fin']},{flags['rst']},"
-                                  f"{','.join([str(code) for code in entry['pca_codes']])},{class_id},{class_label}\n")
+                                  f"{format_codes_csv(entry['pca_codes'])}{class_id},{class_label}\n")
                         out.flush()
                     continue
 
@@ -963,7 +1290,7 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
                         flags_rst = get_val(get_idx(["flags_rst", "rst"]))
 
                         pca_codes = []
-                        for name in (pca_field_names or []):
+                        for name in (transform_field_names or []):
                             idx = name_to_index.get(name)
                             if idx is None or idx >= len(st):
                                 pca_codes.append(0)
@@ -1018,7 +1345,7 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
                         if remaining <= 0:
                             if not warn_once["missing_fields"]:
                                 warn_once["missing_fields"] = True
-                                print(f"WARNING: Digest has no PCA/class fields ({len(st)}); skipping")
+                                print(f"WARNING: Digest has no transform/class fields ({len(st)}); skipping")
                             continue
 
                         # Determine layout: either [PCA... , class_id] or [PCA..., xgb_scores(4), class_id]
@@ -1035,7 +1362,7 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
                             pca_count = min(n_components, max(0, remaining - 1))
                             class_index = base_fields + (remaining - 1)
 
-                        # Extract PCA component codes (pad if digest has fewer than expected)
+                        # Extract transform codes (pad if digest has fewer than expected)
                         pca_codes = []
                         for i in range(pca_count):
                             idx = base_fields + i
@@ -1103,8 +1430,7 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
                             continue
                         packet_id += 1
                         _digest_count_flow += 1
-                        pca_width = len(str((1 << pca_bits) - 1))
-                        pca_display = ' '.join([f'PCA{i+1}={entry["pca_codes"][i]:<{pca_width}}' for i in range(n_components)])
+                        pca_display = format_codes_display(entry['pca_codes'], code_display_names, pca_bits)
                         f = entry["features"]
                         flags = entry["flags"]
                         class_id = entry["class_id"]
@@ -1114,7 +1440,7 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
                         votes_or_scores_debug = ""
                         if model_type == "rf" and rf_model is not None and not model_pca_mismatch:
                             try:
-                                x_np = np.array([entry["pca_codes"][:rf_model.n_features_in_]], dtype=np.float64)
+                                x_np = np.array([build_model_input(entry, needs_transform, reduction_feature_columns)[:rf_model.n_features_in_]], dtype=np.float64)
                                 if x_np.shape[1] != rf_model.n_features_in_:
                                     raise ValueError(f"X has {x_np.shape[1]} features, model expects {rf_model.n_features_in_}")
                                 pred_label = rf_model.predict(x_np)[0]
@@ -1150,7 +1476,7 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
                                 verify_note = f" | RF-VERIFY=error({type(_ve).__name__}: {_ve})"
                         elif model_type == "xgb" and xgb_model is not None and not model_pca_mismatch:
                             try:
-                                x_np = np.array([entry["pca_codes"][:xgb_model.n_features_in_]], dtype=np.float64)
+                                x_np = np.array([build_model_input(entry, needs_transform, reduction_feature_columns)[:xgb_model.n_features_in_]], dtype=np.float64)
                                 pred_id = int(xgb_model.predict(x_np)[0])
                                 # XGBoost returns encoded int; decode to class name using mapping
                                 pred_label = xgb_class_mapping.get(pred_id, f"unknown({pred_id})")
@@ -1163,12 +1489,13 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
                             # Debug: show accumulated scores from dataplane (any class count)
                             votes_or_scores_debug = format_score_debug(entry.get("xgb_scores", {}))
 
+                        _code_sfx = (pca_display + " | ") if pca_display else ""
                         print(f"[{packet_id:<4}] {f['src_ip']:>15}:{f['src_port']:<5} -> {f['dst_ip']:>15}:{f['dst_port']:<5} | "
                               f"Dur={f['duration']:<12} MaxIAT={f['max_iat']:<12} Urg={f['urg_count']:<4} "
                               f"FwdPkts={f['fwd_pkt_count']:<4} BwdPkts={f['bwd_pkt_count']:<4} "
                               f"FwdBytes={f['fwd_bytes']:<8} BwdBytes={f['bwd_bytes']:<8} Win={f['max_win_size']:<6} | "
                               f"Flags(S/A/F/R)={flags['syn']}/{flags['ack']}/{flags['fin']}/{flags['rst']} | "
-                              f"{pca_display} | "
+                            f"{_code_sfx}"
                               f"Class={class_label}({class_id}){verify_note}", flush=True)
                         if votes_or_scores_debug:
                             print(votes_or_scores_debug, flush=True)
@@ -1176,7 +1503,7 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
                         out.write(f"{f['src_ip']},{f['src_port']},{f['dst_ip']},{f['dst_port']},{f['proto']},"
                                   f"{f['duration']},{f['max_iat']},{f['urg_count']},{f['fwd_pkt_count']},{f['bwd_pkt_count']},"
                                   f"{f['fwd_bytes']},{f['bwd_bytes']},{f['max_win_size']},{flags['syn']},{flags['ack']},{flags['fin']},{flags['rst']},"
-                                  f"{','.join([str(code) for code in entry['pca_codes']])},{class_id},{class_label}\n")
+                                  f"{format_codes_csv(entry['pca_codes'])}{class_id},{class_label}\n")
                         out.flush()
 
         print("\nShutting down...")
@@ -1198,21 +1525,21 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
                     flags = entry["flags"]
                     class_id = entry["class_id"]
                     class_label = entry["class_label"]
-                    pca_width = len(str((1 << pca_bits) - 1))
-                    pca_display = ' '.join([f'PCA{i+1}={entry["pca_codes"][i]:<{pca_width}}' for i in range(n_components)])
+                    pca_display = format_codes_display(entry['pca_codes'], code_display_names, pca_bits)
+                    _code_sfx = (pca_display + " | ") if pca_display else ""
                     print(f"[{packet_id:<4}] {f['src_ip']:>15}:{f['src_port']:<5} -> "
                           f"{f['dst_ip']:>15}:{f['dst_port']:<5} | "
                           f"Dur={f['duration']:<12} MaxIAT={f['max_iat']:<12} Urg={f['urg_count']:<4} "
                           f"FwdPkts={f['fwd_pkt_count']:<4} BwdPkts={f['bwd_pkt_count']:<4} "
                           f"FwdBytes={f['fwd_bytes']:<8} BwdBytes={f['bwd_bytes']:<8} Win={f['max_win_size']:<6} | "
                           f"Flags(S/A/F/R)={flags['syn']}/{flags['ack']}/{flags['fin']}/{flags['rst']} | "
-                          f"{pca_display} | Class={class_label}({class_id}) [FINAL-FLUSH]")
+                          f"{_code_sfx}Class={class_label}({class_id}) [FINAL-FLUSH]")
                     final_out.write(
                         f"{f['src_ip']},{f['src_port']},{f['dst_ip']},{f['dst_port']},{f['proto']},"
                         f"{f['duration']},{f['max_iat']},{f['urg_count']},{f['fwd_pkt_count']},{f['bwd_pkt_count']},"
                         f"{f['fwd_bytes']},{f['bwd_bytes']},{f['max_win_size']},"
                         f"{flags['syn']},{flags['ack']},{flags['fin']},{flags['rst']},"
-                        f"{','.join([str(code) for code in entry['pca_codes']])},"
+                        f"{format_codes_csv(entry['pca_codes'])}"
                         f"{class_id},{class_label}\n"
                     )
                 print(f"In-memory flush complete. Total flows so far: {packet_id}")
@@ -1228,7 +1555,10 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
                 drained = drain_p4_registers(
                     p4info_helper, s1.client_stub, s1.device_id,
                     pca_config, model_type, _rf_m, _xgb_m, _xgb_cm,
-                    CLASS_LABELS, n_components, pca_bits, final_out, pca_field_names
+                    CLASS_LABELS, n_components, pca_bits, final_out, transform_field_names,
+                    needs_transform=needs_transform,
+                    code_display_names=code_display_names,
+                    reduction_feature_columns=reduction_feature_columns,
                 )
                 if drained:
                     packet_id += drained
@@ -1251,8 +1581,15 @@ if __name__ == '__main__':
     default_bmv2_json = os.path.join(script_dir, '../build/basic.json')
     default_runtime_cli = os.path.join(script_dir, 'tables/s1-commands.txt')
     
-    parser = argparse.ArgumentParser(
-        description='P4 Runtime Controller for Traffic Classification')
+    parser = P4secArgumentParser(
+        description='P4 Runtime Controller for Traffic Classification',
+        formatter_class=argparse.RawTextHelpFormatter,
+        epilog=(
+            "Notes:\n"
+            "  - Reduction method is read from tables/reduction_config.json.\n"
+            "  - Logs predictions to logs/predictions.csv.\n"
+        )
+    )
     parser.add_argument('--p4info', type=str, default=default_p4info,
                         help=f'Path to P4info file (default: {default_p4info})')
     parser.add_argument('--bmv2-json', type=str, default=default_bmv2_json,

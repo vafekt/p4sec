@@ -1,0 +1,34 @@
+{
+  "method": "pca",
+  "feature_columns": [
+    "PC1_code",
+    "PC2_code",
+    "PC3_code",
+    "PC4_code",
+    "PC5_code",
+    "PC6_code",
+    "PC7_code",
+    "PC8_code",
+    "PC9_code",
+    "PC10_code",
+    "PC11_code",
+    "PC12_code"
+  ],
+  "feature_max_values": {
+    "PC1_code": 65535,
+    "PC2_code": 65535,
+    "PC3_code": 65535,
+    "PC4_code": 65535,
+    "PC5_code": 65535,
+    "PC6_code": 65535,
+    "PC7_code": 65535,
+    "PC8_code": 65535,
+    "PC9_code": 65535,
+    "PC10_code": 65535,
+    "PC11_code": 65535,
+    "PC12_code": 65535
+  },
+  "needs_transform_tables": true,
+  "n_components": 12,
+  "bits": 16
+}

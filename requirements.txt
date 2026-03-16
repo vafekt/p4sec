@@ -7,3 +7,5 @@ scapy>=2.4.5
 grpcio>=1.40.0
 protobuf>=3.18.0
 p4runtime>=0.4.0
+torch>=2.0.0
+umap-learn>=0.5.5
