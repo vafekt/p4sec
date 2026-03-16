@@ -65,9 +65,9 @@ Live Classification & Monitoring
 
 ```bash
 cd /tutorials/exercises/
-git clone <repository-url> p4-pca-ml
-cd p4-pca-ml
-pwd  # Should output: /tutorials/exercises/p4-pca-ml
+git clone git@github.com:vafekt/p4sec.git
+cd p4sec
+pwd  # Should output: /tutorials/exercises/p4sec
 ```
 
 ### Required Installation
@@ -101,7 +101,7 @@ pwd  # Should output: /tutorials/exercises/p4-pca-ml
 ### Step 1: Extract Features
 
 ```bash
-cd /tutorials/exercises/p4-pca-ml/control_plane
+cd /tutorials/exercises/p4sec/control_plane
 
 # From PCAP/PCAPNG files
 python3 1_extract_dataset.py --mode pcap --pcap-dir pcaps --output dataset/dataset.csv
@@ -137,7 +137,7 @@ Choose **one** of the four methods:
 
 #### Option A: PCA (maximises variance)
 ```bash
-cd /tutorials/exercises/p4-pca-ml/control_plane
+cd /tutorials/exercises/p4sec/control_plane
 
 # Auto-detect number of components (95% variance)
 python3 2_pca_generate_entries.py
@@ -148,7 +148,7 @@ python3 2_pca_generate_entries.py --components 9 --bits 16
 
 #### Option B: LDA (maximises class separation — recommended for better accuracy)
 ```bash
-cd /tutorials/exercises/p4-pca-ml/control_plane
+cd /tutorials/exercises/p4sec/control_plane
 
 # Default: n_classes-1 components
 python3 2_lda_generate_entries.py
@@ -159,7 +159,7 @@ python3 2_lda_generate_entries.py --components 3 --bits 16 --solver svd
 
 #### Option C: UMAP (non-linear manifold learning)
 ```bash
-cd /tutorials/exercises/p4-pca-ml/control_plane
+cd /tutorials/exercises/p4sec/control_plane
 
 # Default: 2 components
 python3 2_umap_generate_entries.py
@@ -170,7 +170,7 @@ python3 2_umap_generate_entries.py --components 3 --bits 16 --n-neighbors 15 --m
 
 #### Option D: Feature Selection (no transform — classify on raw features directly)
 ```bash
-cd /tutorials/exercises/p4-pca-ml/control_plane
+cd /tutorials/exercises/p4sec/control_plane
 
 # Auto-select features using Mutual Information (default)
 python3 2_feature_selection_generate_entries.py
@@ -192,7 +192,7 @@ python3 2_feature_selection_generate_entries.py --components 8 --method mi
 A **single unified script** handles all seven classifier backends via `--model-type`:
 
 ```bash
-cd /tutorials/exercises/p4-pca-ml/control_plane
+cd /tutorials/exercises/p4sec/control_plane
 
 # Decision Tree — fast, interpretable
 python3 3_train_model.py --model-type dt
@@ -237,7 +237,7 @@ python3 3_train_model.py --model-type rf \
 A **single unified script** handles all deployable backends. Match `--model-type` to what was used in Step 3:
 
 ```bash
-cd /tutorials/exercises/p4-pca-ml/control_plane
+cd /tutorials/exercises/p4sec/control_plane
 
 python3 4_generate_model_entries.py --model-type dt   # Decision Tree
 python3 4_generate_model_entries.py --model-type rf   # Random Forest
@@ -257,7 +257,7 @@ python3 4_generate_model_entries.py --model-type cnn  # CNN (neural lookup table
 **IMPORTANT:** Use `--model-type` matching your trained model. The generator automatically reads `tables/reduction_config.json` to detect the reduction method (PCA / LDA / Autoencoder / UMAP / Feature Selection) and adapts the P4 code accordingly.
 
 ```bash
-cd /tutorials/exercises/p4-pca-ml/control_plane
+cd /tutorials/exercises/p4sec/control_plane
 
 python3 5_generating_p4_code.py --model-type dt
 python3 5_generating_p4_code.py --model-type rf
@@ -285,7 +285,7 @@ python3 5_generating_p4_code.py --model-type cnn
 ### Step 6: Compile and Deploy
 
 ```bash
-cd /tutorials/exercises/p4-pca-ml
+cd /tutorials/exercises/p4sec
 
 # Compile P4 program
 make clean
@@ -295,7 +295,7 @@ make
 sudo make run
 
 # Terminal 2: Start controller (AFTER Mininet is running)
-cd /tutorials/exercises/p4-pca-ml/control_plane
+cd /tutorials/exercises/p4sec/control_plane
 ./6_controller.py
 ```
 
@@ -315,7 +315,7 @@ cd /tutorials/exercises/p4-pca-ml/control_plane
 ### Quick Start with PCA + Decision Tree
 
 ```bash
-cd /tutorials/exercises/p4-pca-ml/control_plane
+cd /tutorials/exercises/p4sec/control_plane
 
 python3 1_extract_dataset.py --mode pcap --pcap-dir pcaps && \
 python3 2_pca_generate_entries.py && \
@@ -328,14 +328,14 @@ cd .. && make clean && make
 sudo make run
 
 # Terminal 2: Start controller (new terminal)
-cd /tutorials/exercises/p4-pca-ml/control_plane
+cd /tutorials/exercises/p4sec/control_plane
 ./6_controller.py
 ```
 
 ### Using LDA + Random Forest
 
 ```bash
-cd /tutorials/exercises/p4-pca-ml/control_plane
+cd /tutorials/exercises/p4sec/control_plane
 
 python3 1_extract_dataset.py --mode pcap --pcap-dir pcaps && \
 python3 2_lda_generate_entries.py && \
@@ -348,7 +348,7 @@ cd .. && make clean && make
 ### Using Feature Selection + KNN (DT proxy deployable)
 
 ```bash
-cd /tutorials/exercises/p4-pca-ml/control_plane
+cd /tutorials/exercises/p4sec/control_plane
 
 python3 1_extract_dataset.py --mode pcap --pcap-dir pcaps && \
 python3 2_feature_selection_generate_entries.py --components 8 && \
@@ -357,7 +357,7 @@ python3 3_train_model.py --model-type knn
 ### Using PCA + SVM (DT proxy deployable)
 
 ```bash
-cd /tutorials/exercises/p4-pca-ml/control_plane
+cd /tutorials/exercises/p4sec/control_plane
 
 python3 1_extract_dataset.py --mode pcap --pcap-dir pcaps && \
 python3 2_pca_generate_entries.py && \
@@ -368,7 +368,7 @@ python3 3_train_model.py --model-type svm
 ### Using PCA + XGBoost
 
 ```bash
-cd /tutorials/exercises/p4-pca-ml/control_plane
+cd /tutorials/exercises/p4sec/control_plane
 
 python3 1_extract_dataset.py --mode pcap --pcap-dir pcaps && \
 python3 2_pca_generate_entries.py && \
@@ -381,7 +381,7 @@ cd .. && make clean && make
 ### Using LDA + Gradient Boosting
 
 ```bash
-cd /tutorials/exercises/p4-pca-ml/control_plane
+cd /tutorials/exercises/p4sec/control_plane
 
 python3 1_extract_dataset.py --mode pcap --pcap-dir pcaps && \
 python3 2_lda_generate_entries.py && \
@@ -394,7 +394,7 @@ cd .. && make clean && make
 ### Using PCA + CNN (P4 deployable)
 
 ```bash
-cd /tutorials/exercises/p4-pca-ml/control_plane
+cd /tutorials/exercises/p4sec/control_plane
 
 python3 1_extract_dataset.py --mode pcap --pcap-dir pcaps && \
 python3 2_pca_generate_entries.py && \
@@ -409,7 +409,7 @@ cd .. && make clean && make
 **IMPORTANT:** When switching reduction method or model type, always re-run step 2 to regenerate `s1-commands.txt` and `reduction_config.json`:
 
 ```bash
-cd /tutorials/exercises/p4-pca-ml/control_plane
+cd /tutorials/exercises/p4sec/control_plane
 
 # Example: Switch from PCA+DT to LDA+RF
 python3 2_lda_generate_entries.py          # Regenerate reduction tables & config
@@ -422,7 +422,7 @@ cd .. && make clean && make
 ### Custom PCA Components
 
 ```bash
-cd /tutorials/exercises/p4-pca-ml/control_plane
+cd /tutorials/exercises/p4sec/control_plane
 
 python3 1_extract_dataset.py --mode pcap --pcap-dir pcaps
 
@@ -479,7 +479,7 @@ cd .. && make clean && make
 ## File Structure
 
 ```
-p4-pca-ml/
+p4sec/
 ├── README.md                                        # This file
 ├── LICENSE
 ├── Makefile                                         # P4 compilation
