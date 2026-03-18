@@ -248,6 +248,11 @@ def _extract_packet_fields(packet):
 
 def extract_features_from_pcap(pcap_path, label=None):
     features_list = []
+    import asyncio
+    try:
+        asyncio.get_event_loop()
+    except RuntimeError:
+        asyncio.set_event_loop(asyncio.new_event_loop())
     cap = pyshark.FileCapture(pcap_path)
     flows = defaultdict(lambda: None)
     packet_count = 0
