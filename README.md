@@ -110,20 +110,25 @@ python3 1_extract_dataset.py --mode pcap --pcap-dir pcaps --output dataset/datas
 sudo python3 1_extract_dataset.py --mode live --interface eth0 --count 1000 --label skype --output dataset/live.csv
 ```
 
-**Extracts 13 Flow-Based Features:**
+**Extracts 17 Flow-Based Features:**
 - **Protocol**: IP protocol number (6=TCP, 17=UDP, etc.)
 - **Duration**: Flow duration in nanoseconds (time from first to last packet)
 - **MaxIAT**: Maximum inter-arrival time between consecutive packets in the flow
+- **MinIAT**: Minimum inter-arrival time between consecutive packets in the flow
 - **UrgCount**: Number of packets with the TCP URG flag set
 - **FwdPktCount**: Number of packets in the forward direction
 - **BwdPktCount**: Number of packets in the backward/return direction
 - **FwdBytes**: Total payload bytes in the forward direction
 - **BwdBytes**: Total payload bytes in the backward direction
+- **FwdMaxPktLen**: Maximum IP packet length in the forward direction
+- **BwdMaxPktLen**: Maximum IP packet length in the backward direction
 - **MaxWinSize**: Maximum TCP window size observed across all packets in the flow
+- **InitFwdWinBytes**: TCP window size of the very first forward-direction packet
 - **FlagsSyn**: Count of packets with the TCP SYN flag set
 - **FlagsAck**: Count of packets with the TCP ACK flag set
 - **FlagsFin**: Count of packets with the TCP FIN flag set
 - **FlagsRst**: Count of packets with the TCP RST flag set
+- **FlagsPsh**: Count of packets with the TCP PSH flag set
 
 **Flow Aggregation:** Packets are grouped by 5-tuple (src_ip, dst_ip, src_port, dst_port, protocol) to create per-flow statistics. The flow direction is canonicalized so that A→B and B→A map to the same flow entry.
 
@@ -180,8 +185,10 @@ python3 2_feature_selection_generate_entries.py --components 8 --method mi
 ```
 
 **Output (all methods write to the same locations):**
-- Reduction parameters and encoding → `tables/pca_encoding_params.json` (legacy shared filename)
-- Integer code mapping → `tables/pca_integer_mapping.csv` (legacy shared filename)
+- Reduction parameters and encoding → `tables/encoding_params.json`
+- Integer code mapping → `tables/transform_mapping.csv`
+- Human-readable transform rules → `tables/transform_rules.txt`
+- Transform metrics → `tables/transform_metrics.json`
 - P4 table commands → `tables/s1-commands.txt` (empty for Feature Selection)
 - **Universal config** → `tables/reduction_config.json` (read by all subsequent steps)
 
@@ -268,7 +275,7 @@ python3 5_generating_p4_code.py --model-type cnn
 
 **Note:** For CNN P4 deployment, train with `--p4-export` first to generate `tables/cnn_params.json`.
 
-**Output:** `../basic.p4` and `../p4sec_tofino.p4` (auto-generated with reduction-method- and model-specific logic)
+**Output:** `../basic.p4` (auto-generated with reduction-method- and model-specific logic)
 
 **P4 Architecture (reduction method determines transform stage):**
 - **PCA / LDA / Autoencoder / UMAP:** `pca_component*` / `lda_component*` range-match tables map raw features → quantised codes; classifier tables match on codes
@@ -298,6 +305,17 @@ sudo make run
 cd /tutorials/exercises/p4sec/control_plane
 ./6_controller.py
 ```
+
+**Replaying a PCAP for testing/demo:**
+```bash
+# In Mininet terminal — raise MTU first so jumbo frames don't abort tcpreplay
+mininet> sh ip link set s1-eth1 mtu 65535
+
+# Replay twice back-to-back: loop 1 fills flow state, loop 2 triggers idle-timeout flush
+mininet> sh tcpreplay -i s1-eth1 --timer=gtod --loop=2 /path/to/traffic.pcap
+```
+
+> **Why `--loop=2`?** P4 flow timeouts are *lazy* — they only fire when the next packet arrives at that register slot. `FLOW_TIMEOUT = 20 s`. With a 52-second pcap, the second pass arrives > 32 s after each flow's last packet, which exceeds the 20 s threshold and flushes all flows automatically.
 
 **Controller Features:**
 - Automatically detects reduction method (PCA / LDA / Autoencoder / UMAP / Feature Selection) and model type from P4Info digest structure (reads `build/basic.p4.p4info.txtpb` — always fresh after `make`)
@@ -456,18 +474,21 @@ cd .. && make clean && make
 - Shared utilities (`detect_feature_columns`, `detect_feature_max_values`, `load_reduction_config`) used by all pipeline steps
 - Ensures consistent feature detection regardless of reduction method
 
-### TCP Flag Packet Counts as Features
-- **Expanded feature set from 9 to 13** by adding SYN/ACK/FIN/RST as per-packet **counts** (not booleans)
-- P4 registers upgraded from `register<bit<1>>` to `register<bit<32>>` for all four flag counters
+### Extended Feature Set (17 features)
+- **Expanded from 9 → 13 → 17** flow-level features
+- SYN/ACK/FIN/RST added as per-packet **counts** (not booleans); P4 registers upgraded to `register<bit<32>>`
+- Further added: **MinIAT**, **FwdMaxPktLen**, **BwdMaxPktLen**, **FlagsPsh**, **InitFwdWinBytes**
 
 ### Robust Controller Startup
 - **Model/digest mismatch detection:** at startup, `model.n_features_in_` is compared against the P4 digest's component count; a clear one-time warning is printed if they differ
 - Per-flow error spam is suppressed when a mismatch is already known at startup
 - Controller reads `build/basic.p4.p4info.txtpb` (always regenerated by `make`)
 
-### MTU Handling for Large PCAPs
-- `send_pcap.sh` and `test_with_pcap.sh` automatically raise the replay interface MTU to 9000 before replaying and restore it afterwards
-- Fixes `errno=90 Message too long` errors with DDoS amplification PCAPs
+### MTU and Flow Timeout for PCAP Replay
+- Set interface MTU to 65535 before replay to handle jumbo frames (up to ~28 KB): `sh ip link set s1-eth1 mtu 65535`
+- Fixes `errno=90 Message too long` abort where tcpreplay stops mid-pcap on oversized packets
+- **FLOW_TIMEOUT is set to 20 s** (down from 60 s). With the Mu-IoT Benign pcap (52.78 s), replaying twice back-to-back flushes all open flows automatically: the second-pass gap `≥ 52.78 − flow_duration ≥ 32 s > 20 s`
+- Demo replay command: `tcpreplay -i s1-eth1 --timer=gtod --loop=2 <file.pcap>`
 
 ### Universal and Scalable Design
 - **Dynamic Feature Count:** Digest parsing adapts to any number of reduction components
@@ -505,10 +526,13 @@ p4sec/
 │   ├── tables/                                     # Generated rules & configs
 │   │   ├── s1-commands.txt                        # P4 table entries (reduction + model)
 │   │   ├── reduction_config.json                  # Universal pipeline config (written by step 2)
-│   │   ├── pca_encoding_params.json               # Transform encoding metadata (legacy shared filename)
-│   │   ├── pca_integer_mapping.csv                # Quantised codes + labels (legacy shared filename)
-│   │   ├── <model_type>_params.json               # RF/XGB/GB metadata
-│   │   └── <model_type>_metrics.json              # Accuracy & confusion matrix
+│   │   ├── encoding_params.json                   # Transform encoding metadata
+│   │   ├── transform_mapping.csv                  # Quantised codes + labels
+│   │   ├── transform_metrics.json                 # Reduction quality metrics
+│   │   ├── transform_rules.txt                    # Human-readable transform rules
+│   │   ├── <model_type>_params.json               # RF/XGB/GB/DT metadata
+│   │   ├── <model_type>_metrics.json              # Accuracy & confusion matrix
+│   │   └── <model_type>_tree.txt                  # Human-readable decision tree rules
 │   └── logs/                                      # Runtime logs & predictions
 └── build/                                         # P4 compiler output
 ```

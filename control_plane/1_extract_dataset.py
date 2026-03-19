@@ -34,7 +34,7 @@ Output columns per flow (bidirectional, canonical key):
 
 NOTE: Output is one row PER FLOW, emitted when a flow ends:
   - TCP FIN or RST flag is seen (flow closed)
-  - Flow has been idle for 120 s (timeout)
+  - Flow has been idle for 20 s (timeout — matches P4 FLOW_TIMEOUT)
   - End of PCAP file
 This mirrors P4's classify-and-digest behavior which is gated on
 meta.flow_ended == 1, so training data and live inference see the

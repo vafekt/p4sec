@@ -18,7 +18,7 @@ const bit<32> NB_ENTRIES = 65536;
 const bit<32> MAX_REGISTER_ENTRIES = 65536;
 
 #define BLOOM_FILTER_BIT_WIDTH 32
-#define FLOW_TIMEOUT 20000000000  // 20s in nanoseconds (demo: pcap=52.78s, so loop2 gap >= 32s > 20s)
+#define FLOW_TIMEOUT 20000000000  // 20s in nanoseconds
 
 #define FIRST_INDEX ((bit<32>)0)
 #define WRITE_REG(r, v) r.write(FIRST_INDEX, v)
