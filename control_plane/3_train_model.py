@@ -14,7 +14,7 @@ Supports seven classifier back-ends via --model-type:
 Works with any step-2 reduction method (PCA / LDA / Autoencoder / UMAP / Feature Selection).
 Feature columns are auto-detected from tables/reduction_config.json.
 
-Input:   tables/pca_integer_mapping.csv   (written by any step 2)
+Input:   tables/transform_mapping.csv      (written by any step 2)
 Output:  model/<model_type>.model         (pickled sklearn/xgb model)
          tables/<model_type>_metrics.json  (accuracy, confusion matrix)
          tables/<model_type>_params.json   (P4 deployment parameters — RF/XGB/GB only)
@@ -75,8 +75,8 @@ parser = P4secArgumentParser(
 parser.add_argument('--model-type', '-m', required=True,
                     choices=['dt', 'rf', 'xgb', 'gb', 'knn', 'svm', 'cnn'],
                     help='Classifier: dt | rf | xgb | gb | knn | svm | cnn')
-parser.add_argument('-i', default="tables/pca_integer_mapping.csv",
-                    help='Input CSV (default: tables/pca_integer_mapping.csv)')
+parser.add_argument('-i', default="tables/transform_mapping.csv",
+                    help='Input CSV (default: tables/transform_mapping.csv)')
 parser.add_argument('-o', default=None,
                     help='Output model path (default: model/<model_type>.model)')
 

@@ -9,9 +9,9 @@ them DIRECTLY to the classifier (steps 3/4).  The classifier's range-match
 tables will use the raw P4 feature values as match keys.
 
 Outputs:
-  tables/pca_integer_mapping.csv   Columns: <selected_feature_names>, Label
+  tables/transform_mapping.csv     Columns: <selected_feature_names>, Label
   tables/reduction_config.json     Universal config for steps 3/4/5
-  tables/pca_metrics.json          Accuracy comparison
+  tables/transform_metrics.json    Accuracy comparison
   tables/s1-commands.txt           EMPTY (no transform tables needed)
 
 Available methods (--method):
@@ -72,7 +72,7 @@ parser = P4secArgumentParser(
     epilog=(
             "Outputs:\n"
             "  tables/reduction_config.json     (universal config)\n"
-            "  tables/pca_integer_mapping.csv   (selected features + labels; legacy filename)\n"
+            "  tables/transform_mapping.csv     (selected features + labels)\n"
             "\n"
             "Note: Feature Selection produces NO transform tables.\n"
             "Classifier operates directly on raw features.\n"
@@ -113,9 +113,11 @@ label_col = df.columns[-1]
 df_clean = df.replace([np.inf, -np.inf], np.nan).dropna()
 
 P4_FEATURE_COLS = [
-    "Protocol", "Duration", "MaxIAT", "UrgCount",
+    "Protocol", "SrcPort", "DstPort",
+    "Duration", "MaxIAT", "UrgCount",
     "FwdPktCount", "BwdPktCount", "FwdBytes", "BwdBytes",
     "MaxWinSize", "FlagsSyn", "FlagsAck", "FlagsFin", "FlagsRst",
+    "MinIAT", "FwdMaxPktLen", "BwdMaxPktLen", "FlagsPsh", "InitFwdWinBytes",
 ]
 X_df = df_clean[P4_FEATURE_COLS].astype(int)
 feature_cols = X_df.columns.tolist()
@@ -189,7 +191,7 @@ metrics = {
     "all_features":       {"accuracy": float(acc_all)},
     "selected_features_acc": {"accuracy": float(acc_sel)},
 }
-with open(os.path.join(TABLES_DIR, "pca_metrics.json"), "w") as f:
+with open(os.path.join(TABLES_DIR, "transform_metrics.json"), "w") as f:
     json.dump(metrics, f, indent=2)
 
 # ==========================================================
@@ -213,8 +215,8 @@ for j, feat_name in enumerate(selected_features):
 mapping_all["Label"] = y_all
 
 pd.DataFrame(mapping_all).to_csv(
-    os.path.join(TABLES_DIR, "pca_integer_mapping.csv"), index=False)
-print("Saved pca_integer_mapping.csv (raw feature columns)")
+    os.path.join(TABLES_DIR, "transform_mapping.csv"), index=False)
+print("Saved transform_mapping.csv (raw feature columns)")
 
 # ==========================================================
 # 6. Save reduction_config.json — THE universal contract
@@ -238,7 +240,7 @@ with open(os.path.join(TABLES_DIR, "reduction_config.json"), "w") as f:
 print("Saved reduction_config.json")
 
 # ==========================================================
-# 7. Save empty pca_encoding_params.json (for backward compat)
+# 7. Save encoding_params.json (minimal stub for compat)
 # ==========================================================
 # Some scripts may try to read this.  Provide minimal stub.
 encoding_params = {
@@ -248,7 +250,7 @@ encoding_params = {
     "max_val": None,
     "selected_features": selected_features,
 }
-with open(os.path.join(TABLES_DIR, "pca_encoding_params.json"), "w") as f:
+with open(os.path.join(TABLES_DIR, "encoding_params.json"), "w") as f:
     json.dump(encoding_params, f, indent=2)
 
 # ==========================================================
@@ -262,7 +264,7 @@ print("Saved empty s1-commands.txt")
 # ==========================================================
 # 9. Write human-readable feature selection summary
 # ==========================================================
-with open(os.path.join(TABLES_DIR, "pca_tree_if_rules.txt"), "w") as f:
+with open(os.path.join(TABLES_DIR, "transform_rules.txt"), "w") as f:
     f.write(f"# Feature Selection ({METHOD})\n")
     f.write(f"# No transformation rules — classifier operates on raw features.\n")
     f.write(f"# Selected features ({k} of {len(feature_cols)}):\n")

@@ -10,7 +10,7 @@ Output columns per flow (bidirectional, canonical key):
     DstIP     - Canonical destination IP
     SrcPort   - Canonical source port
     DstPort   - Canonical destination port
-    Protocol  - IP protocol number (6=TCP, 17=UDP)
+    Protocol  - IP protocol number (6=TCP, 17=UDP, 1=ICMP, 253=ARP pseudo)
 
   ML feature columns — match EXACTLY what the P4 switch computes and
   sends as a digest when a flow ends (same names, same order):
@@ -21,11 +21,16 @@ Output columns per flow (bidirectional, canonical key):
     BwdPktCount  - Packet count in backward (reverse) direction
     FwdBytes     - Total bytes in forward direction
     BwdBytes     - Total bytes in backward direction
-    MaxWinSize   - Maximum TCP window size observed in flow (0 for UDP)
-    FlagsSyn     - Number of packets with SYN flag set (0 for UDP)
-    FlagsAck     - Number of packets with ACK flag set (0 for UDP)
-    FlagsFin     - Number of packets with FIN flag set (0 for UDP)
-    FlagsRst     - Number of packets with RST flag set (0 for UDP)
+    MaxWinSize      - Maximum TCP window size observed in flow (0 for non-TCP)
+    FlagsSyn        - Number of packets with SYN flag set (0 for non-TCP)
+    FlagsAck        - Number of packets with ACK flag set (0 for non-TCP)
+    FlagsFin        - Number of packets with FIN flag set (0 for non-TCP)
+    FlagsRst        - Number of packets with RST flag set (0 for non-TCP)
+    MinIAT          - Minimum inter-arrival time across consecutive packets (ns)
+    FwdMaxPktLen    - Maximum packet length in forward direction (bytes)
+    BwdMaxPktLen    - Maximum packet length in backward direction (bytes)
+    FlagsPsh        - Number of packets with PSH flag set (0 for non-TCP)
+    InitFwdWinBytes - TCP window size of the first forward-direction packet (0 for non-TCP)
 
 NOTE: Output is one row PER FLOW, emitted when a flow ends:
   - TCP FIN or RST flag is seen (flow closed)
@@ -56,7 +61,7 @@ from decimal import Decimal
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-FLOW_TIMEOUT_NS = 120 * 1_000_000_000  # 120 seconds in nanoseconds
+FLOW_TIMEOUT_NS = 20 * 1_000_000_000  # 20 seconds in nanoseconds (matches P4 FLOW_TIMEOUT)
 
 LOGO = """---------------------------------------------------------------------------
 ------PPPPPPPP------4444------SSSSSSSS------EEEEEEEE------CCCCCCCC---------
@@ -140,11 +145,16 @@ def _finalize_flow(flow_key, flow_data, label):
         'BwdPktCount': flow_data['bwd_pkt_count'],
         'FwdBytes':    flow_data['fwd_bytes'],
         'BwdBytes':    flow_data['bwd_bytes'],
-        'MaxWinSize':  flow_data['max_win_size'],
-        'FlagsSyn':    flow_data['flags_syn_count'],
-        'FlagsAck':    flow_data['flags_ack_count'],
-        'FlagsFin':    flow_data['flags_fin_count'],
-        'FlagsRst':    flow_data['flags_rst_count'],
+        'MaxWinSize':      flow_data['max_win_size'],
+        'FlagsSyn':        flow_data['flags_syn_count'],
+        'FlagsAck':        flow_data['flags_ack_count'],
+        'FlagsFin':        flow_data['flags_fin_count'],
+        'FlagsRst':        flow_data['flags_rst_count'],
+        'MinIAT':          flow_data['min_iat'],
+        'FwdMaxPktLen':    flow_data['fwd_max_pkt_len'],
+        'BwdMaxPktLen':    flow_data['bwd_max_pkt_len'],
+        'FlagsPsh':        flow_data['flags_psh_count'],
+        'InitFwdWinBytes': flow_data['init_fwd_win'],
     }
     if label is not None:
         feature['Label'] = label
@@ -156,40 +166,62 @@ def _empty_flow_state():
     Initialise a blank flow state — mirrors P4 register initial values (all zero).
     """
     return {
-        'timestamps':     [],
-        'urg_count':      0,
-        'fwd_pkt_count':  0,
-        'bwd_pkt_count':  0,
-        'fwd_bytes':      0,
-        'bwd_bytes':      0,
-        'max_win_size':   0,
-        'flags_syn_count': 0,  # count of packets with SYN set
-        'flags_ack_count': 0,  # count of packets with ACK set
-        'flags_fin_count': 0,  # count of packets with FIN set (also triggers flow end)
-        'flags_rst_count': 0,  # count of packets with RST set (also triggers flow end)
+        'timestamps':        [],
+        'urg_count':         0,
+        'fwd_pkt_count':     0,
+        'bwd_pkt_count':     0,
+        'fwd_bytes':         0,
+        'bwd_bytes':         0,
+        'max_win_size':      0,
+        'flags_syn_count':   0,  # count of packets with SYN set
+        'flags_ack_count':   0,  # count of packets with ACK set
+        'flags_fin_count':   0,  # count of packets with FIN set (also triggers flow end)
+        'flags_rst_count':   0,  # count of packets with RST set (also triggers flow end)
+        # New features
+        'min_iat':           0,  # 0 = uninitialised (mirrors P4 register init)
+        'fwd_max_pkt_len':   0,
+        'bwd_max_pkt_len':   0,
+        'flags_psh_count':   0,
+        'init_fwd_win':      0,  # window size of first forward packet (TCP only)
     }
 
 
 def _update_flow_state(state, timestamp_ns, pkt_len, is_reverse,
-                        flags_syn, flags_ack, flags_fin, flags_rst, flags_urg, win_size):
+                        flags_syn, flags_ack, flags_fin, flags_rst, flags_urg,
+                        flags_psh, win_size):
     """Accumulate a single packet into the flow state. Returns True if the flow
     should be finalized after this packet (FIN or RST seen), False otherwise."""
+    # ── MinIAT / timing ─────────────────────────────────────────────────
+    if state['timestamps']:
+        iat = timestamp_ns - state['timestamps'][-1]
+        if state['min_iat'] == 0 or iat < state['min_iat']:
+            state['min_iat'] = iat
     state['timestamps'].append(timestamp_ns)
-    state['urg_count'] += flags_urg
+
+    # ── Per-direction counters ────────────────────────────────────────
+    if is_reverse:
+        state['bwd_pkt_count'] += 1
+        state['bwd_bytes']     += pkt_len
+        if pkt_len > state['bwd_max_pkt_len']:
+            state['bwd_max_pkt_len'] = pkt_len
+    else:
+        # Capture initial forward window on the very first fwd packet
+        if state['fwd_pkt_count'] == 0 and state['init_fwd_win'] == 0:
+            state['init_fwd_win'] = win_size
+        state['fwd_pkt_count'] += 1
+        state['fwd_bytes']     += pkt_len
+        if pkt_len > state['fwd_max_pkt_len']:
+            state['fwd_max_pkt_len'] = pkt_len
+
+    # ── Window / flag counts ─────────────────────────────────────────
     if win_size > state['max_win_size']:
         state['max_win_size'] = win_size
-    # Accumulate flag counts (mirrors P4 register += 1 logic)
+    state['urg_count']       += flags_urg
     state['flags_syn_count'] += flags_syn
     state['flags_ack_count'] += flags_ack
     state['flags_fin_count'] += flags_fin
     state['flags_rst_count'] += flags_rst
-
-    if is_reverse:
-        state['bwd_pkt_count'] += 1
-        state['bwd_bytes']     += pkt_len
-    else:
-        state['fwd_pkt_count'] += 1
-        state['fwd_bytes']     += pkt_len
+    state['flags_psh_count'] += flags_psh
 
     # Signal flow-end when TCP FIN or RST is seen (mirrors P4 flow_ended logic)
     return bool(flags_fin or flags_rst)
@@ -199,8 +231,48 @@ def _update_flow_state(state, timestamp_ns, pkt_len, is_reverse,
 # Packet field extraction helper
 # ---------------------------------------------------------------------------
 
+def _flag(val):
+    """Parse a pyshark TCP flag field to 0 or 1.
+
+    Depending on tshark version, flag fields may be returned as:
+      '0' / '1'         (older tshark)
+      'False' / 'True'  (newer tshark with boolean field types)
+    """
+    s = str(val).strip()
+    return 1 if s in ('1', 'True') else 0
+
+
 def _extract_packet_fields(packet):
-    """Extract all needed fields from a pyshark packet. Returns dict or None."""
+    """Extract all needed fields from a pyshark packet. Returns dict or None.
+
+    Supported protocols:
+      - TCP  (IP proto 6)
+      - UDP  (IP proto 17)
+      - ICMP (IP proto 1)  — uses icmp.type/code as pseudo src/dst port
+      - ARP  (etherType 0x0806) — uses spa/tpa as IPs, oper as pseudo src_port,
+            protocol encoded as 253 (reserved) to keep the 5-tuple schema intact
+    """
+    # ── ARP (no IP header, carried directly over Ethernet) ───────────────
+    if hasattr(packet, 'arp') and not hasattr(packet, 'ip'):
+        try:
+            src_ip   = packet.arp.src_proto_ipv4
+            dst_ip   = packet.arp.dst_proto_ipv4
+            src_port = int(packet.arp.opcode)   # 1=request, 2=reply
+            dst_port = 0
+            # ARP IPv4 payload is 28 bytes (fixed); mirrors P4's meta.pkt_len = 32w28
+            pkt_len  = 28
+        except Exception:
+            return None
+        return {
+            'src_ip': src_ip, 'dst_ip': dst_ip, 'protocol': 253,
+            'src_port': src_port, 'dst_port': dst_port,
+            'flags_syn': 0, 'flags_ack': 0, 'flags_fin': 0,
+            'flags_rst': 0, 'flags_urg': 0, 'flags_psh': 0,
+            'pkt_len': pkt_len,
+            'timestamp_ns': int(Decimal(str(packet.sniff_timestamp)) * 1_000_000) * 1000,
+            'win_size': 0,
+        }
+
     if not hasattr(packet, 'ip'):
         return None
 
@@ -211,19 +283,25 @@ def _extract_packet_fields(packet):
     if protocol == 6:   # TCP
         src_port    = int(packet.tcp.srcport)
         dst_port    = int(packet.tcp.dstport)
-        flags_syn   = int(packet.tcp.flags_syn)   if hasattr(packet.tcp, 'flags_syn')   else 0
-        flags_ack   = int(packet.tcp.flags_ack)   if hasattr(packet.tcp, 'flags_ack')   else 0
-        flags_fin   = int(packet.tcp.flags_fin)   if hasattr(packet.tcp, 'flags_fin')   else 0
-        flags_rst   = int(packet.tcp.flags_reset) if hasattr(packet.tcp, 'flags_reset') else 0
-        flags_urg   = int(packet.tcp.flags_urg)   if hasattr(packet.tcp, 'flags_urg')   else 0
+        flags_syn   = _flag(packet.tcp.flags_syn)   if hasattr(packet.tcp, 'flags_syn')   else 0
+        flags_ack   = _flag(packet.tcp.flags_ack)   if hasattr(packet.tcp, 'flags_ack')   else 0
+        flags_fin   = _flag(packet.tcp.flags_fin)   if hasattr(packet.tcp, 'flags_fin')   else 0
+        flags_rst   = _flag(packet.tcp.flags_reset) if hasattr(packet.tcp, 'flags_reset') else 0
+        flags_urg   = _flag(packet.tcp.flags_urg)   if hasattr(packet.tcp, 'flags_urg')   else 0
+        flags_psh   = _flag(packet.tcp.flags_push)  if hasattr(packet.tcp, 'flags_push')  else 0
         # window_size_value is the unscaled value (matches the raw TCP header field)
         win_size    = int(packet.tcp.window_size_value) if hasattr(packet.tcp, 'window_size_value') else \
                       (int(packet.tcp.window_size) if hasattr(packet.tcp, 'window_size') else 0)
     elif protocol == 17:  # UDP
         src_port    = int(packet.udp.srcport)
         dst_port    = int(packet.udp.dstport)
-        flags_syn = flags_ack = flags_fin = flags_rst = flags_urg = 0
+        flags_syn = flags_ack = flags_fin = flags_rst = flags_urg = flags_psh = 0
         win_size    = 0
+    elif protocol == 1:  # ICMP — use type/code as pseudo ports
+        src_port  = int(packet.icmp.type) if hasattr(packet, 'icmp') else 0
+        dst_port  = int(packet.icmp.code) if hasattr(packet, 'icmp') else 0
+        flags_syn = flags_ack = flags_fin = flags_rst = flags_urg = flags_psh = 0
+        win_size  = 0
     else:
         return None
 
@@ -232,8 +310,10 @@ def _extract_packet_fields(packet):
         'src_port': src_port, 'dst_port': dst_port,
         'flags_syn': flags_syn, 'flags_ack': flags_ack,
         'flags_fin': flags_fin, 'flags_rst': flags_rst,
-        'flags_urg': flags_urg,
-        'pkt_len': int(packet.length),
+        'flags_urg': flags_urg, 'flags_psh': flags_psh,
+        # Use IP total length (hdr.ipv4.totalLen) to match exactly what P4 counts.
+        # packet.length includes the Ethernet frame header (~14 bytes) which P4 never sees.
+        'pkt_len': int(packet.ip.len),
         # P4 ingress_global_timestamp has microsecond granularity (*1000 → ns).
         # Truncate to microseconds here so training features match inference features
         # exactly. Using Decimal avoids float precision loss for large Unix timestamps.
@@ -253,15 +333,19 @@ def extract_features_from_pcap(pcap_path, label=None):
         asyncio.get_event_loop()
     except RuntimeError:
         asyncio.set_event_loop(asyncio.new_event_loop())
-    cap = pyshark.FileCapture(pcap_path)
+    cap = pyshark.FileCapture(pcap_path, keep_packets=False)
     flows = defaultdict(lambda: None)
-    packet_count = 0
+    total_packets = 0      # every packet seen by pyshark
+    processed_count = 0    # packets successfully parsed into a flow
+    skipped_proto = 0      # unsupported / non-IP protocols
 
     try:
         for packet in cap:
+            total_packets += 1
             try:
                 fields = _extract_packet_fields(packet)
                 if fields is None:
+                    skipped_proto += 1
                     continue
 
                 c_src_ip, c_src_port, c_dst_ip, c_dst_port, proto, is_reverse = \
@@ -288,7 +372,7 @@ def extract_features_from_pcap(pcap_path, label=None):
                     fields['timestamp_ns'], fields['pkt_len'], is_reverse,
                     fields['flags_syn'], fields['flags_ack'],
                     fields['flags_fin'], fields['flags_rst'],
-                    fields['flags_urg'], fields['win_size'])
+                    fields['flags_urg'], fields['flags_psh'], fields['win_size'])
 
                 if flow_ended:
                     feat = _finalize_flow(flow_key, flows[flow_key], label)
@@ -296,15 +380,19 @@ def extract_features_from_pcap(pcap_path, label=None):
                         features_list.append(feat)
                     flows[flow_key] = None   # reset slot for next flow on same 5-tuple
 
-                packet_count += 1
-                if packet_count % 1000 == 0:
-                    logger.info(f"Processed {packet_count} packets, "
+                processed_count += 1
+                if processed_count % 1000 == 0:
+                    logger.info(f"Processed {processed_count}/{total_packets} packets, "
                                 f"{len(flows)} flows from {os.path.basename(pcap_path)}")
             except Exception as e:
-                logger.debug(f"Error processing packet: {e}")
+                logger.warning(f"Error processing packet #{total_packets}: {e}")
                 continue
     finally:
         cap.close()
+
+    if skipped_proto > 0:
+        logger.info(f"Skipped {skipped_proto}/{total_packets} packets "
+                    f"(unsupported protocol / non-IPv4)")
 
     # Finalize all open flows at end of file (mirrors controller reading
     # registers at capture end, or flow aging in production)
@@ -314,7 +402,8 @@ def extract_features_from_pcap(pcap_path, label=None):
             if feat:
                 features_list.append(feat)
 
-    logger.info(f"Extracted {len(features_list)} flows from {packet_count} packets in {pcap_path}")
+    logger.info(f"Extracted {len(features_list)} flows from "
+                f"{processed_count}/{total_packets} packets in {pcap_path}")
     return features_list
 
 
@@ -373,11 +462,13 @@ def extract_features_from_interface(interface, output_csv, label=None,
     flows         = defaultdict(lambda: None)
     features_list = []
     cap           = pyshark.LiveCapture(interface=interface)
+    total_seen    = 0
     captured      = 0
     start_time    = time.time()
 
     try:
         for packet in cap.sniff_continuously():
+            total_seen += 1
             try:
                 if duration and (time.time() - start_time) >= duration:
                     break
@@ -411,7 +502,7 @@ def extract_features_from_interface(interface, output_csv, label=None,
                     fields['timestamp_ns'], fields['pkt_len'], is_reverse,
                     fields['flags_syn'], fields['flags_ack'],
                     fields['flags_fin'], fields['flags_rst'],
-                    fields['flags_urg'], fields['win_size'])
+                    fields['flags_urg'], fields['flags_psh'], fields['win_size'])
 
                 if flow_ended:
                     feat = _finalize_flow(flow_key, flows[flow_key], label)
@@ -421,9 +512,10 @@ def extract_features_from_interface(interface, output_csv, label=None,
 
                 captured += 1
                 if captured % 100 == 0:
-                    logger.info(f"Captured {captured} packets, {len(flows)} active flows…")
+                    logger.info(f"Captured {captured}/{total_seen} packets, "
+                                f"{len(flows)} active flows…")
             except Exception as e:
-                logger.debug(f"Error processing packet: {e}")
+                logger.warning(f"Error processing packet #{total_seen}: {e}")
                 continue
     except KeyboardInterrupt:
         logger.info("\nCapture interrupted by user")

@@ -20,7 +20,7 @@ Supports six classifier back-ends:
 
 Reads configuration from:
   tables/reduction_config.json     (written by any step 2 — method, features, max values)
-    tables/pca_encoding_params.json  (transform encoding params — fallback)
+    tables/encoding_params.json      (transform encoding params — fallback)
   tables/rf_params.json            (RF metadata)
   tables/xgb_params.json           (XGB/GB metadata)
 """
@@ -55,59 +55,82 @@ class P4secArgumentParser(argparse.ArgumentParser):
 
 # ─── All 13 P4 raw flow features ────────────────────────────────────────────
 FLOW_FEATURES = [
-    "Protocol", "Duration", "MaxIAT", "UrgCount",
+    "Protocol", "SrcPort", "DstPort",
+    "Duration", "MaxIAT", "UrgCount",
     "FwdPktCount", "BwdPktCount", "FwdBytes", "BwdBytes",
     "MaxWinSize", "FlagsSyn", "FlagsAck", "FlagsFin", "FlagsRst",
+    "MinIAT", "FwdMaxPktLen", "BwdMaxPktLen", "FlagsPsh", "InitFwdWinBytes",
 ]
 
-# Map raw feature name → P4 metadata field name
+# Map raw feature name → P4 metadata field name (without meta. prefix)
 FEATURE_TO_META = {
-    "Protocol":    "protocol",
-    "Duration":    "duration",
-    "MaxIAT":      "max_iat",
-    "UrgCount":    "urg_count",
-    "FwdPktCount": "fwd_pkt_count",
-    "BwdPktCount": "bwd_pkt_count",
-    "FwdBytes":    "fwd_bytes",
-    "BwdBytes":    "bwd_bytes",
-    "MaxWinSize":  "max_win_size",
-    "FlagsSyn":    "flags_syn",
-    "FlagsAck":    "flags_ack",
-    "FlagsFin":    "flags_fin",
-    "FlagsRst":    "flags_rst",
+    "Protocol":        "protocol",
+    "SrcPort":         "canon_src_port",
+    "DstPort":         "canon_dst_port",
+    "Duration":        "duration",
+    "MaxIAT":          "max_iat",
+    "UrgCount":        "urg_count",
+    "FwdPktCount":     "fwd_pkt_count",
+    "BwdPktCount":     "bwd_pkt_count",
+    "FwdBytes":        "fwd_bytes",
+    "BwdBytes":        "bwd_bytes",
+    "MaxWinSize":      "max_win_size",
+    "FlagsSyn":        "flags_syn",
+    "FlagsAck":        "flags_ack",
+    "FlagsFin":        "flags_fin",
+    "FlagsRst":        "flags_rst",
+    "MinIAT":          "min_iat",
+    "FwdMaxPktLen":    "fwd_max_pkt_len",
+    "BwdMaxPktLen":    "bwd_max_pkt_len",
+    "FlagsPsh":        "flags_psh",
+    "InitFwdWinBytes": "init_fwd_win",
 }
 
 # P4 bit widths for raw features
 FEATURE_P4_TYPE = {
-    "Protocol":    "bit<8>",
-    "Duration":    "duration_t",    # bit<48>
-    "MaxIAT":      "iat_t",         # bit<48>
-    "UrgCount":    "bit<32>",
-    "FwdPktCount": "bit<32>",
-    "BwdPktCount": "bit<32>",
-    "FwdBytes":    "bytes_t",       # bit<32>
-    "BwdBytes":    "bytes_t",       # bit<32>
-    "MaxWinSize":  "bit<16>",
-    "FlagsSyn":    "bit<32>",
-    "FlagsAck":    "bit<32>",
-    "FlagsFin":    "bit<32>",
-    "FlagsRst":    "bit<32>",
+    "Protocol":        "bit<8>",
+    "SrcPort":         "port_t",        # bit<16>
+    "DstPort":         "port_t",        # bit<16>
+    "Duration":        "duration_t",    # bit<48>
+    "MaxIAT":          "iat_t",         # bit<48>
+    "UrgCount":        "bit<32>",
+    "FwdPktCount":     "bit<32>",
+    "BwdPktCount":     "bit<32>",
+    "FwdBytes":        "bytes_t",       # bit<32>
+    "BwdBytes":        "bytes_t",       # bit<32>
+    "MaxWinSize":      "bit<16>",
+    "FlagsSyn":        "bit<32>",
+    "FlagsAck":        "bit<32>",
+    "FlagsFin":        "bit<32>",
+    "FlagsRst":        "bit<32>",
+    "MinIAT":          "iat_t",         # bit<48>
+    "FwdMaxPktLen":    "bit<16>",
+    "BwdMaxPktLen":    "bit<16>",
+    "FlagsPsh":        "bit<32>",
+    "InitFwdWinBytes": "bit<16>",
 }
 
 FEATURE_P4_WIDTH = {
-    "Protocol": 8,
-    "Duration": 48,
-    "MaxIAT": 48,
-    "UrgCount": 32,
-    "FwdPktCount": 32,
-    "BwdPktCount": 32,
-    "FwdBytes": 32,
-    "BwdBytes": 32,
-    "MaxWinSize": 16,
-    "FlagsSyn": 32,
-    "FlagsAck": 32,
-    "FlagsFin": 32,
-    "FlagsRst": 32,
+    "Protocol":        8,
+    "SrcPort":         16,
+    "DstPort":         16,
+    "Duration":        48,
+    "MaxIAT":          48,
+    "UrgCount":        32,
+    "FwdPktCount":     32,
+    "BwdPktCount":     32,
+    "FwdBytes":        32,
+    "BwdBytes":        32,
+    "MaxWinSize":      16,
+    "FlagsSyn":        32,
+    "FlagsAck":        32,
+    "FlagsFin":        32,
+    "FlagsRst":        32,
+    "MinIAT":          48,
+    "FwdMaxPktLen":    16,
+    "BwdMaxPktLen":    16,
+    "FlagsPsh":        32,
+    "InitFwdWinBytes": 16,
 }
 
 
@@ -182,9 +205,12 @@ class P4CodeGenerator:
 #include <core.p4>
 #include <v1model.p4>
 
-const bit<16> TYPE_IPV4 = 0x800;
-const bit<8>  TYPE_TCP  = 6;
-const bit<8>  TYPE_UDP  = 17;
+const bit<16> TYPE_IPV4       = 0x800;
+const bit<16> TYPE_ARP        = 0x0806;
+const bit<8>  TYPE_TCP        = 6;
+const bit<8>  TYPE_UDP        = 17;
+const bit<8>  TYPE_ICMP       = 1;
+const bit<8>  TYPE_ARP_PSEUDO = 253;  // pseudo proto used in flow key for ARP
 
 const bit<32> NB_ENTRIES = ''' + str(self.n_registers) + ''';
 const bit<32> MAX_REGISTER_ENTRIES = ''' + str(self.n_registers) + ''';
@@ -252,6 +278,26 @@ header udp_t {
     bit<16> udpTotalLen;
     bit<16> checksum;
 }
+
+header icmp_t {
+    bit<8>  icmp_type;   // ICMP type (used as pseudo src_port in flow key)
+    bit<8>  icmp_code;   // ICMP code (used as pseudo dst_port in flow key)
+    bit<16> checksum;
+    bit<32> rest;        // identifier+seq_num for echo; varies by type
+}
+
+// ARP for IPv4-over-Ethernet (fixed 28-byte payload)
+header arp_ipv4_t {
+    bit<16>   htype;  // hardware type  (1 = Ethernet)
+    bit<16>   ptype;  // protocol type  (0x0800 = IPv4)
+    bit<8>    hlen;   // hardware addr length (6)
+    bit<8>    plen;   // protocol addr length (4)
+    bit<16>   oper;   // operation: 1=request, 2=reply  (pseudo src_port)
+    macAddr_t sha;    // sender hardware address
+    ip4Addr_t spa;    // sender protocol address  (→ meta.src_ip)
+    macAddr_t tha;    // target hardware address
+    ip4Addr_t tpa;    // target protocol address  (→ meta.dst_ip)
+}
 '''
 
     # ─────────────────────────────────────────────────────────────────────
@@ -293,6 +339,13 @@ struct metadata {
     bit<32>    flags_ack;
     bit<32>    flags_fin;
     bit<32>    flags_rst;
+    bytes_t    pkt_len;      // IP totalLen for IPv4; 28 for ARP (fixed); used for byte counting
+    // New features
+    iat_t      min_iat;
+    bit<16>    fwd_max_pkt_len;
+    bit<16>    bwd_max_pkt_len;
+    bit<32>    flags_psh;
+    bit<16>    init_fwd_win;
 '''
         # Transformed feature codes (PCA, LDA, or Autoencoder)
         if self.needs_transform:
@@ -300,10 +353,10 @@ struct metadata {
             for i in range(1, self.n_components + 1):
                 code += f'    pca_code_t {pfx}{i}_code;\n'
 
-        code += '''    
+        code += '''
     // Classification result
     inference_result_t ml_result;
-    
+
     // Timestamp
     bit<48> ingress_timestamp;
 '''
@@ -353,7 +406,9 @@ struct metadata {
 
 struct headers {
     ethernet_t   ethernet;
+    arp_ipv4_t   arp;
     ipv4_t       ipv4;
+    icmp_t       icmp;
     tcp_t        tcp;
     udp_t        udp;
 }
@@ -364,7 +419,7 @@ struct digest_t {
     port_t srcPort;
     port_t dstPort;
     bit<8>  protocol;
-    
+
     duration_t duration;
     iat_t      max_iat;
     bit<32>    urg_count;
@@ -377,6 +432,11 @@ struct digest_t {
     bit<32>    flags_ack;
     bit<32>    flags_fin;
     bit<32>    flags_rst;
+    iat_t      min_iat;
+    bit<16>    fwd_max_pkt_len;
+    bit<16>    bwd_max_pkt_len;
+    bit<32>    flags_psh;
+    bit<16>    init_fwd_win;
 '''
         if self.needs_transform:
             for i in range(1, self.n_components + 1):
@@ -387,7 +447,7 @@ struct digest_t {
             for c in range(n_cls):
                 code += f'    bit<16> xgb_score_c{c};\n'
 
-        code += '''    
+        code += '''
     inference_result_t ml_result;
 }
 '''
@@ -413,19 +473,22 @@ parser MyParser(packet_in packet,
         packet.extract(hdr.ethernet);
         transition select(hdr.ethernet.etherType) {
             TYPE_IPV4: parse_ipv4;
+            TYPE_ARP : parse_arp;
             default  : accept;
         }
     }
 
     state parse_ipv4 {
         packet.extract(hdr.ipv4);
-        meta.src_ip = hdr.ipv4.srcAddr;
-        meta.dst_ip = hdr.ipv4.dstAddr;
+        meta.src_ip   = hdr.ipv4.srcAddr;
+        meta.dst_ip   = hdr.ipv4.dstAddr;
         meta.protocol = hdr.ipv4.protocol;
+        meta.pkt_len  = (bytes_t)hdr.ipv4.totalLen;
         transition select(hdr.ipv4.protocol) {
-            TYPE_TCP: parse_tcp;
-            TYPE_UDP: parse_udp;
-            default : accept;
+            TYPE_TCP : parse_tcp;
+            TYPE_UDP : parse_udp;
+            TYPE_ICMP: parse_icmp;
+            default  : accept;
         }
     }
 
@@ -442,9 +505,27 @@ parser MyParser(packet_in packet,
         meta.dst_port = hdr.udp.dstPort;
         transition accept;
     }
+
+    state parse_icmp {
+        packet.extract(hdr.icmp);
+        meta.src_port = (port_t)hdr.icmp.icmp_type;
+        meta.dst_port = (port_t)hdr.icmp.icmp_code;
+        transition accept;
+    }
+
+    state parse_arp {
+        packet.extract(hdr.arp);
+        meta.src_ip   = hdr.arp.spa;
+        meta.dst_ip   = hdr.arp.tpa;
+        meta.protocol = TYPE_ARP_PSEUDO;
+        meta.src_port = hdr.arp.oper;
+        meta.dst_port = 16w0;
+        meta.pkt_len  = 32w28;  // ARP IPv4 payload is fixed 28 bytes
+        transition accept;
+    }
 }
 
-control MyVerifyChecksum(inout headers hdr, inout metadata meta) {   
+control MyVerifyChecksum(inout headers hdr, inout metadata meta) {
     apply {  }
 }
 '''
@@ -479,8 +560,14 @@ control MyIngress(inout headers hdr,
     register<bit<32>>(MAX_REGISTER_ENTRIES) reg_flags_ack;
     register<bit<32>>(MAX_REGISTER_ENTRIES) reg_flags_fin;
     register<bit<32>>(MAX_REGISTER_ENTRIES) reg_flags_rst;
-    
-    register<bit<1>>(MAX_REGISTER_ENTRIES) bloom_filter;
+    register<iat_t>(MAX_REGISTER_ENTRIES)   reg_min_iat;
+    register<bit<16>>(MAX_REGISTER_ENTRIES) reg_fwd_max_pkt_len;
+    register<bit<16>>(MAX_REGISTER_ENTRIES) reg_bwd_max_pkt_len;
+    register<bit<32>>(MAX_REGISTER_ENTRIES) reg_flags_psh;
+    register<bit<16>>(MAX_REGISTER_ENTRIES) reg_init_fwd_win;
+
+    register<bit<1>>(MAX_REGISTER_ENTRIES) bloom_filter_1;  // indexed by CRC16 hash
+    register<bit<1>>(MAX_REGISTER_ENTRIES) bloom_filter_2;  // indexed by CRC32 hash
 
     action drop() {
         mark_to_drop(standard_metadata);
@@ -542,7 +629,17 @@ control MyIngress(inout headers hdr,
             {meta.canon_src_ip, meta.canon_dst_ip,
              meta.canon_src_port, meta.canon_dst_port, meta.protocol},
             (bit<32>)MAX_REGISTER_ENTRIES);
-        bloom_filter.write(meta.flow_hash, 1w1);
+        // Bloom filter collision detection:
+        // bf1 slot occupied (1) but bf2 fingerprint absent (0) → different flow at this slot
+        bit<1> bf_val_1;
+        bit<1> bf_val_2;
+        bloom_filter_1.read(bf_val_1, meta.flow_hash);
+        bloom_filter_2.read(bf_val_2, meta.flow_hash_2);
+        if (bf_val_1 == 1w1 && bf_val_2 == 1w0) {
+            meta.hash_collision = 1w1;
+        } else {
+            meta.hash_collision = 1w0;
+        }
     }
 
     action update_flow_state() {
@@ -551,6 +648,7 @@ control MyIngress(inout headers hdr,
         bit<48> time_first;
         bit<48> time_last;
         iat_t   max_iat;
+        iat_t   min_iat;
         bit<32> fwd_pkt_count;
         bit<32> bwd_pkt_count;
         bytes_t fwd_bytes;
@@ -561,10 +659,15 @@ control MyIngress(inout headers hdr,
         bit<32> flags_ack;
         bit<32> flags_fin;
         bit<32> flags_rst;
+        bit<16> fwd_max_pkt_len;
+        bit<16> bwd_max_pkt_len;
+        bit<32> flags_psh;
+        bit<16> init_fwd_win;
 
         reg_time_first_pkt.read(time_first, meta.flow_hash);
         reg_time_last_pkt.read(time_last, meta.flow_hash);
         reg_max_iat.read(max_iat, meta.flow_hash);
+        reg_min_iat.read(min_iat, meta.flow_hash);
         reg_fwd_pkt_count.read(fwd_pkt_count, meta.flow_hash);
         reg_bwd_pkt_count.read(bwd_pkt_count, meta.flow_hash);
         reg_fwd_bytes.read(fwd_bytes, meta.flow_hash);
@@ -575,74 +678,112 @@ control MyIngress(inout headers hdr,
         reg_flags_ack.read(flags_ack, meta.flow_hash);
         reg_flags_fin.read(flags_fin, meta.flow_hash);
         reg_flags_rst.read(flags_rst, meta.flow_hash);
+        reg_fwd_max_pkt_len.read(fwd_max_pkt_len, meta.flow_hash);
+        reg_bwd_max_pkt_len.read(bwd_max_pkt_len, meta.flow_hash);
+        reg_flags_psh.read(flags_psh, meta.flow_hash);
+        reg_init_fwd_win.read(init_fwd_win, meta.flow_hash);
 
         // Timeout check — previous flow on this slot has been idle
         if (time_first != 0 && time_last != 0 &&
                 (current_time - time_last) > FLOW_TIMEOUT) {
-            meta.flow_ended    = 1w1;
-            meta.duration      = time_last - time_first;
-            meta.max_iat       = max_iat;
-            meta.urg_count     = urg_count;
-            meta.fwd_pkt_count = fwd_pkt_count;
-            meta.bwd_pkt_count = bwd_pkt_count;
-            meta.fwd_bytes     = fwd_bytes;
-            meta.bwd_bytes     = bwd_bytes;
-            meta.max_win_size  = max_win_size;
-            meta.flags_syn     = flags_syn;
-            meta.flags_ack     = flags_ack;
-            meta.flags_fin     = flags_fin;
-            meta.flags_rst     = flags_rst;
+            meta.flow_ended       = 1w1;
+            meta.duration         = time_last - time_first;
+            meta.max_iat          = max_iat;
+            meta.min_iat          = min_iat;
+            meta.urg_count        = urg_count;
+            meta.fwd_pkt_count    = fwd_pkt_count;
+            meta.bwd_pkt_count    = bwd_pkt_count;
+            meta.fwd_bytes        = fwd_bytes;
+            meta.bwd_bytes        = bwd_bytes;
+            meta.max_win_size     = max_win_size;
+            meta.flags_syn        = flags_syn;
+            meta.flags_ack        = flags_ack;
+            meta.flags_fin        = flags_fin;
+            meta.flags_rst        = flags_rst;
+            meta.fwd_max_pkt_len  = fwd_max_pkt_len;
+            meta.bwd_max_pkt_len  = bwd_max_pkt_len;
+            meta.flags_psh        = flags_psh;
+            meta.init_fwd_win     = init_fwd_win;
             // Reset for new flow
-            time_first    = current_time;
-            time_last     = current_time;
-            max_iat       = 0;
-            fwd_pkt_count = 0;
-            bwd_pkt_count = 0;
-            fwd_bytes     = 0;
-            bwd_bytes     = 0;
-            max_win_size  = 0;
-            urg_count     = 0;
-            flags_syn     = 0;
-            flags_ack     = 0;
-            flags_fin     = 0;
-            flags_rst     = 0;
+            time_first       = current_time;
+            time_last        = current_time;
+            max_iat          = 0;
+            min_iat          = 0;
+            fwd_pkt_count    = 0;
+            bwd_pkt_count    = 0;
+            fwd_bytes        = 0;
+            bwd_bytes        = 0;
+            max_win_size     = 0;
+            urg_count        = 0;
+            flags_syn        = 0;
+            flags_ack        = 0;
+            flags_fin        = 0;
+            flags_rst        = 0;
+            fwd_max_pkt_len  = 0;
+            bwd_max_pkt_len  = 0;
+            flags_psh        = 0;
+            init_fwd_win     = 0;
+            bloom_filter_1.write(meta.flow_hash,   1w1);  // new flow claims slot
+            bloom_filter_2.write(meta.flow_hash_2, 1w1);
         }
 
-        // First packet for a new flow
+        // First packet for a new flow (fresh empty slot)
         if (time_first == 0) {
             time_first = current_time;
             meta.is_first_packet = 1w1;
             reg_time_first_pkt.write(meta.flow_hash, current_time);
+            bloom_filter_1.write(meta.flow_hash,   1w1);  // claim empty slot
+            bloom_filter_2.write(meta.flow_hash_2, 1w1);
         }
 
-        // IAT update
+        // IAT update (MaxIAT and MinIAT)
         if (time_last != 0) {
             iat_t current_iat = current_time - time_last;
             if (current_iat > max_iat) {
                 max_iat = current_iat;
                 reg_max_iat.write(meta.flow_hash, max_iat);
             }
+            if (min_iat == 0 || current_iat < min_iat) {
+                min_iat = current_iat;
+                reg_min_iat.write(meta.flow_hash, min_iat);
+            }
         }
         meta.max_iat = max_iat;
+        meta.min_iat = min_iat;
 
-        // Direction-based counters
+        // Direction-based counters + max packet length per direction
         if (meta.is_reverse_dir == 1w0) {
             fwd_pkt_count = fwd_pkt_count + 1;
-            fwd_bytes = fwd_bytes + (bytes_t)hdr.ipv4.totalLen;
+            fwd_bytes = fwd_bytes + meta.pkt_len;
             reg_fwd_pkt_count.write(meta.flow_hash, fwd_pkt_count);
             reg_fwd_bytes.write(meta.flow_hash, fwd_bytes);
+            if ((bit<16>)meta.pkt_len > fwd_max_pkt_len) {
+                fwd_max_pkt_len = (bit<16>)meta.pkt_len;
+                reg_fwd_max_pkt_len.write(meta.flow_hash, fwd_max_pkt_len);
+            }
+            // InitFwdWinBytes: capture on first forward TCP packet (mirrors Python)
+            if (meta.protocol == TYPE_TCP && init_fwd_win == 16w0) {
+                init_fwd_win = hdr.tcp.window;
+                reg_init_fwd_win.write(meta.flow_hash, init_fwd_win);
+            }
         } else {
             bwd_pkt_count = bwd_pkt_count + 1;
-            bwd_bytes = bwd_bytes + (bytes_t)hdr.ipv4.totalLen;
+            bwd_bytes = bwd_bytes + meta.pkt_len;
             reg_bwd_pkt_count.write(meta.flow_hash, bwd_pkt_count);
             reg_bwd_bytes.write(meta.flow_hash, bwd_bytes);
+            if ((bit<16>)meta.pkt_len > bwd_max_pkt_len) {
+                bwd_max_pkt_len = (bit<16>)meta.pkt_len;
+                reg_bwd_max_pkt_len.write(meta.flow_hash, bwd_max_pkt_len);
+            }
         }
-        meta.fwd_pkt_count = fwd_pkt_count;
-        meta.bwd_pkt_count = bwd_pkt_count;
-        meta.fwd_bytes     = fwd_bytes;
-        meta.bwd_bytes     = bwd_bytes;
+        meta.fwd_pkt_count   = fwd_pkt_count;
+        meta.bwd_pkt_count   = bwd_pkt_count;
+        meta.fwd_bytes       = fwd_bytes;
+        meta.bwd_bytes       = bwd_bytes;
+        meta.fwd_max_pkt_len = fwd_max_pkt_len;
+        meta.bwd_max_pkt_len = bwd_max_pkt_len;
 
-        // Window size
+        // Window size (max)
         if (meta.protocol == TYPE_TCP) {
             if (hdr.tcp.window > max_win_size) {
                 max_win_size = hdr.tcp.window;
@@ -650,49 +791,57 @@ control MyIngress(inout headers hdr,
             }
         }
         meta.max_win_size = max_win_size;
+        meta.init_fwd_win = init_fwd_win;
 
         reg_time_last_pkt.write(meta.flow_hash, current_time);
 
-        // URG count
-        if (meta.protocol == TYPE_TCP && hdr.tcp.ctrl[5:5] == 1w1) {
-            urg_count = urg_count + 1;
-            reg_urg_count.write(meta.flow_hash, urg_count);
-        }
-        meta.urg_count = urg_count;
-
-        // TCP flag counts
+        // TCP flag counts (URG, SYN, ACK, FIN, RST, PSH)
         if (meta.protocol == TYPE_TCP) {
+            if (hdr.tcp.ctrl[5:5] == 1w1) {
+                urg_count = urg_count + 1;
+                reg_urg_count.write(meta.flow_hash, urg_count);
+            }
             flags_syn = flags_syn + (bit<32>)hdr.tcp.ctrl[1:1];
             flags_ack = flags_ack + (bit<32>)hdr.tcp.ctrl[4:4];
             flags_fin = flags_fin + (bit<32>)hdr.tcp.ctrl[0:0];
             flags_rst = flags_rst + (bit<32>)hdr.tcp.ctrl[2:2];
+            flags_psh = flags_psh + (bit<32>)hdr.tcp.ctrl[3:3];
             reg_flags_syn.write(meta.flow_hash, flags_syn);
             reg_flags_ack.write(meta.flow_hash, flags_ack);
             reg_flags_fin.write(meta.flow_hash, flags_fin);
             reg_flags_rst.write(meta.flow_hash, flags_rst);
+            reg_flags_psh.write(meta.flow_hash, flags_psh);
         }
-        meta.flags_syn = flags_syn;
-        meta.flags_ack = flags_ack;
-        meta.flags_fin = flags_fin;
-        meta.flags_rst = flags_rst;
+        meta.urg_count  = urg_count;
+        meta.flags_syn  = flags_syn;
+        meta.flags_ack  = flags_ack;
+        meta.flags_fin  = flags_fin;
+        meta.flags_rst  = flags_rst;
+        meta.flags_psh  = flags_psh;
 
         // FIN/RST ends the flow
         if (meta.flow_ended == 1w0 &&
                 meta.protocol == TYPE_TCP &&
                 (meta.flags_fin > 32w0 || meta.flags_rst > 32w0)) {
-            meta.flow_ended    = 1w1;
-            meta.duration      = current_time - time_first;
-            meta.max_iat       = max_iat;
-            meta.urg_count     = urg_count;
+            meta.flow_ended   = 1w1;
+            meta.duration     = current_time - time_first;
+            meta.max_iat      = max_iat;
+            meta.min_iat      = min_iat;
+            meta.urg_count    = urg_count;
             reg_fwd_pkt_count.read(meta.fwd_pkt_count, meta.flow_hash);
             reg_bwd_pkt_count.read(meta.bwd_pkt_count, meta.flow_hash);
             reg_fwd_bytes.read(meta.fwd_bytes, meta.flow_hash);
             reg_bwd_bytes.read(meta.bwd_bytes, meta.flow_hash);
             reg_max_win_size.read(meta.max_win_size, meta.flow_hash);
+            reg_fwd_max_pkt_len.read(meta.fwd_max_pkt_len, meta.flow_hash);
+            reg_bwd_max_pkt_len.read(meta.bwd_max_pkt_len, meta.flow_hash);
+            reg_flags_psh.read(meta.flags_psh, meta.flow_hash);
+            reg_init_fwd_win.read(meta.init_fwd_win, meta.flow_hash);
             // Reset registers
             reg_time_first_pkt.write(meta.flow_hash, 0);
             reg_time_last_pkt.write(meta.flow_hash, 0);
             reg_max_iat.write(meta.flow_hash, 0);
+            reg_min_iat.write(meta.flow_hash, 0);
             reg_urg_count.write(meta.flow_hash, 0);
             reg_fwd_pkt_count.write(meta.flow_hash, 0);
             reg_bwd_pkt_count.write(meta.flow_hash, 0);
@@ -703,6 +852,12 @@ control MyIngress(inout headers hdr,
             reg_flags_ack.write(meta.flow_hash, 32w0);
             reg_flags_fin.write(meta.flow_hash, 32w0);
             reg_flags_rst.write(meta.flow_hash, 32w0);
+            reg_fwd_max_pkt_len.write(meta.flow_hash, 16w0);
+            reg_bwd_max_pkt_len.write(meta.flow_hash, 16w0);
+            reg_flags_psh.write(meta.flow_hash, 32w0);
+            reg_init_fwd_win.write(meta.flow_hash, 16w0);
+            bloom_filter_1.write(meta.flow_hash,   1w0);  // release slot
+            bloom_filter_2.write(meta.flow_hash_2, 1w0);
         }
     }
 
@@ -967,9 +1122,15 @@ control MyIngress(inout headers hdr,
         # ── Apply block ──────────────────────────────────────────────────
         code += '''
     apply {
-        if (hdr.ipv4.isValid() && (meta.protocol == TYPE_TCP || meta.protocol == TYPE_UDP)) {
+        if ((hdr.ipv4.isValid() && (meta.protocol == TYPE_TCP || meta.protocol == TYPE_UDP ||
+                                    meta.protocol == TYPE_ICMP)) ||
+            hdr.arp.isValid()) {
             compute_flow_hash();
-            update_flow_state();
+            // Only update state when no collision — colliding packets are forwarded
+            // without corrupting another flow's registers.
+            if (meta.hash_collision == 1w0) {
+                update_flow_state();
+            }
 
             if (meta.flow_ended == 1w1 &&
                     (meta.fwd_pkt_count + meta.bwd_pkt_count) >= 2) {
@@ -1133,6 +1294,11 @@ control MyIngress(inout headers hdr,
                     meta.flags_ack,
                     meta.flags_fin,
                     meta.flags_rst,
+                    meta.min_iat,
+                    meta.fwd_max_pkt_len,
+                    meta.bwd_max_pkt_len,
+                    meta.flags_psh,
+                    meta.init_fwd_win,
 '''
         if self.needs_transform:
             for i in range(1, self.n_components + 1):
@@ -1147,7 +1313,9 @@ control MyIngress(inout headers hdr,
                 });
             } // end if flow_ended
 
-            ipv4_lpm.apply();
+            if (hdr.ipv4.isValid()) {
+                ipv4_lpm.apply();
+            }
         }
     }
 }
@@ -1186,7 +1354,9 @@ control MyComputeChecksum(inout headers hdr, inout metadata meta) {
 control MyDeparser(packet_out packet, in headers hdr) {
     apply {
         packet.emit(hdr.ethernet);
+        packet.emit(hdr.arp);
         packet.emit(hdr.ipv4);
+        packet.emit(hdr.icmp);
         packet.emit(hdr.tcp);
         packet.emit(hdr.udp);
     }
@@ -1239,9 +1409,12 @@ class TofinoP4CodeGenerator(P4CodeGenerator):
 #include <core.p4>
 #include <tna.p4>
 
-const bit<16> TYPE_IPV4 = 0x800;
-const bit<8>  TYPE_TCP  = 6;
-const bit<8>  TYPE_UDP  = 17;
+const bit<16> TYPE_IPV4       = 0x800;
+const bit<16> TYPE_ARP        = 0x0806;
+const bit<8>  TYPE_TCP        = 6;
+const bit<8>  TYPE_UDP        = 17;
+const bit<8>  TYPE_ICMP       = 1;
+const bit<8>  TYPE_ARP_PSEUDO = 253;  // pseudo proto used in flow key for ARP
 
 const bit<32> NB_ENTRIES = ''' + str(self.n_registers) + ''';
 const bit<32> MAX_REGISTER_ENTRIES = ''' + str(self.n_registers) + ''';
@@ -1304,6 +1477,26 @@ header udp_t {
     bit<16> udpTotalLen;
     bit<16> checksum;
 }
+
+header icmp_t {
+    bit<8>  icmp_type;   // ICMP type (used as pseudo src_port in flow key)
+    bit<8>  icmp_code;   // ICMP code (used as pseudo dst_port in flow key)
+    bit<16> checksum;
+    bit<32> rest;        // identifier+seq_num for echo; varies by type
+}
+
+// ARP for IPv4-over-Ethernet (fixed 28-byte payload)
+header arp_ipv4_t {
+    bit<16>   htype;  // hardware type  (1 = Ethernet)
+    bit<16>   ptype;  // protocol type  (0x0800 = IPv4)
+    bit<8>    hlen;   // hardware addr length (6)
+    bit<8>    plen;   // protocol addr length (4)
+    bit<16>   oper;   // operation: 1=request, 2=reply  (pseudo src_port)
+    macAddr_t sha;    // sender hardware address
+    ip4Addr_t spa;    // sender protocol address  (→ meta.src_ip)
+    macAddr_t tha;    // target hardware address
+    ip4Addr_t tpa;    // target protocol address  (→ meta.dst_ip)
+}
 '''
 
     # ─────────────────────────────────────────────────────────────────────
@@ -1352,6 +1545,13 @@ struct metadata {
     bit<32>    flags_ack;
     bit<32>    flags_fin;
     bit<32>    flags_rst;
+    bytes_t    pkt_len;      // IP totalLen for IPv4; 28 for ARP (fixed); used for byte counting
+    // New features
+    iat_t      min_iat;
+    bit<16>    fwd_max_pkt_len;
+    bit<16>    bwd_max_pkt_len;
+    bit<32>    flags_psh;
+    bit<16>    init_fwd_win;
 '''
         # Transformed feature codes (PCA, LDA, or Autoencoder)
         if self.needs_transform:
@@ -1409,7 +1609,9 @@ struct metadata {
 
 struct headers {
     ethernet_t   ethernet;
+    arp_ipv4_t   arp;
     ipv4_t       ipv4;
+    icmp_t       icmp;
     tcp_t        tcp;
     udp_t        udp;
 }
@@ -1433,6 +1635,11 @@ struct digest_t {
     bit<32>    flags_ack;
     bit<32>    flags_fin;
     bit<32>    flags_rst;
+    iat_t      min_iat;
+    bit<16>    fwd_max_pkt_len;
+    bit<16>    bwd_max_pkt_len;
+    bit<32>    flags_psh;
+    bit<16>    init_fwd_win;
 '''
         if self.needs_transform:
             for i in range(1, self.n_components + 1):
@@ -1472,6 +1679,7 @@ parser SwitchIngressParser(
         pkt.extract(hdr.ethernet);
         transition select(hdr.ethernet.etherType) {
             TYPE_IPV4: parse_ipv4;
+            TYPE_ARP : parse_arp;
             default  : accept;
         }
     }
@@ -1481,10 +1689,12 @@ parser SwitchIngressParser(
         meta.src_ip   = hdr.ipv4.srcAddr;
         meta.dst_ip   = hdr.ipv4.dstAddr;
         meta.protocol = hdr.ipv4.protocol;
+        meta.pkt_len  = (bytes_t)hdr.ipv4.totalLen;
         transition select(hdr.ipv4.protocol) {
-            TYPE_TCP: parse_tcp;
-            TYPE_UDP: parse_udp;
-            default : accept;
+            TYPE_TCP : parse_tcp;
+            TYPE_UDP : parse_udp;
+            TYPE_ICMP: parse_icmp;
+            default  : accept;
         }
     }
 
@@ -1499,6 +1709,24 @@ parser SwitchIngressParser(
         pkt.extract(hdr.udp);
         meta.src_port = hdr.udp.srcPort;
         meta.dst_port = hdr.udp.dstPort;
+        transition accept;
+    }
+
+    state parse_icmp {
+        pkt.extract(hdr.icmp);
+        meta.src_port = (port_t)hdr.icmp.icmp_type;
+        meta.dst_port = (port_t)hdr.icmp.icmp_code;
+        transition accept;
+    }
+
+    state parse_arp {
+        pkt.extract(hdr.arp);
+        meta.src_ip   = hdr.arp.spa;
+        meta.dst_ip   = hdr.arp.tpa;
+        meta.protocol = TYPE_ARP_PSEUDO;
+        meta.src_port = hdr.arp.oper;
+        meta.dst_port = 16w0;
+        meta.pkt_len  = 32w28;  // ARP IPv4 payload is fixed 28 bytes
         transition accept;
     }
 }
@@ -1551,6 +1779,11 @@ control SwitchIngress(
     Register<bit<32>, bit<32>>(MAX_REGISTER_ENTRIES) reg_flags_ack;
     Register<bit<32>, bit<32>>(MAX_REGISTER_ENTRIES) reg_flags_fin;
     Register<bit<32>, bit<32>>(MAX_REGISTER_ENTRIES) reg_flags_rst;
+    Register<iat_t,   bit<32>>(MAX_REGISTER_ENTRIES) reg_min_iat;
+    Register<bit<16>, bit<32>>(MAX_REGISTER_ENTRIES) reg_fwd_max_pkt_len;
+    Register<bit<16>, bit<32>>(MAX_REGISTER_ENTRIES) reg_bwd_max_pkt_len;
+    Register<bit<32>, bit<32>>(MAX_REGISTER_ENTRIES) reg_flags_psh;
+    Register<bit<16>, bit<32>>(MAX_REGISTER_ENTRIES) reg_init_fwd_win;
     Register<bit<1>,  bit<32>>(MAX_REGISTER_ENTRIES) bloom_filter;
 
     // ── RegisterActions: read time_first ─────────────────────────────
@@ -1611,7 +1844,7 @@ control SwitchIngress(
     // ── RegisterActions: fwd_bytes ────────────────────────────────────
     RegisterAction<bytes_t, bit<32>, bytes_t>(reg_fwd_bytes) ra_add_fwd_bytes = {
         void apply(inout bytes_t val, out bytes_t rv) {
-            val = val + (bytes_t)hdr.ipv4.totalLen; rv = val;
+            val = val + meta.pkt_len; rv = val;
         }
     };
     RegisterAction<bytes_t, bit<32>, bytes_t>(reg_fwd_bytes) ra_read_fwd_bytes = {
@@ -1624,7 +1857,7 @@ control SwitchIngress(
     // ── RegisterActions: bwd_bytes ────────────────────────────────────
     RegisterAction<bytes_t, bit<32>, bytes_t>(reg_bwd_bytes) ra_add_bwd_bytes = {
         void apply(inout bytes_t val, out bytes_t rv) {
-            val = val + (bytes_t)hdr.ipv4.totalLen; rv = val;
+            val = val + meta.pkt_len; rv = val;
         }
     };
     RegisterAction<bytes_t, bit<32>, bytes_t>(reg_bwd_bytes) ra_read_bwd_bytes = {
@@ -1711,6 +1944,67 @@ control SwitchIngress(
         void apply(inout bit<32> val) { val = 32w0; }
     };
 
+    // ── RegisterActions: min_iat ──────────────────────────────────────
+    RegisterAction<iat_t, bit<32>, iat_t>(reg_min_iat) ra_update_min_iat = {
+        void apply(inout iat_t val, out iat_t rv) {
+            // TODO: Tofino SALU — update when iat < val (or val == 0)
+            rv = val;
+        }
+    };
+    RegisterAction<iat_t, bit<32>, void>(reg_min_iat) ra_clear_min_iat = {
+        void apply(inout iat_t val) { val = 48w0; }
+    };
+
+    // ── RegisterActions: fwd_max_pkt_len ─────────────────────────────
+    RegisterAction<bit<16>, bit<32>, bit<16>>(reg_fwd_max_pkt_len) ra_update_fwd_max_pkt = {
+        void apply(inout bit<16> val, out bit<16> rv) {
+            if ((bit<16>)meta.pkt_len > val) { val = (bit<16>)meta.pkt_len; }
+            rv = val;
+        }
+    };
+    RegisterAction<bit<16>, bit<32>, void>(reg_fwd_max_pkt_len) ra_clear_fwd_max_pkt = {
+        void apply(inout bit<16> val) { val = 16w0; }
+    };
+
+    // ── RegisterActions: bwd_max_pkt_len ─────────────────────────────
+    RegisterAction<bit<16>, bit<32>, bit<16>>(reg_bwd_max_pkt_len) ra_update_bwd_max_pkt = {
+        void apply(inout bit<16> val, out bit<16> rv) {
+            if ((bit<16>)meta.pkt_len > val) { val = (bit<16>)meta.pkt_len; }
+            rv = val;
+        }
+    };
+    RegisterAction<bit<16>, bit<32>, void>(reg_bwd_max_pkt_len) ra_clear_bwd_max_pkt = {
+        void apply(inout bit<16> val) { val = 16w0; }
+    };
+
+    // ── RegisterActions: flags_psh ────────────────────────────────────
+    RegisterAction<bit<32>, bit<32>, bit<32>>(reg_flags_psh) ra_incr_flags_psh = {
+        void apply(inout bit<32> val, out bit<32> rv) {
+            val = val + (bit<32>)hdr.tcp.ctrl[3:3]; rv = val;
+        }
+    };
+    RegisterAction<bit<32>, bit<32>, bit<32>>(reg_flags_psh) ra_read_flags_psh = {
+        void apply(inout bit<32> val, out bit<32> rv) { rv = val; }
+    };
+    RegisterAction<bit<32>, bit<32>, void>(reg_flags_psh) ra_clear_flags_psh = {
+        void apply(inout bit<32> val) { val = 32w0; }
+    };
+
+    // ── RegisterActions: init_fwd_win ─────────────────────────────────
+    RegisterAction<bit<16>, bit<32>, bit<16>>(reg_init_fwd_win) ra_read_init_fwd_win = {
+        void apply(inout bit<16> val, out bit<16> rv) { rv = val; }
+    };
+    // Called only in the forward direction — writes once when val == 0
+    RegisterAction<bit<16>, bit<32>, bit<16>>(reg_init_fwd_win) ra_set_init_fwd_win = {
+        void apply(inout bit<16> val, out bit<16> rv) {
+            if (val == 16w0) { val = hdr.tcp.window; }
+            rv = val;
+        }
+    };
+    RegisterAction<bit<16>, bit<32>, void>(reg_init_fwd_win) ra_clear_init_fwd_win = {
+        void apply(inout bit<16> val) { val = 16w0; }
+    };
+
     // ── RegisterAction: bloom_filter ─────────────────────────────────
     RegisterAction<bit<1>, bit<32>, void>(bloom_filter) ra_bloom_set = {
         void apply(inout bit<1> val) { val = 1w1; }
@@ -1785,19 +2079,24 @@ control SwitchIngress(
 
     // ── Phase 1: read current flow state ─────────────────────────────
     action read_flow_state_a() {
-        meta.time_first    = ra_read_time_first.execute(meta.flow_hash);
-        meta.time_last     = ra_read_time_last.execute(meta.flow_hash);
-        meta.max_iat       = ra_update_max_iat.execute(meta.flow_hash);
-        meta.fwd_pkt_count = ra_read_fwd_pkt.execute(meta.flow_hash);
-        meta.bwd_pkt_count = ra_read_bwd_pkt.execute(meta.flow_hash);
-        meta.fwd_bytes     = ra_read_fwd_bytes.execute(meta.flow_hash);
-        meta.bwd_bytes     = ra_read_bwd_bytes.execute(meta.flow_hash);
-        meta.max_win_size  = ra_update_max_win_size.execute(meta.flow_hash);
-        meta.urg_count     = ra_read_urg_count.execute(meta.flow_hash);
-        meta.flags_syn     = ra_read_flags_syn.execute(meta.flow_hash);
-        meta.flags_ack     = ra_read_flags_ack.execute(meta.flow_hash);
-        meta.flags_fin     = ra_read_flags_fin.execute(meta.flow_hash);
-        meta.flags_rst     = ra_read_flags_rst.execute(meta.flow_hash);
+        meta.time_first       = ra_read_time_first.execute(meta.flow_hash);
+        meta.time_last        = ra_read_time_last.execute(meta.flow_hash);
+        meta.max_iat          = ra_update_max_iat.execute(meta.flow_hash);
+        meta.min_iat          = ra_update_min_iat.execute(meta.flow_hash);
+        meta.fwd_pkt_count    = ra_read_fwd_pkt.execute(meta.flow_hash);
+        meta.bwd_pkt_count    = ra_read_bwd_pkt.execute(meta.flow_hash);
+        meta.fwd_bytes        = ra_read_fwd_bytes.execute(meta.flow_hash);
+        meta.bwd_bytes        = ra_read_bwd_bytes.execute(meta.flow_hash);
+        meta.max_win_size     = ra_update_max_win_size.execute(meta.flow_hash);
+        meta.urg_count        = ra_read_urg_count.execute(meta.flow_hash);
+        meta.flags_syn        = ra_read_flags_syn.execute(meta.flow_hash);
+        meta.flags_ack        = ra_read_flags_ack.execute(meta.flow_hash);
+        meta.flags_fin        = ra_read_flags_fin.execute(meta.flow_hash);
+        meta.flags_rst        = ra_read_flags_rst.execute(meta.flow_hash);
+        meta.fwd_max_pkt_len  = ra_update_fwd_max_pkt.execute(meta.flow_hash);
+        meta.bwd_max_pkt_len  = ra_update_bwd_max_pkt.execute(meta.flow_hash);
+        meta.flags_psh        = ra_read_flags_psh.execute(meta.flow_hash);
+        meta.init_fwd_win     = ra_read_init_fwd_win.execute(meta.flow_hash);
     }
     @hidden table read_flow_state_t {
         actions = { read_flow_state_a; }
@@ -1818,6 +2117,7 @@ control SwitchIngress(
         ra_init_time_first.execute(meta.flow_hash);
         ra_clear_time_last.execute(meta.flow_hash);
         ra_clear_max_iat.execute(meta.flow_hash);
+        ra_clear_min_iat.execute(meta.flow_hash);
         ra_clear_fwd_pkt.execute(meta.flow_hash);
         ra_clear_bwd_pkt.execute(meta.flow_hash);
         ra_clear_fwd_bytes.execute(meta.flow_hash);
@@ -1828,6 +2128,10 @@ control SwitchIngress(
         ra_clear_flags_ack.execute(meta.flow_hash);
         ra_clear_flags_fin.execute(meta.flow_hash);
         ra_clear_flags_rst.execute(meta.flow_hash);
+        ra_clear_fwd_max_pkt.execute(meta.flow_hash);
+        ra_clear_bwd_max_pkt.execute(meta.flow_hash);
+        ra_clear_flags_psh.execute(meta.flow_hash);
+        ra_clear_init_fwd_win.execute(meta.flow_hash);
     }
     @hidden table reset_flow_regs_t {
         actions = { reset_flow_regs_a; }
@@ -1839,6 +2143,7 @@ control SwitchIngress(
         ra_clear_time_first.execute(meta.flow_hash);
         ra_clear_time_last.execute(meta.flow_hash);
         ra_clear_max_iat.execute(meta.flow_hash);
+        ra_clear_min_iat.execute(meta.flow_hash);
         ra_clear_fwd_pkt.execute(meta.flow_hash);
         ra_clear_bwd_pkt.execute(meta.flow_hash);
         ra_clear_fwd_bytes.execute(meta.flow_hash);
@@ -1849,6 +2154,10 @@ control SwitchIngress(
         ra_clear_flags_ack.execute(meta.flow_hash);
         ra_clear_flags_fin.execute(meta.flow_hash);
         ra_clear_flags_rst.execute(meta.flow_hash);
+        ra_clear_fwd_max_pkt.execute(meta.flow_hash);
+        ra_clear_bwd_max_pkt.execute(meta.flow_hash);
+        ra_clear_flags_psh.execute(meta.flow_hash);
+        ra_clear_init_fwd_win.execute(meta.flow_hash);
     }
     @hidden table clear_flow_regs_t {
         actions = { clear_flow_regs_a; }
@@ -1866,8 +2175,13 @@ control SwitchIngress(
 
     // ── Phase 4a: update forward direction counters ───────────────────
     action update_fwd_counters_a() {
-        meta.fwd_pkt_count = ra_incr_fwd_pkt.execute(meta.flow_hash);
-        meta.fwd_bytes     = ra_add_fwd_bytes.execute(meta.flow_hash);
+        meta.fwd_pkt_count   = ra_incr_fwd_pkt.execute(meta.flow_hash);
+        meta.fwd_bytes       = ra_add_fwd_bytes.execute(meta.flow_hash);
+        meta.fwd_max_pkt_len = ra_update_fwd_max_pkt.execute(meta.flow_hash);
+        // InitFwdWinBytes: capture window on first forward TCP packet only
+        if (meta.protocol == TYPE_TCP) {
+            meta.init_fwd_win = ra_set_init_fwd_win.execute(meta.flow_hash);
+        }
     }
     @hidden table update_fwd_counters_t {
         actions = { update_fwd_counters_a; }
@@ -1876,8 +2190,9 @@ control SwitchIngress(
 
     // ── Phase 4b: update backward direction counters ──────────────────
     action update_bwd_counters_a() {
-        meta.bwd_pkt_count = ra_incr_bwd_pkt.execute(meta.flow_hash);
-        meta.bwd_bytes     = ra_add_bwd_bytes.execute(meta.flow_hash);
+        meta.bwd_pkt_count   = ra_incr_bwd_pkt.execute(meta.flow_hash);
+        meta.bwd_bytes       = ra_add_bwd_bytes.execute(meta.flow_hash);
+        meta.bwd_max_pkt_len = ra_update_bwd_max_pkt.execute(meta.flow_hash);
     }
     @hidden table update_bwd_counters_t {
         actions = { update_bwd_counters_a; }
@@ -1892,6 +2207,7 @@ control SwitchIngress(
         meta.flags_ack    = ra_incr_flags_ack.execute(meta.flow_hash);
         meta.flags_fin    = ra_incr_flags_fin.execute(meta.flow_hash);
         meta.flags_rst    = ra_incr_flags_rst.execute(meta.flow_hash);
+        meta.flags_psh    = ra_incr_flags_psh.execute(meta.flow_hash);
     }
     @hidden table update_tcp_features_t {
         actions = { update_tcp_features_a; }
@@ -2158,7 +2474,9 @@ control SwitchIngress(
         # ── Apply block (TNA) ────────────────────────────────────────────
         code += '''
     apply {
-        if (hdr.ipv4.isValid() && (meta.protocol == TYPE_TCP || meta.protocol == TYPE_UDP)) {
+        if ((hdr.ipv4.isValid() && (meta.protocol == TYPE_TCP || meta.protocol == TYPE_UDP ||
+                                    meta.protocol == TYPE_ICMP)) ||
+            hdr.arp.isValid()) {
             compute_flow_hash();
             read_flow_state_t.apply();
 
@@ -2338,7 +2656,9 @@ control SwitchIngress(
                 meta.send_digest = 1w1;
             } // end if flow_ended
 
-            ipv4_lpm.apply();
+            if (hdr.ipv4.isValid()) {
+                ipv4_lpm.apply();
+            }
         }
     }
 }
@@ -2391,11 +2711,18 @@ control SwitchIngressDeparser(
             for c in range(n_cls):
                 code += f'                meta.xgb_score_c{c},\n'
 
-        code += '''                meta.ml_result
+        code += '''                meta.min_iat,
+                meta.fwd_max_pkt_len,
+                meta.bwd_max_pkt_len,
+                meta.flags_psh,
+                meta.init_fwd_win,
+                meta.ml_result
             });
         }
         pkt.emit(hdr.ethernet);
+        pkt.emit(hdr.arp);
         pkt.emit(hdr.ipv4);
+        pkt.emit(hdr.icmp);
         pkt.emit(hdr.tcp);
         pkt.emit(hdr.udp);
     }
@@ -2418,7 +2745,9 @@ control SwitchEgressDeparser(
         in egress_intrinsic_metadata_for_deparser_t eg_dprsr_md) {
     apply {
         pkt.emit(hdr.ethernet);
+        pkt.emit(hdr.arp);
         pkt.emit(hdr.ipv4);
+        pkt.emit(hdr.icmp);
         pkt.emit(hdr.tcp);
         pkt.emit(hdr.udp);
     }
@@ -2455,7 +2784,7 @@ def load_reduction_config(config_file='tables/reduction_config.json'):
     return None
 
 
-def detect_n_components(params_file='tables/pca_encoding_params.json',
+def detect_n_components(params_file='tables/encoding_params.json',
                         commands_file='tables/s1-commands.txt',
                         table_prefix='pca'):
     """Detect component count and bit-width from transform encoding params."""
@@ -2544,7 +2873,7 @@ def main():
                         help='BMv2 P4 output (default: ../basic.p4)')
     parser.add_argument('--tofino-output', default='../p4sec_tofino.p4',
                         help='Tofino P4 output (default: ../p4sec_tofino.p4)')
-    parser.add_argument('--params-file', default='tables/pca_encoding_params.json')
+    parser.add_argument('--params-file', default='tables/encoding_params.json')
     parser.add_argument('--commands-file', default='tables/s1-commands.txt')
     parser.add_argument('--reduction-config', default='tables/reduction_config.json')
     parser.add_argument('-m', '--model-type', default='dt',
@@ -2553,7 +2882,7 @@ def main():
     parser.add_argument('--rf-params', default='tables/rf_params.json')
     parser.add_argument('--xgb-params', default='tables/xgb_params.json')
     parser.add_argument('--register-entries', type=int, default=65536)
-    parser.add_argument('--flow-timeout-s', type=int, default=120)
+    parser.add_argument('--flow-timeout-s', type=int, default=60)
     args = parser.parse_args()
 
     # Map GB → XGB (identical P4 architecture)

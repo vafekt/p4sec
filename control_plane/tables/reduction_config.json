@@ -12,7 +12,14 @@
     "PC9_code",
     "PC10_code",
     "PC11_code",
-    "PC12_code"
+    "PC12_code",
+    "PC13_code",
+    "PC14_code",
+    "PC15_code",
+    "PC16_code",
+    "PC17_code",
+    "PC18_code",
+    "PC19_code"
   ],
   "feature_max_values": {
     "PC1_code": 65535,
@@ -26,9 +33,16 @@
     "PC9_code": 65535,
     "PC10_code": 65535,
     "PC11_code": 65535,
-    "PC12_code": 65535
+    "PC12_code": 65535,
+    "PC13_code": 65535,
+    "PC14_code": 65535,
+    "PC15_code": 65535,
+    "PC16_code": 65535,
+    "PC17_code": 65535,
+    "PC18_code": 65535,
+    "PC19_code": 65535
   },
   "needs_transform_tables": true,
-  "n_components": 12,
+  "n_components": 19,
   "bits": 16
 }

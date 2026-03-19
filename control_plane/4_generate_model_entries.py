@@ -74,7 +74,7 @@ parser.add_argument('--tree-out', default=None,
                     help='Human-readable tree rules (default: tables/<type>_tree(s).txt)')
 parser.add_argument('--params', default=None,
                     help='Params JSON (for XGB/GB/RF/CNN; auto-detected if omitted)')
-parser.add_argument('--csv', default="tables/pca_integer_mapping.csv",
+parser.add_argument('--csv', default="tables/transform_mapping.csv",
                     help='Training CSV for proxy DT (XGB/GB only)')
 parser.add_argument('--proxy-max-depth', type=int, default=None,
                     help='Proxy DT max_depth for XGB/GB (default: None)')

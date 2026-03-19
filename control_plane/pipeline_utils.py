@@ -23,26 +23,33 @@ import pandas as pd
 # P4 field widths for raw flow features (used when classifying directly
 # on raw features without PCA/LDA transformation).
 P4_FEATURE_MAX = {
-    "Protocol":    (2**8  - 1),   # bit<8>
-    "Duration":    (2**48 - 1),   # bit<48>
-    "MaxIAT":      (2**48 - 1),   # bit<48>
-    "UrgCount":    (2**32 - 1),   # bit<32>
-    "FwdPktCount": (2**32 - 1),   # bit<32>
-    "BwdPktCount": (2**32 - 1),   # bit<32>
-    "FwdBytes":    (2**32 - 1),   # bit<32>
-    "BwdBytes":    (2**32 - 1),   # bit<32>
-    "MaxWinSize":  (2**16 - 1),   # bit<16>
-    "FlagsSyn":    (2**32 - 1),   # bit<32>
-    "FlagsAck":    (2**32 - 1),   # bit<32>
-    "FlagsFin":    (2**32 - 1),   # bit<32>
-    "FlagsRst":    (2**32 - 1),   # bit<32>
+    "Protocol":        (2**8  - 1),   # bit<8>
+    "SrcPort":         (2**16 - 1),   # port_t / bit<16>
+    "DstPort":         (2**16 - 1),   # port_t / bit<16>
+    "Duration":        (2**48 - 1),   # bit<48>
+    "MaxIAT":          (2**48 - 1),   # bit<48>
+    "UrgCount":        (2**32 - 1),   # bit<32>
+    "FwdPktCount":     (2**32 - 1),   # bit<32>
+    "BwdPktCount":     (2**32 - 1),   # bit<32>
+    "FwdBytes":        (2**32 - 1),   # bit<32>
+    "BwdBytes":        (2**32 - 1),   # bit<32>
+    "MaxWinSize":      (2**16 - 1),   # bit<16>
+    "FlagsSyn":        (2**32 - 1),   # bit<32>
+    "FlagsAck":        (2**32 - 1),   # bit<32>
+    "FlagsFin":        (2**32 - 1),   # bit<32>
+    "FlagsRst":        (2**32 - 1),   # bit<32>
+    "MinIAT":          (2**48 - 1),   # bit<48>
+    "FwdMaxPktLen":    (2**16 - 1),   # bit<16>
+    "BwdMaxPktLen":    (2**16 - 1),   # bit<16>
+    "FlagsPsh":        (2**32 - 1),   # bit<32>
+    "InitFwdWinBytes": (2**16 - 1),   # bit<16>
 }
 
-# All 13 P4 raw flow feature names, in canonical order
+# All 20 P4 raw flow feature names, in canonical order
 ALL_RAW_FEATURES = list(P4_FEATURE_MAX.keys())
 
 # Columns that are never ML features
-NON_FEATURE_COLS = {'Label', 'SrcIP', 'DstIP', 'SrcPort', 'DstPort'}
+NON_FEATURE_COLS = {'Label', 'SrcIP', 'DstIP'}
 
 TRANSFORM_METHOD_TO_PREFIX = {
     'pca': 'PC',
@@ -103,15 +110,15 @@ def detect_feature_max_values(tables_dir):
         # Convert values to int (JSON may have stored them as float)
         return {k: int(v) for k, v in config['feature_max_values'].items()}
 
-    # Fallback: try pca_encoding_params.json
-    pca_params_path = os.path.join(tables_dir, 'pca_encoding_params.json')
-    if os.path.exists(pca_params_path):
-        with open(pca_params_path) as f:
-            pca_params = json.load(f)
-        bits = pca_params.get('bits', 16)
+    # Fallback: try encoding_params.json
+    enc_params_path = os.path.join(tables_dir, 'encoding_params.json')
+    if os.path.exists(enc_params_path):
+        with open(enc_params_path) as f:
+            enc_params = json.load(f)
+        bits = enc_params.get('bits', 16)
         max_val = 2 ** bits - 1
-        n_comp = pca_params.get('n_components', 2)
-        method = str(pca_params.get('method', 'pca')).lower()
+        n_comp = enc_params.get('n_components', 2)
+        method = str(enc_params.get('method', 'pca')).lower()
         prefix = TRANSFORM_METHOD_TO_PREFIX.get(method, 'PC')
         return {f"{prefix}{j+1}_code": max_val for j in range(n_comp)}
 
@@ -137,8 +144,8 @@ def detect_bits(tables_dir):
     if config is not None:
         return config.get('bits', None)
     # Fallback
-    pca_path = os.path.join(tables_dir, 'pca_encoding_params.json')
-    if os.path.exists(pca_path):
-        with open(pca_path) as f:
+    enc_path = os.path.join(tables_dir, 'encoding_params.json')
+    if os.path.exists(enc_path):
+        with open(enc_path) as f:
             return int(json.load(f).get('bits', 16))
     return 16

@@ -431,8 +431,8 @@ def encode_autoencoder_codes(raw_features, encoding_config, max_val):
     encoder_weights = encoding_config.get('encoder_weights')
     encoder_bias = encoding_config.get('encoder_bias')
     activation_name = encoding_config.get('encoder_activation', 'tanh')
-    pc_min = encoding_config.get('pc_min')
-    pc_range = encoding_config.get('pc_range')
+    pc_min = encoding_config.get('transform_min')
+    pc_range = encoding_config.get('transform_range')
 
     required = [scaler_mean, scaler_scale, encoder_weights, encoder_bias, pc_min, pc_range]
     if any(x is None for x in required):
@@ -443,33 +443,40 @@ def encode_autoencoder_codes(raw_features, encoding_config, max_val):
     safe_scale = np.where(scale_vec == 0, 1.0, scale_vec)
     weight_mat = np.array(encoder_weights, dtype=np.float64)
     bias_vec = np.array(encoder_bias, dtype=np.float64)
-    pc_min_arr = np.array(pc_min, dtype=np.float64)
-    pc_range_arr = np.array(pc_range, dtype=np.float64)
-    pc_range_safe = np.where(pc_range_arr == 0, 1.0, pc_range_arr)
+    transform_min_arr = np.array(pc_min, dtype=np.float64)
+    transform_range_arr = np.array(pc_range, dtype=np.float64)
+    transform_range_safe = np.where(transform_range_arr == 0, 1.0, transform_range_arr)
 
     scaled = (raw_features - mean_vec) / safe_scale
     latent_linear = scaled @ weight_mat + bias_vec
     latent = apply_hidden_activation(latent_linear, activation_name)
-    latent_norm = (latent - pc_min_arr) / pc_range_safe
+    latent_norm = (latent - transform_min_arr) / transform_range_safe
     codes = np.rint(np.clip(latent_norm * max_val, 0, max_val)).astype(int)
     return codes.tolist()
 
 
 # Map canonical feature names (from reduction_config) to entry["features"] / entry["flags"] keys
 _FEATURE_TO_ENTRY_KEY = {
-    "Protocol":    ("features", "proto"),
-    "Duration":    ("features", "duration"),
-    "MaxIAT":      ("features", "max_iat"),
-    "UrgCount":    ("features", "urg_count"),
-    "FwdPktCount": ("features", "fwd_pkt_count"),
-    "BwdPktCount": ("features", "bwd_pkt_count"),
-    "FwdBytes":    ("features", "fwd_bytes"),
-    "BwdBytes":    ("features", "bwd_bytes"),
-    "MaxWinSize":  ("features", "max_win_size"),
-    "FlagsSyn":    ("flags", "syn"),
-    "FlagsAck":    ("flags", "ack"),
-    "FlagsFin":    ("flags", "fin"),
-    "FlagsRst":    ("flags", "rst"),
+    "Protocol":        ("features", "proto"),
+    "SrcPort":         ("features", "src_port"),
+    "DstPort":         ("features", "dst_port"),
+    "Duration":        ("features", "duration"),
+    "MaxIAT":          ("features", "max_iat"),
+    "UrgCount":        ("features", "urg_count"),
+    "FwdPktCount":     ("features", "fwd_pkt_count"),
+    "BwdPktCount":     ("features", "bwd_pkt_count"),
+    "FwdBytes":        ("features", "fwd_bytes"),
+    "BwdBytes":        ("features", "bwd_bytes"),
+    "MaxWinSize":      ("features", "max_win_size"),
+    "FlagsSyn":        ("flags", "syn"),
+    "FlagsAck":        ("flags", "ack"),
+    "FlagsFin":        ("flags", "fin"),
+    "FlagsRst":        ("flags", "rst"),
+    "MinIAT":          ("features", "min_iat"),
+    "FwdMaxPktLen":    ("features", "fwd_max_pkt_len"),
+    "BwdMaxPktLen":    ("features", "bwd_max_pkt_len"),
+    "FlagsPsh":        ("features", "flags_psh"),
+    "InitFwdWinBytes": ("features", "init_fwd_win"),
 }
 
 
@@ -618,10 +625,10 @@ def drain_p4_registers(p4info_helper, stub, device_id, pca_config,
     transform_method = str(pca_config.get('method', 'pca')).lower()
 
     # PCA/LDA/UMAP transform parameters
-    pca_components = pca_config.get('pca_components')  # list[list[float]], shape (k, F)
-    pca_mean       = pca_config.get('pca_mean')        # list[float], shape (F,)
-    pc_min         = pca_config.get('pc_min')           # list[float], shape (k,)
-    pc_range       = pca_config.get('pc_range')         # list[float], shape (k,)
+    pca_components = pca_config.get('transform_components')  # list[list[float]], shape (k, F)
+    pca_mean       = pca_config.get('transform_mean')        # list[float], shape (F,)
+    pc_min         = pca_config.get('transform_min')          # list[float], shape (k,)
+    pc_range       = pca_config.get('transform_range')        # list[float], shape (k,)
     max_val        = pca_config.get('max_val', (1 << pca_bits) - 1)
     umap_tree      = pca_config.get('_umap_tree')
     umap_model     = pca_config.get('_umap_model')
@@ -663,6 +670,11 @@ def drain_p4_registers(p4info_helper, stub, device_id, pca_config,
         'flags_ack':     'MyIngress.reg_flags_ack',
         'flags_fin':     'MyIngress.reg_flags_fin',
         'flags_rst':     'MyIngress.reg_flags_rst',
+        'min_iat':         'MyIngress.reg_min_iat',
+        'fwd_max_pkt_len': 'MyIngress.reg_fwd_max_pkt_len',
+        'bwd_max_pkt_len': 'MyIngress.reg_bwd_max_pkt_len',
+        'flags_psh':       'MyIngress.reg_flags_psh',
+        'init_fwd_win':    'MyIngress.reg_init_fwd_win',
     }
 
     # Read all entries of each register (no index set = read all slots)
@@ -703,20 +715,25 @@ def drain_p4_registers(p4info_helper, stub, device_id, pca_config,
     drained = 0
 
     for slot in active_slots:
-        time_first = time_first_map.get(slot, 0)
-        time_last  = reg_data.get('time_last',    {}).get(slot, 0)
-        duration   = time_last - time_first if time_last >= time_first else 0
-        max_iat    = reg_data.get('max_iat',       {}).get(slot, 0)
-        urg_count  = reg_data.get('urg_count',     {}).get(slot, 0)
-        fwd        = fwd_count_map.get(slot, 0)
-        bwd        = bwd_count_map.get(slot, 0)
-        fwd_bytes  = reg_data.get('fwd_bytes',    {}).get(slot, 0)
-        bwd_bytes  = reg_data.get('bwd_bytes',    {}).get(slot, 0)
-        win        = reg_data.get('max_win_size', {}).get(slot, 0)
-        f_syn      = reg_data.get('flags_syn',    {}).get(slot, 0)
-        f_ack      = reg_data.get('flags_ack',    {}).get(slot, 0)
-        f_fin      = reg_data.get('flags_fin',    {}).get(slot, 0)
-        f_rst      = reg_data.get('flags_rst',    {}).get(slot, 0)
+        time_first     = time_first_map.get(slot, 0)
+        time_last      = reg_data.get('time_last',       {}).get(slot, 0)
+        duration       = time_last - time_first if time_last >= time_first else 0
+        max_iat        = reg_data.get('max_iat',         {}).get(slot, 0)
+        urg_count      = reg_data.get('urg_count',       {}).get(slot, 0)
+        fwd            = fwd_count_map.get(slot, 0)
+        bwd            = bwd_count_map.get(slot, 0)
+        fwd_bytes      = reg_data.get('fwd_bytes',       {}).get(slot, 0)
+        bwd_bytes      = reg_data.get('bwd_bytes',       {}).get(slot, 0)
+        win            = reg_data.get('max_win_size',    {}).get(slot, 0)
+        f_syn          = reg_data.get('flags_syn',       {}).get(slot, 0)
+        f_ack          = reg_data.get('flags_ack',       {}).get(slot, 0)
+        f_fin          = reg_data.get('flags_fin',       {}).get(slot, 0)
+        f_rst          = reg_data.get('flags_rst',       {}).get(slot, 0)
+        min_iat        = reg_data.get('min_iat',         {}).get(slot, 0)
+        fwd_max_pkt    = reg_data.get('fwd_max_pkt_len', {}).get(slot, 0)
+        bwd_max_pkt    = reg_data.get('bwd_max_pkt_len', {}).get(slot, 0)
+        f_psh          = reg_data.get('flags_psh',       {}).get(slot, 0)
+        init_fwd_win   = reg_data.get('init_fwd_win',    {}).get(slot, 0)
 
         class_id    = -1
         class_label = 'unclassified'
@@ -725,10 +742,13 @@ def drain_p4_registers(p4info_helper, stub, device_id, pca_config,
         if can_classify:
             try:
                 proto_guess = 6 if (f_syn or f_ack or f_fin or f_rst) else 17
-                # All 13 raw features in canonical order
-                raw = np.array([[proto_guess, duration, max_iat, urg_count,
+                # All 20 raw features in canonical order (src/dst port unknown from registers → 0)
+                raw = np.array([[proto_guess, 0, 0,
+                                  duration, max_iat, urg_count,
                                   fwd, bwd, fwd_bytes, bwd_bytes, win,
-                                  f_syn, f_ack, f_fin, f_rst]], dtype=np.float64)
+                                  f_syn, f_ack, f_fin, f_rst,
+                                  min_iat, fwd_max_pkt, bwd_max_pkt, f_psh, init_fwd_win]],
+                                dtype=np.float64)
 
                 if needs_transform:
                     if transform_method == 'autoencoder':
@@ -740,24 +760,24 @@ def drain_p4_registers(p4info_helper, stub, device_id, pca_config,
                             pca_codes = pc_int.tolist()[:n_components]
                         elif umap_model is not None:
                             um_floats = umap_model.transform(raw)
-                            pc_min_arr    = np.array(pc_min)
-                            pc_range_arr  = np.array(pc_range)
-                            pc_range_safe = np.where(pc_range_arr == 0, 1, pc_range_arr)
-                            pc_norm       = (um_floats - pc_min_arr) / pc_range_safe
-                            pc_int        = np.rint(np.clip(pc_norm * max_val, 0, max_val)).astype(int)[0]
-                            pca_codes     = pc_int.tolist()[:n_components]
+                            transform_min_arr    = np.array(pc_min)
+                            transform_range_arr  = np.array(pc_range)
+                            transform_range_safe = np.where(transform_range_arr == 0, 1, transform_range_arr)
+                            transform_norm       = (um_floats - transform_min_arr) / transform_range_safe
+                            pc_int               = np.rint(np.clip(transform_norm * max_val, 0, max_val)).astype(int)[0]
+                            pca_codes            = pc_int.tolist()[:n_components]
                         else:
                             pca_codes = [0] * max(n_components, 1)
                     else:
-                        mean_vec      = np.array(pca_mean)
-                        comps_mat     = np.array(pca_components)
-                        pc_floats     = (raw - mean_vec) @ comps_mat.T
-                        pc_min_arr    = np.array(pc_min)
-                        pc_range_arr  = np.array(pc_range)
-                        pc_range_safe = np.where(pc_range_arr == 0, 1, pc_range_arr)
-                        pc_norm       = (pc_floats - pc_min_arr) / pc_range_safe
-                        pc_int        = np.rint(np.clip(pc_norm * max_val, 0, max_val)).astype(int)[0]
-                        pca_codes     = pc_int.tolist()[:n_components]
+                        mean_vec             = np.array(pca_mean)
+                        comps_mat            = np.array(pca_components)
+                        transform_floats     = (raw - mean_vec) @ comps_mat.T
+                        transform_min_arr    = np.array(pc_min)
+                        transform_range_arr  = np.array(pc_range)
+                        transform_range_safe = np.where(transform_range_arr == 0, 1, transform_range_arr)
+                        transform_norm       = (transform_floats - transform_min_arr) / transform_range_safe
+                        pc_int               = np.rint(np.clip(transform_norm * max_val, 0, max_val)).astype(int)[0]
+                        pca_codes            = pc_int.tolist()[:n_components]
                     if len(pca_codes) < n_components:
                         pca_codes += [0] * (n_components - len(pca_codes))
                     model_input = pca_codes
@@ -767,12 +787,17 @@ def drain_p4_registers(p4info_helper, stub, device_id, pca_config,
                     if reduction_feature_columns:
                         # Build raw feature dict for lookup
                         all_raw = {
-                            "Protocol": proto_guess, "Duration": duration,
+                            "Protocol": proto_guess,
+                            "SrcPort": 0, "DstPort": 0,  # not stored in registers
+                            "Duration": duration,
                             "MaxIAT": max_iat, "UrgCount": urg_count,
                             "FwdPktCount": fwd, "BwdPktCount": bwd,
                             "FwdBytes": fwd_bytes, "BwdBytes": bwd_bytes,
                             "MaxWinSize": win, "FlagsSyn": f_syn,
                             "FlagsAck": f_ack, "FlagsFin": f_fin, "FlagsRst": f_rst,
+                            "MinIAT": min_iat, "FwdMaxPktLen": fwd_max_pkt,
+                            "BwdMaxPktLen": bwd_max_pkt, "FlagsPsh": f_psh,
+                            "InitFwdWinBytes": init_fwd_win,
                         }
                         model_input = [all_raw.get(f, 0) for f in reduction_feature_columns]
                     else:
@@ -822,7 +847,7 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
 
     # Load reduction / transform configuration
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    pca_config_path = os.path.join(script_dir, 'tables/pca_encoding_params.json')
+    pca_config_path = os.path.join(script_dir, 'tables/encoding_params.json')
     reduction_config_path = os.path.join(script_dir, 'tables/reduction_config.json')
     flow_aggregator = FlowAggregator(timeout_s=flow_timeout_s)
 
@@ -1097,6 +1122,8 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
         "reg_urg_count", "reg_fwd_pkt_count", "reg_bwd_pkt_count",
         "reg_fwd_bytes", "reg_bwd_bytes", "reg_max_win_size",
         "reg_flags_syn", "reg_flags_ack", "reg_flags_fin", "reg_flags_rst",
+        "reg_min_iat", "reg_fwd_max_pkt_len", "reg_bwd_max_pkt_len",
+        "reg_flags_psh", "reg_init_fwd_win",
         "bloom_filter",
     ]
     reset_cmds = "\n".join(f"register_reset MyIngress.{r}" for r in reset_registers) + "\n"
@@ -1140,7 +1167,7 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
                 extra_headers = ','.join(code_csv_headers) + ','
             else:
                 extra_headers = ''   # Feature Selection: no code columns
-            out.write(f"src_ip,src_port,dst_ip,dst_port,proto,duration,max_iat,urg_count,fwd_pkt_count,bwd_pkt_count,fwd_bytes,bwd_bytes,max_win_size,flags_syn,flags_ack,flags_fin,flags_rst,{extra_headers}class_id,class_label\n")
+            out.write(f"src_ip,src_port,dst_ip,dst_port,proto,duration,max_iat,urg_count,fwd_pkt_count,bwd_pkt_count,fwd_bytes,bwd_bytes,max_win_size,flags_syn,flags_ack,flags_fin,flags_rst,min_iat,fwd_max_pkt_len,bwd_max_pkt_len,flags_psh,init_fwd_win,{extra_headers}class_id,class_label\n")
             packet_id = 0
             warn_once = {
                 "missing_fields": False,
@@ -1233,6 +1260,7 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
                         out.write(f"{f['src_ip']},{f['src_port']},{f['dst_ip']},{f['dst_port']},{f['proto']},"
                                   f"{f['duration']},{f['max_iat']},{f['urg_count']},{f['fwd_pkt_count']},{f['bwd_pkt_count']},"
                                   f"{f['fwd_bytes']},{f['bwd_bytes']},{f['max_win_size']},{flags['syn']},{flags['ack']},{flags['fin']},{flags['rst']},"
+                                  f"{f.get('min_iat',0)},{f.get('fwd_max_pkt_len',0)},{f.get('bwd_max_pkt_len',0)},{f.get('flags_psh',0)},{f.get('init_fwd_win',0)},"
                                   f"{format_codes_csv(entry['pca_codes'])}{class_id},{class_label}\n")
                         out.flush()
                     continue
@@ -1288,6 +1316,11 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
                         flags_ack = get_val(get_idx(["flags_ack", "ack"]))
                         flags_fin = get_val(get_idx(["flags_fin", "fin"]))
                         flags_rst = get_val(get_idx(["flags_rst", "rst"]))
+                        min_iat        = get_val(get_idx(["min_iat"]))
+                        fwd_max_pkt_len= get_val(get_idx(["fwd_max_pkt_len"]))
+                        bwd_max_pkt_len= get_val(get_idx(["bwd_max_pkt_len"]))
+                        flags_psh      = get_val(get_idx(["flags_psh"]))
+                        init_fwd_win   = get_val(get_idx(["init_fwd_win"]))
 
                         pca_codes = []
                         for name in (transform_field_names or []):
@@ -1314,7 +1347,7 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
                             warn_once["missing_class"] = True
                             print("WARNING: Class field not found in digest schema; defaulting class_id=0")
                     else:
-                        if len(st) < 17:
+                        if len(st) < 22:
                             if not warn_once["missing_fields"]:
                                 warn_once["missing_fields"] = True
                                 print(f"WARNING: Digest has insufficient fields ({len(st)}); skipping")
@@ -1339,8 +1372,13 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
                         flags_ack = bytes_to_int(st[14].bitstring)      # ACK flag
                         flags_fin = bytes_to_int(st[15].bitstring)      # FIN flag
                         flags_rst = bytes_to_int(st[16].bitstring)      # RST flag
+                        min_iat         = bytes_to_int(st[17].bitstring) # Min IAT
+                        fwd_max_pkt_len = bytes_to_int(st[18].bitstring) # Fwd max pkt len
+                        bwd_max_pkt_len = bytes_to_int(st[19].bitstring) # Bwd max pkt len
+                        flags_psh       = bytes_to_int(st[20].bitstring) # PSH flag count
+                        init_fwd_win    = bytes_to_int(st[21].bitstring) # Initial fwd window
 
-                        base_fields = 17
+                        base_fields = 22
                         remaining = len(st) - base_fields
                         if remaining <= 0:
                             if not warn_once["missing_fields"]:
@@ -1407,6 +1445,11 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
                         "fwd_bytes": fwd_bytes,
                         "bwd_bytes": bwd_bytes,
                         "max_win_size": max_win_size,
+                        "min_iat": min_iat,
+                        "fwd_max_pkt_len": fwd_max_pkt_len,
+                        "bwd_max_pkt_len": bwd_max_pkt_len,
+                        "flags_psh": flags_psh,
+                        "init_fwd_win": init_fwd_win,
                     }
                     flags = {
                         "syn": flags_syn,
@@ -1503,6 +1546,7 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
                         out.write(f"{f['src_ip']},{f['src_port']},{f['dst_ip']},{f['dst_port']},{f['proto']},"
                                   f"{f['duration']},{f['max_iat']},{f['urg_count']},{f['fwd_pkt_count']},{f['bwd_pkt_count']},"
                                   f"{f['fwd_bytes']},{f['bwd_bytes']},{f['max_win_size']},{flags['syn']},{flags['ack']},{flags['fin']},{flags['rst']},"
+                                  f"{f.get('min_iat',0)},{f.get('fwd_max_pkt_len',0)},{f.get('bwd_max_pkt_len',0)},{f.get('flags_psh',0)},{f.get('init_fwd_win',0)},"
                                   f"{format_codes_csv(entry['pca_codes'])}{class_id},{class_label}\n")
                         out.flush()
 
@@ -1539,6 +1583,7 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
                         f"{f['duration']},{f['max_iat']},{f['urg_count']},{f['fwd_pkt_count']},{f['bwd_pkt_count']},"
                         f"{f['fwd_bytes']},{f['bwd_bytes']},{f['max_win_size']},"
                         f"{flags['syn']},{flags['ack']},{flags['fin']},{flags['rst']},"
+                        f"{f.get('min_iat',0)},{f.get('fwd_max_pkt_len',0)},{f.get('bwd_max_pkt_len',0)},{f.get('flags_psh',0)},{f.get('init_fwd_win',0)},"
                         f"{format_codes_csv(entry['pca_codes'])}"
                         f"{class_id},{class_label}\n"
                     )

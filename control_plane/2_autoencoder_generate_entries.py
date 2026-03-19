@@ -8,12 +8,12 @@ deploy a surrogate DecisionTreeRegressor so the P4 program can map raw flow
 features to integer latent codes using range-match tables.
 
 Outputs (same locations, compatible with steps 3/4/5/6):
-  tables/pca_integer_mapping.csv     Columns: AE1_float...AEk_float, AE1_code...AEk_code, Label
-  tables/pca_encoding_params.json    Encoding metadata (scaler, encoder weights, min/max/range)
+  tables/transform_mapping.csv       Columns: AE1_float...AEk_float, AE1_code...AEk_code, Label
+  tables/encoding_params.json        Encoding metadata (scaler, encoder weights, min/max/range)
   tables/reduction_config.json       Universal config for steps 3/4/5/6
   tables/s1-commands.txt             P4 table_add commands for transform tables
-  tables/pca_tree_if_rules.txt       Human-readable surrogate tree rules
-  tables/pca_metrics.json            Reconstruction + classification metrics
+  tables/transform_rules.txt         Human-readable surrogate tree rules
+  tables/transform_metrics.json      Reconstruction + classification metrics
 """
 
 import argparse
@@ -34,7 +34,7 @@ from sklearn.metrics import (
 )
 from sklearn.neural_network import MLPRegressor
 from sklearn.preprocessing import StandardScaler
-from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
+from sklearn.tree import DecisionTreeClassifier
 
 from pipeline_utils import P4_FEATURE_MAX
 
@@ -64,8 +64,8 @@ def parse_args():
         epilog=(
             "Outputs:\n"
             "  tables/s1-commands.txt           (P4 transform entries)\n"
-            "  tables/pca_encoding_params.json  (transform params; legacy filename used by all methods)\n"
-            "  tables/pca_integer_mapping.csv   (codes + labels; legacy filename used by all methods)\n"
+            "  tables/encoding_params.json      (transform params; shared filename used by all methods)\n"
+            "  tables/transform_mapping.csv     (codes + labels; shared filename used by all methods)\n"
             "  tables/reduction_config.json     (universal config)\n"
             "Code prefix: AE*_code\n"
             "Note: Autoencoder codes can be used with any classifier in step 3.\n"
@@ -106,9 +106,11 @@ TABLES_DIR = os.path.join(os.path.dirname(__file__), "tables")
 os.makedirs(TABLES_DIR, exist_ok=True)
 
 P4_FEATURE_COLS = [
-    "Protocol", "Duration", "MaxIAT", "UrgCount",
+    "Protocol", "SrcPort", "DstPort",
+    "Duration", "MaxIAT", "UrgCount",
     "FwdPktCount", "BwdPktCount", "FwdBytes", "BwdBytes",
     "MaxWinSize", "FlagsSyn", "FlagsAck", "FlagsFin", "FlagsRst",
+    "MinIAT", "FwdMaxPktLen", "BwdMaxPktLen", "FlagsPsh", "InitFwdWinBytes",
 ]
 
 
@@ -226,12 +228,8 @@ for j in range(k):
     r2 = r2_score(AE_train[:, j], AE_train_quant_approx[:, j])
     print(f"AE{j+1} quantization R2: {r2:.6f}")
 
-tree = DecisionTreeRegressor(
-    max_depth=12,
-    min_samples_split=2,
-    min_samples_leaf=1,
-    random_state=RANDOM_STATE,
-)
+from sklearn.tree import DecisionTreeRegressor as _DTReg
+tree = _DTReg(max_depth=None, min_samples_leaf=1, random_state=RANDOM_STATE)
 tree.fit(X_train, AE_code_train)
 
 leaf_ids_train = tree.apply(X_train)
@@ -241,7 +239,11 @@ print(f"Surrogate tree leaves: {len(unique_leaf_ids)}")
 leaf_to_codes = {}
 for leaf_id in unique_leaf_ids:
     idx = np.where(leaf_ids_train == leaf_id)[0]
-    leaf_to_codes[leaf_id] = np.rint(AE_code_train[idx].mean(axis=0)).astype(int)
+    labels_in_leaf = y_train[idx]
+    values, counts = np.unique(labels_in_leaf, return_counts=True)
+    majority_class = values[np.argmax(counts)]
+    mask = labels_in_leaf == majority_class
+    leaf_to_codes[leaf_id] = np.rint(AE_code_train[idx][mask].mean(axis=0)).astype(int)
 
 
 def get_tree_codes(dt, leaf_mapping, X_values, n_codes):
@@ -315,7 +317,7 @@ metrics = {
         "confusion_matrix": confusion_matrix(y_test, y_pred_tree, labels=labels).tolist(),
     },
 }
-with open(os.path.join(TABLES_DIR, "pca_metrics.json"), "w") as f:
+with open(os.path.join(TABLES_DIR, "transform_metrics.json"), "w") as f:
     json.dump(metrics, f, indent=2)
 
 AE_all = np.vstack([AE_train, AE_test])
@@ -330,17 +332,17 @@ for j in range(k):
 mapping["Label"] = y_all
 
 pd.DataFrame(mapping).to_csv(
-    os.path.join(TABLES_DIR, "pca_integer_mapping.csv"), index=False)
-print("Saved pca_integer_mapping.csv (AE columns)")
+    os.path.join(TABLES_DIR, "transform_mapping.csv"), index=False)
+print("Saved transform_mapping.csv (AE columns)")
 
 encoding_params = {
     "method": "Autoencoder",
     "n_components": int(k),
     "bits": int(BITS),
     "max_val": int(MAX_VAL),
-    "pc_min": ae_min.tolist(),
-    "pc_max": ae_max.tolist(),
-    "pc_range": ae_range.tolist(),
+    "transform_min": ae_min.tolist(),
+    "transform_max": ae_max.tolist(),
+    "transform_range": ae_range.tolist(),
     "auto_selected": bool(USER_K is None),
     "encoder_activation": ACTIVATION,
     "solver": SOLVER,
@@ -355,7 +357,7 @@ encoding_params = {
     "decoder_bias": decoder_bias.tolist(),
     "planter_inspired": True,
 }
-with open(os.path.join(TABLES_DIR, "pca_encoding_params.json"), "w") as f:
+with open(os.path.join(TABLES_DIR, "encoding_params.json"), "w") as f:
     json.dump(encoding_params, f, indent=2)
 
 feature_columns = [f"AE{j+1}_code" for j in range(k)]
@@ -462,7 +464,7 @@ def write_if_rules(dt, feature_names, leaf_mapping, filename, n_codes):
 
 
 write_if_rules(tree, feature_cols, leaf_to_codes,
-               os.path.join(TABLES_DIR, "pca_tree_if_rules.txt"), k)
+               os.path.join(TABLES_DIR, "transform_rules.txt"), k)
 
 print("\n" + "=" * 60)
 print("Autoencoder complete. Run any step 3/4 classifier next:")

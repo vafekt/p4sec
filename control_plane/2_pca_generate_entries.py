@@ -40,8 +40,8 @@ def parse_args():
         epilog=(
             "Outputs:\n"
             "  tables/s1-commands.txt           (P4 transform entries)\n"
-            "  tables/pca_encoding_params.json  (transform params; legacy filename used by all methods)\n"
-            "  tables/pca_integer_mapping.csv   (codes + labels; legacy filename used by all methods)\n"
+            "  tables/encoding_params.json      (transform params; shared filename used by all methods)\n"
+            "  tables/transform_mapping.csv     (codes + labels; shared filename used by all methods)\n"
             "  tables/reduction_config.json     (universal config)\n"
             "Code prefix: PC*_code\n"
         )
@@ -113,23 +113,24 @@ label_col = df.columns[-1]
 df_clean = df.replace([np.inf, -np.inf], np.nan).dropna()
 
 # ==========================================================
-# Select exactly the 9 P4-compatible features in the EXACT order
+# Select exactly the 20 P4-compatible features in the EXACT order
 # that the pca_component* tables declare their key fields.
 # 1_extract_dataset.py now outputs these columns directly.
 # ==========================================================
 P4_FEATURE_COLS = [
-    "Protocol",
+    "Protocol", "SrcPort", "DstPort",
     "Duration", "MaxIAT", "UrgCount",
     "FwdPktCount", "BwdPktCount",
     "FwdBytes", "BwdBytes",
     "MaxWinSize",
     "FlagsSyn", "FlagsAck", "FlagsFin", "FlagsRst",
+    "MinIAT", "FwdMaxPktLen", "BwdMaxPktLen", "FlagsPsh", "InitFwdWinBytes",
 ]
 X_df = df_clean[P4_FEATURE_COLS].astype(int)
 
 # Features and labels
 feature_cols = X_df.columns.tolist()
-X = X_df.values                           # shape: (n_samples, 8)
+X = X_df.values                           # shape: (n_samples, 20)
 y = df_clean[label_col].values            # string labels
 
 print("Samples after clean:", X.shape[0])
@@ -223,18 +224,19 @@ for j, r2 in enumerate(r2_quant, 1):
     print(f"PC{j}: {r2}")
 
 # ==========================================================
-# 5. Train DecisionTreeRegressor for mapping RAW features -> PCA codes (multi-output)
-#    Both PCA and tree use RAW features, so P4 rules will work correctly
-#    Use deeper tree for better PCA approximation
+# 5. Surrogate DecisionTreeRegressor: RAW features -> quantized PCA codes.
+#    max_depth=None + min_samples_leaf=1 lets the tree grow until every unique
+#    feature tuple is isolated in its own leaf, so leaf averaging is over
+#    identical (or near-identical) feature vectors only — no cross-class mixing.
+#    This keeps tree-approx codes faithful to the true quantized PCA codes.
 # ==========================================================
 tree = DecisionTreeRegressor(
-    max_depth=12,          # Deeper tree for better resolution
-    min_samples_split=2,   # Allow more splits
-    min_samples_leaf=1,    # Allow single-sample leaves for precision
+    max_depth=None,        # Unlimited depth — no artificial averaging
+    min_samples_leaf=1,    # Allow single-sample leaves
     random_state=42
 )
 
-# Fit tree on RAW features -> quantized PCA codes
+# Fit regressor on RAW features -> quantized PCA codes (multi-output)
 tree.fit(X_train, PC_code_train)
 
 print("\ntree.n_outputs_:", tree.n_outputs_)
@@ -251,7 +253,13 @@ leaf_to_codes = {}
 for leaf_id in unique_leaf_ids:
     idx = np.where(leaf_ids_train == leaf_id)[0]
     codes_in_leaf = PC_code_train[idx]        # (n_leaf_samples, k)
-    rep = np.rint(codes_in_leaf.mean(axis=0)).astype(int)  # (k,)
+    labels_in_leaf = y_train[idx]
+    # Use majority-class centroid instead of overall mean to avoid
+    # mixing codes from different classes into a "ghost" code value.
+    values, counts = np.unique(labels_in_leaf, return_counts=True)
+    majority_class = values[np.argmax(counts)]
+    mask = labels_in_leaf == majority_class
+    rep = np.rint(codes_in_leaf[mask].mean(axis=0)).astype(int)  # (k,)
     leaf_to_codes[leaf_id] = rep
 
 # ==========================================================
@@ -372,7 +380,7 @@ metrics = {
     },
 }
 
-metrics_path = os.path.join(TABLES_DIR, "pca_metrics.json")
+metrics_path = os.path.join(TABLES_DIR, "transform_metrics.json")
 with open(metrics_path, "w") as f:
     json.dump(metrics, f, indent=2)
 print("Saved detailed metrics to:", metrics_path)
@@ -398,7 +406,7 @@ mapping_dict["Label"] = y_all
 
 mapping_df = pd.DataFrame(mapping_dict)
 
-mapping_csv_path = os.path.join(TABLES_DIR, "pca_integer_mapping.csv")
+mapping_csv_path = os.path.join(TABLES_DIR, "transform_mapping.csv")
 mapping_df.to_csv(mapping_csv_path, index=False)
 print(f"\nMapping PCA -> integer + Label saved to: {mapping_csv_path}")
 
@@ -409,18 +417,18 @@ encoding_params = {
     "n_components": int(k),
     "bits": int(BITS),
     "max_val": int(MAX_VAL),
-    "pc_min": pc_min.tolist(),
-    "pc_max": pc_max.tolist(),
-    "pc_range": pc_range.tolist(),
+    "transform_min": pc_min.tolist(),
+    "transform_max": pc_max.tolist(),
+    "transform_range": pc_range.tolist(),
     "auto_selected": bool(USER_N_COMPONENTS is None),
     "variance_target": float(VAR_TARGET) if USER_N_COMPONENTS is None else None,
     # PCA transform matrix — needed by 6_controller.py register drain to classify
     # flows that are stuck in P4 registers (no FIN/RST, no timeout fired).
-    "pca_components": pca.components_.tolist(),  # shape (k, n_features)
-    "pca_mean":       pca.mean_.tolist(),         # shape (n_features,)
+    "transform_components": pca.components_.tolist(),  # shape (k, n_features)
+    "transform_mean":       pca.mean_.tolist(),         # shape (n_features,)
 }
 
-params_path = os.path.join(TABLES_DIR, "pca_encoding_params.json")
+params_path = os.path.join(TABLES_DIR, "encoding_params.json")
 with open(params_path, "w") as f:
     json.dump(encoding_params, f, indent=2)
 
@@ -637,10 +645,10 @@ def write_if_rules_for_pca(dt, feature_names, leaf_to_codes, filename):
 
     with open(filename, "w") as f:
         f.write("# PCA Transformation Rules (IF-THEN)\n")
-        f.write("# Maps 3 raw features to PCA component codes\n\n")
+        f.write(f"# Maps {len(feature_names)} raw features to PCA component codes\n\n")
         dfs(0, [])
 
-rules_if_path = os.path.join(TABLES_DIR, "pca_tree_if_rules.txt")
+rules_if_path = os.path.join(TABLES_DIR, "transform_rules.txt")
 write_if_rules_for_pca(tree, feature_cols, leaf_to_codes, rules_if_path)
 print(f"IF rules (feature ranges -> PC*_code) saved to: {rules_if_path}")
 

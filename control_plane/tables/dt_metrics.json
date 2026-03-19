@@ -1,0 +1,98 @@
+{
+  "model_type": "dt",
+  "labels": [
+    "Benign",
+    "DDoS",
+    "PasswordHacking",
+    "Reconnaissance"
+  ],
+  "accuracy": 0.9987171263630532,
+  "confusion_matrix": [
+    [
+      1642,
+      0,
+      0,
+      12
+    ],
+    [
+      0,
+      4720,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      1206,
+      0
+    ],
+    [
+      0,
+      0,
+      0,
+      1774
+    ]
+  ],
+  "classification_report": {
+    "Benign": {
+      "precision": 1.0,
+      "recall": 0.992744860943168,
+      "f1-score": 0.9963592233009708,
+      "support": 1654.0
+    },
+    "DDoS": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1-score": 1.0,
+      "support": 4720.0
+    },
+    "PasswordHacking": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1-score": 1.0,
+      "support": 1206.0
+    },
+    "Reconnaissance": {
+      "precision": 0.9932810750279956,
+      "recall": 1.0,
+      "f1-score": 0.996629213483146,
+      "support": 1774.0
+    },
+    "accuracy": 0.9987171263630532,
+    "macro avg": {
+      "precision": 0.9983202687569989,
+      "recall": 0.998186215235792,
+      "f1-score": 0.9982471091960292,
+      "support": 9354.0
+    },
+    "weighted avg": {
+      "precision": 0.9987257458947684,
+      "recall": 0.9987171263630532,
+      "f1-score": 0.9987169531814097,
+      "support": 9354.0
+    }
+  },
+  "feature_names": [
+    "PC1_code",
+    "PC2_code",
+    "PC3_code",
+    "PC4_code",
+    "PC5_code",
+    "PC6_code",
+    "PC7_code",
+    "PC8_code",
+    "PC9_code",
+    "PC10_code",
+    "PC11_code",
+    "PC12_code",
+    "PC13_code",
+    "PC14_code",
+    "PC15_code",
+    "PC16_code",
+    "PC17_code",
+    "PC18_code",
+    "PC19_code"
+  ],
+  "n_estimators": null,
+  "max_depth": null
+}
