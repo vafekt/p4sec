@@ -141,7 +141,12 @@ def load_switch_cli(sw, runtime_cli, thrift_port=9090):
 
     Waits for the CLI process to finish so all table entries are fully
     installed before the controller starts listening for digests.
-    With ~73 k entries this can take 60–90 seconds.
+
+    Loading strategy:
+      1. If tables/s1-commands-classifier.txt exists, pre-load it first (fast,
+         ~35K ml_code entries).  This guarantees the classifier is always
+         populated even if the large PCA loading is interrupted.
+      2. Load the full s1-commands.txt (PCA entries + ml_code at the top now).
     """
     print(f"Loading P4 rules from {runtime_cli}...")
     n_entries = 0
@@ -156,6 +161,44 @@ def load_switch_cli(sw, runtime_cli, thrift_port=9090):
         print(f"  ({n_entries:,} table entries to install — please wait, this may take ~{max(10, n_entries // 800)} seconds)")
 
     os.makedirs('logs', exist_ok=True)
+
+    # ── Step 1: pre-load classifier entries (ml_code) from small separate file ──
+    # The classifier file lives alongside s1-commands.txt in the tables/ directory.
+    classifier_cli = os.path.join(os.path.dirname(os.path.abspath(runtime_cli)),
+                                  's1-commands-classifier.txt')
+    if os.path.exists(classifier_cli):
+        n_clf = 0
+        try:
+            with open(classifier_cli, 'r') as f:
+                n_clf = sum(1 for l in f if l.lstrip().startswith('table_'))
+        except Exception:
+            pass
+        print(f"  Pre-loading {n_clf:,} classifier (ml_code) entries from {classifier_cli}...")
+        try:
+            with open(classifier_cli, 'r') as fin, \
+                 open('logs/cli_output_classifier.log', 'w') as fout:
+                clf_proc = subprocess.Popen(
+                    ['simple_switch_CLI', '--thrift-port', str(thrift_port)],
+                    stdin=fin, stdout=fout, stderr=subprocess.STDOUT
+                )
+                clf_proc.wait()
+            clf_errors = 0
+            with open('logs/cli_output_classifier.log', 'r') as log:
+                for line in log:
+                    if line.startswith('RuntimeCmd: Error'):
+                        clf_errors += 1
+            if clf_errors:
+                print(f"  WARNING: {clf_errors} errors pre-loading classifier entries "
+                      f"(check logs/cli_output_classifier.log)")
+            else:
+                print(f"  Classifier pre-load OK (exit code {clf_proc.returncode})")
+        except Exception as e:
+            print(f"  WARNING: classifier pre-load failed: {e}")
+    else:
+        print(f"  NOTE: {classifier_cli} not found — re-run step 4 to generate it.")
+        print(f"        ml_code entries will be loaded from the end of s1-commands.txt.")
+
+    # ── Step 2: load the full rule file (PCA + ml_code) ──
     try:
         with open(runtime_cli, 'r') as fin, open('logs/cli_output.log', 'w') as fout:
             proc = subprocess.Popen(
@@ -165,15 +208,34 @@ def load_switch_cli(sw, runtime_cli, thrift_port=9090):
                 stderr=subprocess.STDOUT
             )
             proc.wait()   # <-- BLOCK until all entries are installed
-        # Quick sanity check
+
+        if proc.returncode != 0:
+            print(f"WARNING: simple_switch_CLI exited with non-zero code {proc.returncode} "
+                  f"— some entries may not have been loaded.")
+
+        # Sanity check the log
+        # "already exists" errors are expected when ml_code was pre-loaded and
+        # then s1-commands.txt tries to add the same entries again — ignore them.
         errors = 0
+        table_full = 0
+        duplicates = 0
         with open('logs/cli_output.log', 'r') as log:
             for line in log:
                 if line.startswith('RuntimeCmd: Error'):
-                    errors += 1
+                    lower = line.lower()
+                    if 'already' in lower or 'exists' in lower or 'duplicate' in lower:
+                        duplicates += 1
+                    else:
+                        errors += 1
+                if 'TABLE_FULL' in line or 'table is full' in line.lower():
+                    table_full += 1
+        if table_full:
+            print(f"ERROR: {table_full} TABLE_FULL rejections — increase NB_ENTRIES in basic.p4 and recompile!")
         if errors:
             print(f"WARNING: {errors} CLI errors during rule loading (check logs/cli_output.log)")
-        else:
+        if duplicates:
+            print(f"  (ignored {duplicates:,} 'already exists' errors — expected from pre-loaded classifier)")
+        if not errors and not table_full:
             print(f"Rules loaded successfully. CLI output logged to logs/cli_output.log")
     except FileNotFoundError as e:
         print(f"ERROR: Runtime CLI file not found: {e}")
@@ -610,6 +672,61 @@ class DigestClient:
         except Exception:
             pass
 
+
+def _cli_send(commands, thrift_port=9090, timeout=90):
+    """Send one or more CLI commands to simple_switch_CLI, return stdout text."""
+    import subprocess as _sp
+    input_bytes = (''.join(commands)).encode()
+    try:
+        proc = _sp.Popen(
+            ['simple_switch_CLI', '--thrift-port', str(thrift_port)],
+            stdin=_sp.PIPE, stdout=_sp.PIPE, stderr=_sp.PIPE,
+        )
+        stdout, stderr = proc.communicate(input=input_bytes, timeout=timeout)
+        if stderr:
+            err_text = stderr.decode(errors='replace').strip()
+            if err_text:
+                print(f"    [CLI stderr] {err_text[:300]}")
+        return stdout.decode(errors='replace')
+    except FileNotFoundError:
+        print("    ERROR: 'simple_switch_CLI' not found in PATH. "
+              "Make sure BMv2 is installed and the CLI is on PATH.")
+        return ''
+    except Exception as e:
+        print(f"    CLI command failed: {e}")
+        return ''
+
+
+def _parse_reg_output(text):
+    """Parse simple_switch_CLI register_read output → {index: value} (non-zero only)."""
+    result = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if '[' not in line or '=' not in line:
+            continue
+        try:
+            idx_part, val_part = line.rsplit('=', 1)
+            idx = int(idx_part[idx_part.index('[') + 1 : idx_part.index(']')])
+            val = int(val_part.strip())
+            if val != 0:
+                result[idx] = val
+        except (ValueError, IndexError):
+            continue
+    return result
+
+
+def _read_register_via_cli(reg_name, index=None, thrift_port=9090, timeout=90):
+    """Read a BMv2 register via simple_switch_CLI.
+
+    index=None → read all entries (full array scan)
+    index=int  → read a single slot (fast targeted read)
+
+    Returns {index: value} for non-zero entries.
+    """
+    cmd = f"register_read {reg_name}" + (f" {index}" if index is not None else "") + "\n"
+    return _parse_reg_output(_cli_send([cmd], thrift_port=thrift_port, timeout=timeout))
+
+
 def drain_p4_registers(p4info_helper, stub, device_id, pca_config,
                        model_type, rf_model, xgb_model, xgb_class_mapping,
                        CLASS_LABELS, n_components, pca_bits, out, pca_field_names,
@@ -617,7 +734,7 @@ def drain_p4_registers(p4info_helper, stub, device_id, pca_config,
                        reduction_feature_columns=None):
     """
     Read every P4 register slot via P4Runtime and classify flows that are still
-    sitting in registers (no FIN/RST seen, 120-second timeout never fired because
+    sitting in registers (no FIN/RST seen, 20-second timeout never fired because
     no new packets arrived after tcpreplay ended).
     Appends recovered flows to `out` (already-open CSV file in append mode).
     Returns the number of flows drained.
@@ -677,29 +794,29 @@ def drain_p4_registers(p4info_helper, stub, device_id, pca_config,
         'init_fwd_win':    'MyIngress.reg_init_fwd_win',
     }
 
-    # Read all entries of each register (no index set = read all slots)
-    reg_data = {}
-    for key, full_name in REGS.items():
-        try:
-            reg_id = p4info_helper.get_id('registers', full_name)
-            req = p4runtime_pb2.ReadRequest(device_id=device_id)
-            entity = req.entities.add()
-            entity.register_entry.register_id = reg_id
-            values = {}
-            for resp in stub.Read(req):
-                for ent in resp.entities:
-                    if ent.HasField('register_entry'):
-                        re = ent.register_entry
-                        idx = re.index.index
-                        val = bytes_to_int(re.data.bitstring)
-                        if val != 0:
-                            values[idx] = val
-            reg_data[key] = values
-        except Exception as e:
-            print(f"  WARNING: Could not read register {full_name}: {e}")
-            reg_data[key] = {}
+    # BMv2 P4Runtime gRPC returns UNIMPLEMENTED for register reads.
+    # Use simple_switch_CLI (thrift) instead: two-phase to avoid timeout.
+    # Phase 1: scan reg_time_first_pkt (full array) to find active slots.
+    # Phase 2: targeted per-index reads for all other registers (fast).
+    print("  Draining P4 registers via simple_switch_CLI …")
+    print("  Phase 1: scanning reg_time_first_pkt for active slots …", flush=True)
+    time_first_map = _read_register_via_cli(
+        'MyIngress.reg_time_first_pkt', thrift_port=9090, timeout=120)
 
-    time_first_map = reg_data.get('time_first', {})
+    if not time_first_map:
+        print("  No active flow slots found (reg_time_first_pkt all-zero or CLI unavailable).")
+        return 0
+
+    print(f"  Phase 2: reading {len(time_first_map)} active slot(s) from remaining registers …",
+          flush=True)
+    remaining_regs = {k: v for k, v in REGS.items() if k != 'time_first'}
+    reg_data = {'time_first': time_first_map}
+    active_indices = list(time_first_map.keys())
+    for key, full_name in remaining_regs.items():
+        cmds = [f"register_read {full_name} {idx}\n" for idx in active_indices]
+        text = _cli_send(cmds, thrift_port=9090, timeout=60)
+        reg_data[key] = _parse_reg_output(text)
+
     fwd_count_map  = reg_data.get('fwd_pkt_count', {})
     bwd_count_map  = reg_data.get('bwd_pkt_count', {})
 
@@ -708,6 +825,7 @@ def drain_p4_registers(p4info_helper, stub, device_id, pca_config,
         if tf != 0 and (fwd_count_map.get(slot, 0) + bwd_count_map.get(slot, 0)) >= 2
     ]
     if not active_slots:
+        print("  No stuck flows found (all active slots have < 2 packets).")
         return 0
 
     print(f"  Found {len(active_slots)} stuck flows in P4 registers.")
@@ -1590,7 +1708,7 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
                 print(f"In-memory flush complete. Total flows so far: {packet_id}")
 
             # Drain any flows still in P4 registers that never got a FIN/RST or
-            # 120-second timeout (the timeout only fires when a new packet arrives
+            # 20-second timeout (the timeout only fires when a new packet arrives
             # at the same register slot — after tcpreplay ends, nothing does).
             print("\nDraining stuck flows from P4 registers...")
             try:

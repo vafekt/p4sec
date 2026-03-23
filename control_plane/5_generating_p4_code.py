@@ -137,7 +137,7 @@ FEATURE_P4_WIDTH = {
 class P4CodeGenerator:
     def __init__(self, n_components=2, bits=16, output_file='basic.p4',
                  model_type='dt', rf_params=None, xgb_params=None, cnn_params=None,
-                 n_registers=65536, flow_timeout_s=120,
+                 n_registers=65536, flow_timeout_s=20,
                  reduction_config=None):
         self.n_components    = n_components
         self.bits            = bits
@@ -704,7 +704,10 @@ control MyIngress(inout headers hdr,
             meta.bwd_max_pkt_len  = bwd_max_pkt_len;
             meta.flags_psh        = flags_psh;
             meta.init_fwd_win     = init_fwd_win;
-            // Reset for new flow
+            // Reset for new flow — mirrors RST/FIN reset block: ALL registers must be
+            // written here, not just local vars.  Any register with a conditional write
+            // below (urg_count, init_fwd_win, directional counters, etc.) would otherwise
+            // carry stale values from the previous flow into the new one.
             time_first       = current_time;
             time_last        = current_time;
             max_iat          = 0;
@@ -723,6 +726,23 @@ control MyIngress(inout headers hdr,
             bwd_max_pkt_len  = 0;
             flags_psh        = 0;
             init_fwd_win     = 0;
+            reg_time_first_pkt.write(meta.flow_hash, current_time);
+            reg_max_iat.write(meta.flow_hash, 0);
+            reg_min_iat.write(meta.flow_hash, 0);
+            reg_urg_count.write(meta.flow_hash, 0);
+            reg_fwd_pkt_count.write(meta.flow_hash, 0);
+            reg_bwd_pkt_count.write(meta.flow_hash, 0);
+            reg_fwd_bytes.write(meta.flow_hash, 0);
+            reg_bwd_bytes.write(meta.flow_hash, 0);
+            reg_max_win_size.write(meta.flow_hash, 0);
+            reg_flags_syn.write(meta.flow_hash, 32w0);
+            reg_flags_ack.write(meta.flow_hash, 32w0);
+            reg_flags_fin.write(meta.flow_hash, 32w0);
+            reg_flags_rst.write(meta.flow_hash, 32w0);
+            reg_fwd_max_pkt_len.write(meta.flow_hash, 16w0);
+            reg_bwd_max_pkt_len.write(meta.flow_hash, 16w0);
+            reg_flags_psh.write(meta.flow_hash, 32w0);
+            reg_init_fwd_win.write(meta.flow_hash, 16w0);
             bloom_filter_1.write(meta.flow_hash,   1w1);  // new flow claims slot
             bloom_filter_2.write(meta.flow_hash_2, 1w1);
         }
@@ -1388,7 +1408,7 @@ V1Switch(
 
     def write_to_file(self):
         code = self.generate()
-        with open(self.output_file, 'w') as f:
+        with open(self.output_file, 'w', encoding='utf-8') as f:
             f.write(code)
         logger.info(f"Generated {self.output_file}")
 
@@ -2882,7 +2902,7 @@ def main():
     parser.add_argument('--rf-params', default='tables/rf_params.json')
     parser.add_argument('--xgb-params', default='tables/xgb_params.json')
     parser.add_argument('--register-entries', type=int, default=65536)
-    parser.add_argument('--flow-timeout-s', type=int, default=60)
+    parser.add_argument('--flow-timeout-s', type=int, default=20)
     args = parser.parse_args()
 
     # Map GB → XGB (identical P4 architecture)

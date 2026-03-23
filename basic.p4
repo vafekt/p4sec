@@ -36,7 +36,7 @@ typedef bit<48> iat_t;
 typedef bit<48> duration_t;
 typedef bit<16> port_t;
 typedef bit<32> bytes_t;
-typedef bit<16> pca_code_t;   // Quantized code (PC)
+typedef bit<32> pca_code_t;   // Quantized code (PC)
 typedef bit<8>  inference_result_t;
 
 header ethernet_t {
@@ -155,15 +155,6 @@ struct metadata {
     pca_code_t pc8_code;
     pca_code_t pc9_code;
     pca_code_t pc10_code;
-    pca_code_t pc11_code;
-    pca_code_t pc12_code;
-    pca_code_t pc13_code;
-    pca_code_t pc14_code;
-    pca_code_t pc15_code;
-    pca_code_t pc16_code;
-    pca_code_t pc17_code;
-    pca_code_t pc18_code;
-    pca_code_t pc19_code;
 
     // Classification result
     inference_result_t ml_result;
@@ -215,15 +206,6 @@ struct digest_t {
     pca_code_t pc8_code;
     pca_code_t pc9_code;
     pca_code_t pc10_code;
-    pca_code_t pc11_code;
-    pca_code_t pc12_code;
-    pca_code_t pc13_code;
-    pca_code_t pc14_code;
-    pca_code_t pc15_code;
-    pca_code_t pc16_code;
-    pca_code_t pc17_code;
-    pca_code_t pc18_code;
-    pca_code_t pc19_code;
 
     inference_result_t ml_result;
 }
@@ -467,7 +449,10 @@ control MyIngress(inout headers hdr,
             meta.bwd_max_pkt_len  = bwd_max_pkt_len;
             meta.flags_psh        = flags_psh;
             meta.init_fwd_win     = init_fwd_win;
-            // Reset for new flow
+            // Reset for new flow — mirrors RST/FIN reset block: ALL registers must be
+            // written here, not just local vars.  Any register with a conditional write
+            // below (urg_count, init_fwd_win, directional counters, etc.) would otherwise
+            // carry stale values from the previous flow into the new one.
             time_first       = current_time;
             time_last        = current_time;
             max_iat          = 0;
@@ -486,6 +471,23 @@ control MyIngress(inout headers hdr,
             bwd_max_pkt_len  = 0;
             flags_psh        = 0;
             init_fwd_win     = 0;
+            reg_time_first_pkt.write(meta.flow_hash, current_time);
+            reg_max_iat.write(meta.flow_hash, 0);
+            reg_min_iat.write(meta.flow_hash, 0);
+            reg_urg_count.write(meta.flow_hash, 0);
+            reg_fwd_pkt_count.write(meta.flow_hash, 0);
+            reg_bwd_pkt_count.write(meta.flow_hash, 0);
+            reg_fwd_bytes.write(meta.flow_hash, 0);
+            reg_bwd_bytes.write(meta.flow_hash, 0);
+            reg_max_win_size.write(meta.flow_hash, 0);
+            reg_flags_syn.write(meta.flow_hash, 32w0);
+            reg_flags_ack.write(meta.flow_hash, 32w0);
+            reg_flags_fin.write(meta.flow_hash, 32w0);
+            reg_flags_rst.write(meta.flow_hash, 32w0);
+            reg_fwd_max_pkt_len.write(meta.flow_hash, 16w0);
+            reg_bwd_max_pkt_len.write(meta.flow_hash, 16w0);
+            reg_flags_psh.write(meta.flow_hash, 32w0);
+            reg_init_fwd_win.write(meta.flow_hash, 16w0);
             bloom_filter_1.write(meta.flow_hash,   1w1);  // new flow claims slot
             bloom_filter_2.write(meta.flow_hash_2, 1w1);
         }
@@ -975,321 +977,6 @@ control MyIngress(inout headers hdr,
         size = NB_ENTRIES;
     }
 
-    // PC component 11 transformation
-    action set_pc11_code(pca_code_t code) {
-        meta.pc11_code = code;
-    }
-
-    table pca_component11 {
-        key = {
-            meta.protocol            : range;
-            meta.canon_src_port      : range;
-            meta.canon_dst_port      : range;
-            meta.duration            : range;
-            meta.max_iat             : range;
-            meta.urg_count           : range;
-            meta.fwd_pkt_count       : range;
-            meta.bwd_pkt_count       : range;
-            meta.fwd_bytes           : range;
-            meta.bwd_bytes           : range;
-            meta.max_win_size        : range;
-            meta.flags_syn           : range;
-            meta.flags_ack           : range;
-            meta.flags_fin           : range;
-            meta.flags_rst           : range;
-            meta.min_iat             : range;
-            meta.fwd_max_pkt_len     : range;
-            meta.bwd_max_pkt_len     : range;
-            meta.flags_psh           : range;
-            meta.init_fwd_win        : range;
-        }
-        actions = {
-            set_pc11_code;
-            NoAction;
-        }
-        size = NB_ENTRIES;
-    }
-
-    // PC component 12 transformation
-    action set_pc12_code(pca_code_t code) {
-        meta.pc12_code = code;
-    }
-
-    table pca_component12 {
-        key = {
-            meta.protocol            : range;
-            meta.canon_src_port      : range;
-            meta.canon_dst_port      : range;
-            meta.duration            : range;
-            meta.max_iat             : range;
-            meta.urg_count           : range;
-            meta.fwd_pkt_count       : range;
-            meta.bwd_pkt_count       : range;
-            meta.fwd_bytes           : range;
-            meta.bwd_bytes           : range;
-            meta.max_win_size        : range;
-            meta.flags_syn           : range;
-            meta.flags_ack           : range;
-            meta.flags_fin           : range;
-            meta.flags_rst           : range;
-            meta.min_iat             : range;
-            meta.fwd_max_pkt_len     : range;
-            meta.bwd_max_pkt_len     : range;
-            meta.flags_psh           : range;
-            meta.init_fwd_win        : range;
-        }
-        actions = {
-            set_pc12_code;
-            NoAction;
-        }
-        size = NB_ENTRIES;
-    }
-
-    // PC component 13 transformation
-    action set_pc13_code(pca_code_t code) {
-        meta.pc13_code = code;
-    }
-
-    table pca_component13 {
-        key = {
-            meta.protocol            : range;
-            meta.canon_src_port      : range;
-            meta.canon_dst_port      : range;
-            meta.duration            : range;
-            meta.max_iat             : range;
-            meta.urg_count           : range;
-            meta.fwd_pkt_count       : range;
-            meta.bwd_pkt_count       : range;
-            meta.fwd_bytes           : range;
-            meta.bwd_bytes           : range;
-            meta.max_win_size        : range;
-            meta.flags_syn           : range;
-            meta.flags_ack           : range;
-            meta.flags_fin           : range;
-            meta.flags_rst           : range;
-            meta.min_iat             : range;
-            meta.fwd_max_pkt_len     : range;
-            meta.bwd_max_pkt_len     : range;
-            meta.flags_psh           : range;
-            meta.init_fwd_win        : range;
-        }
-        actions = {
-            set_pc13_code;
-            NoAction;
-        }
-        size = NB_ENTRIES;
-    }
-
-    // PC component 14 transformation
-    action set_pc14_code(pca_code_t code) {
-        meta.pc14_code = code;
-    }
-
-    table pca_component14 {
-        key = {
-            meta.protocol            : range;
-            meta.canon_src_port      : range;
-            meta.canon_dst_port      : range;
-            meta.duration            : range;
-            meta.max_iat             : range;
-            meta.urg_count           : range;
-            meta.fwd_pkt_count       : range;
-            meta.bwd_pkt_count       : range;
-            meta.fwd_bytes           : range;
-            meta.bwd_bytes           : range;
-            meta.max_win_size        : range;
-            meta.flags_syn           : range;
-            meta.flags_ack           : range;
-            meta.flags_fin           : range;
-            meta.flags_rst           : range;
-            meta.min_iat             : range;
-            meta.fwd_max_pkt_len     : range;
-            meta.bwd_max_pkt_len     : range;
-            meta.flags_psh           : range;
-            meta.init_fwd_win        : range;
-        }
-        actions = {
-            set_pc14_code;
-            NoAction;
-        }
-        size = NB_ENTRIES;
-    }
-
-    // PC component 15 transformation
-    action set_pc15_code(pca_code_t code) {
-        meta.pc15_code = code;
-    }
-
-    table pca_component15 {
-        key = {
-            meta.protocol            : range;
-            meta.canon_src_port      : range;
-            meta.canon_dst_port      : range;
-            meta.duration            : range;
-            meta.max_iat             : range;
-            meta.urg_count           : range;
-            meta.fwd_pkt_count       : range;
-            meta.bwd_pkt_count       : range;
-            meta.fwd_bytes           : range;
-            meta.bwd_bytes           : range;
-            meta.max_win_size        : range;
-            meta.flags_syn           : range;
-            meta.flags_ack           : range;
-            meta.flags_fin           : range;
-            meta.flags_rst           : range;
-            meta.min_iat             : range;
-            meta.fwd_max_pkt_len     : range;
-            meta.bwd_max_pkt_len     : range;
-            meta.flags_psh           : range;
-            meta.init_fwd_win        : range;
-        }
-        actions = {
-            set_pc15_code;
-            NoAction;
-        }
-        size = NB_ENTRIES;
-    }
-
-    // PC component 16 transformation
-    action set_pc16_code(pca_code_t code) {
-        meta.pc16_code = code;
-    }
-
-    table pca_component16 {
-        key = {
-            meta.protocol            : range;
-            meta.canon_src_port      : range;
-            meta.canon_dst_port      : range;
-            meta.duration            : range;
-            meta.max_iat             : range;
-            meta.urg_count           : range;
-            meta.fwd_pkt_count       : range;
-            meta.bwd_pkt_count       : range;
-            meta.fwd_bytes           : range;
-            meta.bwd_bytes           : range;
-            meta.max_win_size        : range;
-            meta.flags_syn           : range;
-            meta.flags_ack           : range;
-            meta.flags_fin           : range;
-            meta.flags_rst           : range;
-            meta.min_iat             : range;
-            meta.fwd_max_pkt_len     : range;
-            meta.bwd_max_pkt_len     : range;
-            meta.flags_psh           : range;
-            meta.init_fwd_win        : range;
-        }
-        actions = {
-            set_pc16_code;
-            NoAction;
-        }
-        size = NB_ENTRIES;
-    }
-
-    // PC component 17 transformation
-    action set_pc17_code(pca_code_t code) {
-        meta.pc17_code = code;
-    }
-
-    table pca_component17 {
-        key = {
-            meta.protocol            : range;
-            meta.canon_src_port      : range;
-            meta.canon_dst_port      : range;
-            meta.duration            : range;
-            meta.max_iat             : range;
-            meta.urg_count           : range;
-            meta.fwd_pkt_count       : range;
-            meta.bwd_pkt_count       : range;
-            meta.fwd_bytes           : range;
-            meta.bwd_bytes           : range;
-            meta.max_win_size        : range;
-            meta.flags_syn           : range;
-            meta.flags_ack           : range;
-            meta.flags_fin           : range;
-            meta.flags_rst           : range;
-            meta.min_iat             : range;
-            meta.fwd_max_pkt_len     : range;
-            meta.bwd_max_pkt_len     : range;
-            meta.flags_psh           : range;
-            meta.init_fwd_win        : range;
-        }
-        actions = {
-            set_pc17_code;
-            NoAction;
-        }
-        size = NB_ENTRIES;
-    }
-
-    // PC component 18 transformation
-    action set_pc18_code(pca_code_t code) {
-        meta.pc18_code = code;
-    }
-
-    table pca_component18 {
-        key = {
-            meta.protocol            : range;
-            meta.canon_src_port      : range;
-            meta.canon_dst_port      : range;
-            meta.duration            : range;
-            meta.max_iat             : range;
-            meta.urg_count           : range;
-            meta.fwd_pkt_count       : range;
-            meta.bwd_pkt_count       : range;
-            meta.fwd_bytes           : range;
-            meta.bwd_bytes           : range;
-            meta.max_win_size        : range;
-            meta.flags_syn           : range;
-            meta.flags_ack           : range;
-            meta.flags_fin           : range;
-            meta.flags_rst           : range;
-            meta.min_iat             : range;
-            meta.fwd_max_pkt_len     : range;
-            meta.bwd_max_pkt_len     : range;
-            meta.flags_psh           : range;
-            meta.init_fwd_win        : range;
-        }
-        actions = {
-            set_pc18_code;
-            NoAction;
-        }
-        size = NB_ENTRIES;
-    }
-
-    // PC component 19 transformation
-    action set_pc19_code(pca_code_t code) {
-        meta.pc19_code = code;
-    }
-
-    table pca_component19 {
-        key = {
-            meta.protocol            : range;
-            meta.canon_src_port      : range;
-            meta.canon_dst_port      : range;
-            meta.duration            : range;
-            meta.max_iat             : range;
-            meta.urg_count           : range;
-            meta.fwd_pkt_count       : range;
-            meta.bwd_pkt_count       : range;
-            meta.fwd_bytes           : range;
-            meta.bwd_bytes           : range;
-            meta.max_win_size        : range;
-            meta.flags_syn           : range;
-            meta.flags_ack           : range;
-            meta.flags_fin           : range;
-            meta.flags_rst           : range;
-            meta.min_iat             : range;
-            meta.fwd_max_pkt_len     : range;
-            meta.bwd_max_pkt_len     : range;
-            meta.flags_psh           : range;
-            meta.init_fwd_win        : range;
-        }
-        actions = {
-            set_pc19_code;
-            NoAction;
-        }
-        size = NB_ENTRIES;
-    }
-
     // Shared classification result action
     action set_result(inference_result_t val) {
         meta.ml_result = val;
@@ -1308,15 +995,6 @@ control MyIngress(inout headers hdr,
             meta.pc8_code                 : range;
             meta.pc9_code                 : range;
             meta.pc10_code                : range;
-            meta.pc11_code                : range;
-            meta.pc12_code                : range;
-            meta.pc13_code                : range;
-            meta.pc14_code                : range;
-            meta.pc15_code                : range;
-            meta.pc16_code                : range;
-            meta.pc17_code                : range;
-            meta.pc18_code                : range;
-            meta.pc19_code                : range;
         }
         actions = {
             set_result;
@@ -1350,15 +1028,6 @@ control MyIngress(inout headers hdr,
                 pca_component8.apply();
                 pca_component9.apply();
                 pca_component10.apply();
-                pca_component11.apply();
-                pca_component12.apply();
-                pca_component13.apply();
-                pca_component14.apply();
-                pca_component15.apply();
-                pca_component16.apply();
-                pca_component17.apply();
-                pca_component18.apply();
-                pca_component19.apply();
 
                 // Apply classifier
                 ml_code.apply();
@@ -1397,15 +1066,6 @@ control MyIngress(inout headers hdr,
                     meta.pc8_code,
                     meta.pc9_code,
                     meta.pc10_code,
-                    meta.pc11_code,
-                    meta.pc12_code,
-                    meta.pc13_code,
-                    meta.pc14_code,
-                    meta.pc15_code,
-                    meta.pc16_code,
-                    meta.pc17_code,
-                    meta.pc18_code,
-                    meta.pc19_code,
                     meta.ml_result
                 });
             } // end if flow_ended

@@ -1,9 +1,9 @@
 {
   "model_type": "dt",
   "classes": [
-    "Benign",
     "DDoS",
-    "PasswordHacking",
-    "Reconnaissance"
+    "DoS",
+    "Malware",
+    "Web"
   ]
 }

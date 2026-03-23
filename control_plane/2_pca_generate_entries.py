@@ -53,7 +53,16 @@ def parse_args():
     # Hidden option: variance target for auto-selection
     parser.add_argument("--var-target", type=float, default=0.95,
                         help="Explained variance target for auto PCA component selection (default: 0.95)")
-    # Removed tree-depth and tree-min-leaf arguments; always use default DecisionTreeRegressor params
+    parser.add_argument("--max-leaf-nodes", "-l", type=int, default=300000,
+                        help=(
+                            "Maximum leaf nodes in the surrogate DecisionTreeRegressor (default: 65536).\n"
+                            "This directly controls how many P4 table entries are generated:\n"
+                            "  total entries = max_leaf_nodes * n_components\n"
+                            "  loading time  ~ total_entries / 1000 seconds\n"
+                            "Rule of thumb: keep max_leaf_nodes <= NB_ENTRIES in basic.p4 (default 65536).\n"
+                            "Smaller values → fewer entries, faster load, lower accuracy.\n"
+                            "Use None (unlimited) only for tiny datasets (<5k flows)."
+                        ))
     return parser.parse_args()
 
 args = parse_args()
@@ -61,6 +70,7 @@ args = parse_args()
 USER_N_COMPONENTS = args.components
 BITS = args.bits
 VAR_TARGET = args.var_target
+MAX_LEAF_NODES = args.max_leaf_nodes if args.max_leaf_nodes and args.max_leaf_nodes > 0 else None
 
 # Validate BITS parameter
 if BITS not in [8, 16, 24, 32]:
@@ -126,6 +136,14 @@ P4_FEATURE_COLS = [
     "FlagsSyn", "FlagsAck", "FlagsFin", "FlagsRst",
     "MinIAT", "FwdMaxPktLen", "BwdMaxPktLen", "FlagsPsh", "InitFwdWinBytes",
 ]
+# Drop rows where any feature column is non-numeric (e.g. pyshark field corruption like '275=7')
+for _col in P4_FEATURE_COLS:
+    _bad = pd.to_numeric(df_clean[_col], errors='coerce').isna()
+    if _bad.any():
+        print(f"WARNING: dropping {_bad.sum()} row(s) with non-numeric '{_col}': "
+              f"{df_clean.loc[_bad, _col].values[:3]}")
+        df_clean = df_clean[~_bad]
+
 X_df = df_clean[P4_FEATURE_COLS].astype(int)
 
 # Features and labels
@@ -231,8 +249,9 @@ for j, r2 in enumerate(r2_quant, 1):
 #    This keeps tree-approx codes faithful to the true quantized PCA codes.
 # ==========================================================
 tree = DecisionTreeRegressor(
-    max_depth=None,        # Unlimited depth — no artificial averaging
-    min_samples_leaf=1,    # Allow single-sample leaves
+    max_depth=None,
+    min_samples_leaf=1,
+    max_leaf_nodes=MAX_LEAF_NODES,  # Limits rules to avoid over-memorisation; default 65536
     random_state=42
 )
 

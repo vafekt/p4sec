@@ -25,6 +25,7 @@ basic.json
 
 # Data outputs
 control_plane/dataset/*.csv
+control_plane/pcaps/
 
 # Mininet / runtime
 *.swp

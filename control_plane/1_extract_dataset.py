@@ -281,8 +281,11 @@ def _extract_packet_fields(packet):
     protocol = int(packet.ip.proto)
 
     if protocol == 6:   # TCP
-        src_port    = int(packet.tcp.srcport)
-        dst_port    = int(packet.tcp.dstport)
+        try:
+            src_port = int(str(packet.tcp.srcport))
+            dst_port = int(str(packet.tcp.dstport))
+        except (ValueError, TypeError):
+            return None   # malformed port field — skip packet
         flags_syn   = _flag(packet.tcp.flags_syn)   if hasattr(packet.tcp, 'flags_syn')   else 0
         flags_ack   = _flag(packet.tcp.flags_ack)   if hasattr(packet.tcp, 'flags_ack')   else 0
         flags_fin   = _flag(packet.tcp.flags_fin)   if hasattr(packet.tcp, 'flags_fin')   else 0
@@ -293,8 +296,11 @@ def _extract_packet_fields(packet):
         win_size    = int(packet.tcp.window_size_value) if hasattr(packet.tcp, 'window_size_value') else \
                       (int(packet.tcp.window_size) if hasattr(packet.tcp, 'window_size') else 0)
     elif protocol == 17:  # UDP
-        src_port    = int(packet.udp.srcport)
-        dst_port    = int(packet.udp.dstport)
+        try:
+            src_port = int(str(packet.udp.srcport))
+            dst_port = int(str(packet.udp.dstport))
+        except (ValueError, TypeError):
+            return None
         flags_syn = flags_ack = flags_fin = flags_rst = flags_urg = flags_psh = 0
         win_size    = 0
     elif protocol == 1:  # ICMP — use type/code as pseudo ports
@@ -382,8 +388,10 @@ def extract_features_from_pcap(pcap_path, label=None):
 
                 processed_count += 1
                 if processed_count % 1000 == 0:
+                    active = sum(1 for v in flows.values() if v is not None)
                     logger.info(f"Processed {processed_count}/{total_packets} packets, "
-                                f"{len(flows)} flows from {os.path.basename(pcap_path)}")
+                                f"{active} active flows, "
+                                f"{len(features_list)} completed from {os.path.basename(pcap_path)}")
             except Exception as e:
                 logger.warning(f"Error processing packet #{total_packets}: {e}")
                 continue
@@ -559,7 +567,10 @@ def main():
 
     if args.mode == 'pcap':
         if args.input:
-            label    = os.path.splitext(os.path.basename(args.input))[0]
+            if args.label:
+                label = args.label
+            else:
+                label = extract_base_label(os.path.basename(args.input))
             features = extract_features_from_pcap(args.input, label=label)
             write_to_csv(features, args.output, mode='w', write_header=True)
         else:
