@@ -1,39 +1,71 @@
 {
   "model_type": "dt",
   "labels": [
+    "Benign",
     "DDoS",
     "DoS",
     "Malware",
+    "Mirai",
     "Web"
   ],
-  "accuracy": 0.9999153116531165,
+  "accuracy": 0.9999335017954515,
   "confusion_matrix": [
     [
+      5148,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    [
+      0,
       192,
       0,
       0,
+      0,
       0
     ],
     [
+      0,
       0,
       7510,
       0,
+      0,
       0
     ],
     [
+      0,
       0,
       0,
       7164,
+      0,
       0
     ],
     [
       0,
       0,
+      0,
+      0,
+      1312,
+      0
+    ],
+    [
+      0,
+      0,
+      0,
       2,
+      0,
       8748
     ]
   ],
   "classification_report": {
+    "Benign": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1-score": 1.0,
+      "support": 5148.0
+    },
     "DDoS": {
       "precision": 1.0,
       "recall": 1.0,
@@ -52,24 +84,30 @@
       "f1-score": 0.9998604326587579,
       "support": 7164.0
     },
+    "Mirai": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1-score": 1.0,
+      "support": 1312.0
+    },
     "Web": {
       "precision": 1.0,
       "recall": 0.9997714285714285,
       "f1-score": 0.9998857012229969,
       "support": 8750.0
     },
-    "accuracy": 0.9999153116531165,
+    "accuracy": 0.9999335017954515,
     "macro avg": {
-      "precision": 0.9999302260675411,
-      "recall": 0.9999428571428571,
-      "f1-score": 0.9999365334704386,
-      "support": 23616.0
+      "precision": 0.9999534840450274,
+      "recall": 0.9999619047619047,
+      "f1-score": 0.9999576889802925,
+      "support": 30076.0
     },
     "weighted avg": {
-      "precision": 0.9999153352892725,
-      "recall": 0.9999153116531165,
-      "f1-score": 0.999915312723093,
-      "support": 23616.0
+      "precision": 0.9999335203548164,
+      "recall": 0.9999335017954515,
+      "f1-score": 0.9999335026356085,
+      "support": 30076.0
     }
   },
   "feature_names": [

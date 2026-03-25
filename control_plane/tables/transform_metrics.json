@@ -1,13 +1,21 @@
 {
   "labels": [
+    "Benign",
     "DDoS",
     "DoS",
     "Malware",
+    "Mirai",
     "Web"
   ],
   "raw_features": {
-    "accuracy": 0.9999153116531165,
+    "accuracy": 0.9999335017954515,
     "classification_report": {
+      "Benign": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 2574.0
+      },
       "DDoS": {
         "precision": 1.0,
         "recall": 1.0,
@@ -26,56 +34,92 @@
         "f1-score": 0.9998604326587579,
         "support": 3582.0
       },
+      "Mirai": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 656.0
+      },
       "Web": {
         "precision": 1.0,
         "recall": 0.9997714285714285,
         "f1-score": 0.9998857012229969,
         "support": 4375.0
       },
-      "accuracy": 0.9999153116531165,
+      "accuracy": 0.9999335017954515,
       "macro avg": {
-        "precision": 0.9999302260675411,
-        "recall": 0.9999428571428571,
-        "f1-score": 0.9999365334704386,
-        "support": 11808.0
+        "precision": 0.9999534840450274,
+        "recall": 0.9999619047619047,
+        "f1-score": 0.9999576889802925,
+        "support": 15038.0
       },
       "weighted avg": {
-        "precision": 0.9999153352892725,
-        "recall": 0.9999153116531165,
-        "f1-score": 0.999915312723093,
-        "support": 11808.0
+        "precision": 0.9999335203548164,
+        "recall": 0.9999335017954515,
+        "f1-score": 0.9999335026356085,
+        "support": 15038.0
       }
     },
     "confusion_matrix": [
       [
+        2574,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
         96,
         0,
         0,
+        0,
         0
       ],
       [
+        0,
         0,
         3755,
         0,
+        0,
         0
       ],
       [
+        0,
         0,
         0,
         3582,
+        0,
         0
       ],
       [
         0,
         0,
+        0,
+        0,
+        656,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
         1,
+        0,
         4374
       ]
     ]
   },
   "original_pca": {
-    "accuracy": 0.9999153116531165,
+    "accuracy": 0.9999335017954515,
     "classification_report": {
+      "Benign": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 2574.0
+      },
       "DDoS": {
         "precision": 1.0,
         "recall": 1.0,
@@ -94,56 +138,92 @@
         "f1-score": 0.9998604326587579,
         "support": 3582.0
       },
+      "Mirai": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 656.0
+      },
       "Web": {
         "precision": 1.0,
         "recall": 0.9997714285714285,
         "f1-score": 0.9998857012229969,
         "support": 4375.0
       },
-      "accuracy": 0.9999153116531165,
+      "accuracy": 0.9999335017954515,
       "macro avg": {
-        "precision": 0.9999302260675411,
-        "recall": 0.9999428571428571,
-        "f1-score": 0.9999365334704386,
-        "support": 11808.0
+        "precision": 0.9999534840450274,
+        "recall": 0.9999619047619047,
+        "f1-score": 0.9999576889802925,
+        "support": 15038.0
       },
       "weighted avg": {
-        "precision": 0.9999153352892725,
-        "recall": 0.9999153116531165,
-        "f1-score": 0.999915312723093,
-        "support": 11808.0
+        "precision": 0.9999335203548164,
+        "recall": 0.9999335017954515,
+        "f1-score": 0.9999335026356085,
+        "support": 15038.0
       }
     },
     "confusion_matrix": [
       [
+        2574,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
         96,
         0,
         0,
+        0,
         0
       ],
       [
+        0,
         0,
         3755,
         0,
+        0,
         0
       ],
       [
+        0,
         0,
         0,
         3582,
+        0,
         0
       ],
       [
         0,
         0,
+        0,
+        0,
+        656,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
         1,
+        0,
         4374
       ]
     ]
   },
   "quantized_codes": {
-    "accuracy": 0.9999153116531165,
+    "accuracy": 0.9999335017954515,
     "classification_report": {
+      "Benign": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 2574.0
+      },
       "DDoS": {
         "precision": 1.0,
         "recall": 1.0,
@@ -162,56 +242,92 @@
         "f1-score": 0.9998604326587579,
         "support": 3582.0
       },
+      "Mirai": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 656.0
+      },
       "Web": {
         "precision": 1.0,
         "recall": 0.9997714285714285,
         "f1-score": 0.9998857012229969,
         "support": 4375.0
       },
-      "accuracy": 0.9999153116531165,
+      "accuracy": 0.9999335017954515,
       "macro avg": {
-        "precision": 0.9999302260675411,
-        "recall": 0.9999428571428571,
-        "f1-score": 0.9999365334704386,
-        "support": 11808.0
+        "precision": 0.9999534840450274,
+        "recall": 0.9999619047619047,
+        "f1-score": 0.9999576889802925,
+        "support": 15038.0
       },
       "weighted avg": {
-        "precision": 0.9999153352892725,
-        "recall": 0.9999153116531165,
-        "f1-score": 0.999915312723093,
-        "support": 11808.0
+        "precision": 0.9999335203548164,
+        "recall": 0.9999335017954515,
+        "f1-score": 0.9999335026356085,
+        "support": 15038.0
       }
     },
     "confusion_matrix": [
       [
+        2574,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
         96,
         0,
         0,
+        0,
         0
       ],
       [
+        0,
         0,
         3755,
         0,
+        0,
         0
       ],
       [
+        0,
         0,
         0,
         3582,
+        0,
         0
       ],
       [
         0,
         0,
+        0,
+        0,
+        656,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
         1,
+        0,
         4374
       ]
     ]
   },
   "tree_approx_codes": {
-    "accuracy": 0.9999153116531165,
+    "accuracy": 0.9999335017954515,
     "classification_report": {
+      "Benign": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 2574.0
+      },
       "DDoS": {
         "precision": 1.0,
         "recall": 1.0,
@@ -230,49 +346,79 @@
         "f1-score": 0.9998604326587579,
         "support": 3582.0
       },
+      "Mirai": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 656.0
+      },
       "Web": {
         "precision": 1.0,
         "recall": 0.9997714285714285,
         "f1-score": 0.9998857012229969,
         "support": 4375.0
       },
-      "accuracy": 0.9999153116531165,
+      "accuracy": 0.9999335017954515,
       "macro avg": {
-        "precision": 0.9999302260675411,
-        "recall": 0.9999428571428571,
-        "f1-score": 0.9999365334704386,
-        "support": 11808.0
+        "precision": 0.9999534840450274,
+        "recall": 0.9999619047619047,
+        "f1-score": 0.9999576889802925,
+        "support": 15038.0
       },
       "weighted avg": {
-        "precision": 0.9999153352892725,
-        "recall": 0.9999153116531165,
-        "f1-score": 0.999915312723093,
-        "support": 11808.0
+        "precision": 0.9999335203548164,
+        "recall": 0.9999335017954515,
+        "f1-score": 0.9999335026356085,
+        "support": 15038.0
       }
     },
     "confusion_matrix": [
       [
+        2574,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
         96,
         0,
         0,
+        0,
         0
       ],
       [
+        0,
         0,
         3755,
         0,
+        0,
         0
       ],
       [
+        0,
         0,
         0,
         3582,
+        0,
         0
       ],
       [
         0,
         0,
+        0,
+        0,
+        656,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
         1,
+        0,
         4374
       ]
     ]

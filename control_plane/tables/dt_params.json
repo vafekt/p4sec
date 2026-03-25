@@ -1,9 +1,11 @@
 {
   "model_type": "dt",
   "classes": [
+    "Benign",
     "DDoS",
     "DoS",
     "Malware",
+    "Mirai",
     "Web"
   ]
 }

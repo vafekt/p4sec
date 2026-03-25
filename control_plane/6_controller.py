@@ -139,14 +139,10 @@ class FlowAggregator:
 def load_switch_cli(sw, runtime_cli, thrift_port=9090):
     """Load P4 table rules via simple_switch_CLI.
 
-    Waits for the CLI process to finish so all table entries are fully
-    installed before the controller starts listening for digests.
-
-    Loading strategy:
-      1. If tables/s1-commands-classifier.txt exists, pre-load it first (fast,
-         ~35K ml_code entries).  This guarantees the classifier is always
-         populated even if the large PCA loading is interrupted.
-      2. Load the full s1-commands.txt (PCA entries + ml_code at the top now).
+    Blocks until all entries are installed before the controller starts
+    listening for digests.  ml_code (classifier) entries are placed at the
+    top of s1-commands.txt by step 4, so the classifier is ready as soon as
+    those first lines load — no separate pre-load file is needed.
     """
     print(f"Loading P4 rules from {runtime_cli}...")
     n_entries = 0
@@ -162,43 +158,6 @@ def load_switch_cli(sw, runtime_cli, thrift_port=9090):
 
     os.makedirs('logs', exist_ok=True)
 
-    # ── Step 1: pre-load classifier entries (ml_code) from small separate file ──
-    # The classifier file lives alongside s1-commands.txt in the tables/ directory.
-    classifier_cli = os.path.join(os.path.dirname(os.path.abspath(runtime_cli)),
-                                  's1-commands-classifier.txt')
-    if os.path.exists(classifier_cli):
-        n_clf = 0
-        try:
-            with open(classifier_cli, 'r') as f:
-                n_clf = sum(1 for l in f if l.lstrip().startswith('table_'))
-        except Exception:
-            pass
-        print(f"  Pre-loading {n_clf:,} classifier (ml_code) entries from {classifier_cli}...")
-        try:
-            with open(classifier_cli, 'r') as fin, \
-                 open('logs/cli_output_classifier.log', 'w') as fout:
-                clf_proc = subprocess.Popen(
-                    ['simple_switch_CLI', '--thrift-port', str(thrift_port)],
-                    stdin=fin, stdout=fout, stderr=subprocess.STDOUT
-                )
-                clf_proc.wait()
-            clf_errors = 0
-            with open('logs/cli_output_classifier.log', 'r') as log:
-                for line in log:
-                    if line.startswith('RuntimeCmd: Error'):
-                        clf_errors += 1
-            if clf_errors:
-                print(f"  WARNING: {clf_errors} errors pre-loading classifier entries "
-                      f"(check logs/cli_output_classifier.log)")
-            else:
-                print(f"  Classifier pre-load OK (exit code {clf_proc.returncode})")
-        except Exception as e:
-            print(f"  WARNING: classifier pre-load failed: {e}")
-    else:
-        print(f"  NOTE: {classifier_cli} not found — re-run step 4 to generate it.")
-        print(f"        ml_code entries will be loaded from the end of s1-commands.txt.")
-
-    # ── Step 2: load the full rule file (PCA + ml_code) ──
     try:
         with open(runtime_cli, 'r') as fin, open('logs/cli_output.log', 'w') as fout:
             proc = subprocess.Popen(
@@ -213,28 +172,18 @@ def load_switch_cli(sw, runtime_cli, thrift_port=9090):
             print(f"WARNING: simple_switch_CLI exited with non-zero code {proc.returncode} "
                   f"— some entries may not have been loaded.")
 
-        # Sanity check the log
-        # "already exists" errors are expected when ml_code was pre-loaded and
-        # then s1-commands.txt tries to add the same entries again — ignore them.
         errors = 0
         table_full = 0
-        duplicates = 0
         with open('logs/cli_output.log', 'r') as log:
             for line in log:
                 if line.startswith('RuntimeCmd: Error'):
-                    lower = line.lower()
-                    if 'already' in lower or 'exists' in lower or 'duplicate' in lower:
-                        duplicates += 1
-                    else:
-                        errors += 1
+                    errors += 1
                 if 'TABLE_FULL' in line or 'table is full' in line.lower():
                     table_full += 1
         if table_full:
             print(f"ERROR: {table_full} TABLE_FULL rejections — increase NB_ENTRIES in basic.p4 and recompile!")
         if errors:
             print(f"WARNING: {errors} CLI errors during rule loading (check logs/cli_output.log)")
-        if duplicates:
-            print(f"  (ignored {duplicates:,} 'already exists' errors — expected from pre-loaded classifier)")
         if not errors and not table_full:
             print(f"Rules loaded successfully. CLI output logged to logs/cli_output.log")
     except FileNotFoundError as e:
