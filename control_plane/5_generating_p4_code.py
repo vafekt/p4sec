@@ -4,9 +4,9 @@ Universal P4 Code Generator for ML Classification with Flow-Based Features.
 
 Supports five dimensionality-reduction methods:
     PCA               → pca_component* transform tables + classifier on pc*_code
-    LDA               → pca_component* transform tables + classifier on ld*_code
-    Autoencoder       → pca_component* transform tables + classifier on ae*_code
-    UMAP              → pca_component* transform tables + classifier on um*_code
+    LDA               → lda_component* transform tables + classifier on ld*_code
+    Autoencoder       → ae_component*  transform tables + classifier on ae*_code
+    UMAP              → umap_component* transform tables + classifier on um*_code
     Feature Selection → NO transform tables, classifier matches raw flow features
 
 Supports six classifier back-ends:
@@ -164,8 +164,14 @@ class P4CodeGenerator:
         else:
             self.code_prefix = 'pc'
 
-        # Transform table/action prefixes (keep legacy pca_component for PCA/LDA/AE)
-        if method == 'umap':
+        # Transform table/action prefixes — each method gets its own distinct table name
+        if method == 'lda':
+            self.table_prefix = 'lda'
+            self.action_prefix = 'ld'
+        elif method == 'autoencoder':
+            self.table_prefix = 'ae'
+            self.action_prefix = 'ae'
+        elif method == 'umap':
             self.table_prefix = 'umap'
             self.action_prefix = 'um'
         else:
@@ -2918,15 +2924,16 @@ def main():
     red_cfg = load_reduction_config(args.reduction_config)
 
     # Determine n_components and bits
+    _method = (red_cfg or {}).get('method', 'pca')
+    _prefix_map = {'lda': 'lda', 'autoencoder': 'ae', 'umap': 'umap'}
+    _table_prefix = _prefix_map.get(_method, 'pca')
     if red_cfg and red_cfg.get('needs_transform_tables', True):
-        table_prefix = 'umap' if (red_cfg or {}).get('method') == 'umap' else 'pca'
-        n_components, bits = detect_n_components(args.params_file, args.commands_file, table_prefix=table_prefix)
+        n_components, bits = detect_n_components(args.params_file, args.commands_file, table_prefix=_table_prefix)
     elif red_cfg and not red_cfg.get('needs_transform_tables', True):
         n_components = red_cfg.get('n_components', 0)
         bits = 16
     else:
-        table_prefix = 'umap' if (red_cfg or {}).get('method') == 'umap' else 'pca'
-        n_components, bits = detect_n_components(args.params_file, args.commands_file, table_prefix=table_prefix)
+        n_components, bits = detect_n_components(args.params_file, args.commands_file, table_prefix=_table_prefix)
 
     # Load model-specific params
     rf_params  = load_rf_params(args.rf_params)   if args.model_type == 'rf'  else {}

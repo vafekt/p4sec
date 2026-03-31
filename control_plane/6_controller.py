@@ -139,68 +139,38 @@ class FlowAggregator:
 def load_switch_cli(sw, runtime_cli, thrift_port=9090):
     """Load P4 table rules via simple_switch_CLI.
 
-    Waits for the CLI process to finish so all table entries are fully
-    installed before the controller starts listening for digests.
+    Blocks until all entries are installed before the controller starts
+    listening for digests.  ml_code (classifier) entries are placed at the
+    top of s1-commands.txt by step 4, so the classifier is ready as soon as
+    those first lines load — no separate pre-load file is needed.
 
-    Loading strategy:
-      1. If tables/s1-commands-classifier.txt exists, pre-load it first (fast,
-         ~35K ml_code entries).  This guarantees the classifier is always
-         populated even if the large PCA loading is interrupted.
-      2. Load the full s1-commands.txt (PCA entries + ml_code at the top now).
+    Returns (table_counts, load_time_seconds) where table_counts is a dict
+    mapping table name → entry count (plus a '__total__' key).
     """
     print(f"Loading P4 rules from {runtime_cli}...")
-    n_entries = 0
+    table_counts = {}
     try:
         with open(runtime_cli, 'r') as f:
             for line in f:
-                if line.lstrip().startswith('table_'):
-                    n_entries += 1
+                stripped = line.lstrip()
+                if stripped.startswith('table_add'):
+                    parts = stripped.split()
+                    if len(parts) >= 2:
+                        tbl = parts[1]
+                        table_counts[tbl] = table_counts.get(tbl, 0) + 1
     except Exception:
         pass
+    n_entries = sum(table_counts.values())
+    table_counts['__total__'] = n_entries
     if n_entries:
-        print(f"  ({n_entries:,} table entries to install — please wait, this may take ~{max(10, n_entries // 800)} seconds)")
+        print(f"  ({n_entries:,} table entries to install — timing will be reported on completion)")
 
     os.makedirs('logs', exist_ok=True)
 
-    # ── Step 1: pre-load classifier entries (ml_code) from small separate file ──
-    # The classifier file lives alongside s1-commands.txt in the tables/ directory.
-    classifier_cli = os.path.join(os.path.dirname(os.path.abspath(runtime_cli)),
-                                  's1-commands-classifier.txt')
-    if os.path.exists(classifier_cli):
-        n_clf = 0
-        try:
-            with open(classifier_cli, 'r') as f:
-                n_clf = sum(1 for l in f if l.lstrip().startswith('table_'))
-        except Exception:
-            pass
-        print(f"  Pre-loading {n_clf:,} classifier (ml_code) entries from {classifier_cli}...")
-        try:
-            with open(classifier_cli, 'r') as fin, \
-                 open('logs/cli_output_classifier.log', 'w') as fout:
-                clf_proc = subprocess.Popen(
-                    ['simple_switch_CLI', '--thrift-port', str(thrift_port)],
-                    stdin=fin, stdout=fout, stderr=subprocess.STDOUT
-                )
-                clf_proc.wait()
-            clf_errors = 0
-            with open('logs/cli_output_classifier.log', 'r') as log:
-                for line in log:
-                    if line.startswith('RuntimeCmd: Error'):
-                        clf_errors += 1
-            if clf_errors:
-                print(f"  WARNING: {clf_errors} errors pre-loading classifier entries "
-                      f"(check logs/cli_output_classifier.log)")
-            else:
-                print(f"  Classifier pre-load OK (exit code {clf_proc.returncode})")
-        except Exception as e:
-            print(f"  WARNING: classifier pre-load failed: {e}")
-    else:
-        print(f"  NOTE: {classifier_cli} not found — re-run step 4 to generate it.")
-        print(f"        ml_code entries will be loaded from the end of s1-commands.txt.")
-
-    # ── Step 2: load the full rule file (PCA + ml_code) ──
+    load_time = 0.0
     try:
         with open(runtime_cli, 'r') as fin, open('logs/cli_output.log', 'w') as fout:
+            t_start = time.time()   # start BEFORE Popen so subprocess init is included
             proc = subprocess.Popen(
                 ['simple_switch_CLI', '--thrift-port', str(thrift_port)],
                 stdin=fin,
@@ -208,38 +178,31 @@ def load_switch_cli(sw, runtime_cli, thrift_port=9090):
                 stderr=subprocess.STDOUT
             )
             proc.wait()   # <-- BLOCK until all entries are installed
+            load_time = time.time() - t_start
 
         if proc.returncode != 0:
             print(f"WARNING: simple_switch_CLI exited with non-zero code {proc.returncode} "
                   f"— some entries may not have been loaded.")
 
-        # Sanity check the log
-        # "already exists" errors are expected when ml_code was pre-loaded and
-        # then s1-commands.txt tries to add the same entries again — ignore them.
         errors = 0
         table_full = 0
-        duplicates = 0
         with open('logs/cli_output.log', 'r') as log:
             for line in log:
                 if line.startswith('RuntimeCmd: Error'):
-                    lower = line.lower()
-                    if 'already' in lower or 'exists' in lower or 'duplicate' in lower:
-                        duplicates += 1
-                    else:
-                        errors += 1
+                    errors += 1
                 if 'TABLE_FULL' in line or 'table is full' in line.lower():
                     table_full += 1
         if table_full:
             print(f"ERROR: {table_full} TABLE_FULL rejections — increase NB_ENTRIES in basic.p4 and recompile!")
         if errors:
             print(f"WARNING: {errors} CLI errors during rule loading (check logs/cli_output.log)")
-        if duplicates:
-            print(f"  (ignored {duplicates:,} 'already exists' errors — expected from pre-loaded classifier)")
         if not errors and not table_full:
-            print(f"Rules loaded successfully. CLI output logged to logs/cli_output.log")
+            print(f"Rules loaded successfully in {load_time:.2f}s. CLI output logged to logs/cli_output.log")
     except FileNotFoundError as e:
         print(f"ERROR: Runtime CLI file not found: {e}")
         raise
+
+    return table_counts, load_time
 
 def build_digest_entry(p4info_helper, digest_name):
     """Build a DigestEntry configuration for the switch."""
@@ -1260,8 +1223,77 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
         print(f"WARNING: Could not reset registers: {_e}\n")
 
     # Load rules via CLI
-    load_switch_cli(s1, runtime_cli_path)
+    table_counts, rules_load_time = load_switch_cli(s1, runtime_cli_path)
     print("Rules installed. Installing digest listener...\n")
+
+    # Write run metadata so analyze_results.py can include it in the report
+    # Classify each table as "transform" or "classifier" regardless of method.
+    # Transform tables: pca_component* (PCA), lda_component* (LDA),
+    #                   ae_component* (Autoencoder), umap_component* (UMAP)
+    # Classifier tables: ml_code (DT / KNN / SVM proxy),
+    #                    rf_tree_* / rf_vote_classify (RF),
+    #                    xgb_tree_* / xgb_classify (XGB / GB),
+    #                    cnn* (CNN)
+    _TRANSFORM_RE  = re.compile(r'(pca|lda|ae|umap)_component\d+$')
+    _CLASSIFIER_RE = re.compile(r'ml_code|rf_tree_|rf_vote_classify|xgb_tree_|xgb_classify|cnn')
+
+    _transform_per_component = {}  # table_name -> count (one entry per component table)
+    _n_model_entries = 0
+    for _tbl, _cnt in table_counts.items():
+        if _tbl == '__total__':
+            continue
+        if _TRANSFORM_RE.search(_tbl):
+            _transform_per_component[_tbl] = _cnt
+        elif _CLASSIFIER_RE.search(_tbl):
+            _n_model_entries += _cnt
+
+    # All component tables should have the same count; record a single per-component value
+    _pca_entries_per_component = next(iter(_transform_per_component.values()), 0)
+    _pca_total_entries = sum(_transform_per_component.values())
+
+    # Determine active model file path and its on-disk size
+    _model_file_map = {
+        'rf': rf_model_path, 'xgb': xgb_model_path, 'dt': dt_model_path,
+    }
+    _active_model_path = _model_file_map.get(model_type, dt_model_path)
+    if declared_dt_type in ('knn', 'svm'):
+        _cand = os.path.join(script_dir, f'model/{declared_dt_type}.model')
+        if os.path.exists(_cand):
+            _active_model_path = _cand
+    try:
+        _model_size_bytes = os.path.getsize(_active_model_path)
+    except OSError:
+        _model_size_bytes = 0
+
+    # Transform config size (encoding_params.json)
+    try:
+        _transform_config_size_bytes = os.path.getsize(pca_config_path)
+    except OSError:
+        _transform_config_size_bytes = 0
+
+    _run_metadata = {
+        "reduction_method":              reduction_method,
+        "n_components":                  n_components,
+        "pca_bits":                      pca_bits,
+        "transform_entries_per_component": _pca_entries_per_component,
+        "transform_total_entries":       _pca_total_entries,
+        "model_type":                    model_type,
+        "declared_dt_type":              declared_dt_type,
+        "model_entries":                 _n_model_entries,
+        "model_file":                    os.path.basename(_active_model_path),
+        "model_size_bytes":              _model_size_bytes,
+        "transform_config_size_bytes":   _transform_config_size_bytes,
+        "total_memory_bytes":            _model_size_bytes + _transform_config_size_bytes,
+        "total_table_entries":           table_counts.get('__total__', 0),
+        "rules_load_time_s":             round(rules_load_time, 3),
+        "table_counts":                  {k: v for k, v in table_counts.items() if k != '__total__'},
+        "runtime_cli":                   runtime_cli_path,
+    }
+    os.makedirs('logs', exist_ok=True)
+    _metadata_path = os.path.join('logs', 'run_metadata.json')
+    with open(_metadata_path, 'w') as _mf:
+        json.dump(_run_metadata, _mf, indent=2)
+    print(f"Run metadata written to {_metadata_path}\n")
 
     # Install digest configuration
     install_digest(p4info_helper, s1, digest_name)

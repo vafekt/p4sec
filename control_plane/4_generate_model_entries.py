@@ -481,12 +481,6 @@ if model_type == 'dt':
             f.write(line)
     print(f"Wrote {len(rules)} DT entries to {outputfile} (classifier entries placed first)")
 
-    # Also write classifier entries to a small separate file for fast pre-loading
-    classifier_out = os.path.join(tables_dir, 's1-commands-classifier.txt')
-    with open(classifier_out, "w") as f:
-        for prio, (_, rs) in enumerate(rules, 1):
-            f.write(f"{rs} {prio}\n")
-    print(f"Wrote {len(rules)} classifier entries to {classifier_out}")
 
     with open(tree_output, "w") as fh:
         write_sklearn_tree_text(model, FNAMES, "DecisionTree", fh)
