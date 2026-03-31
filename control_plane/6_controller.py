@@ -143,23 +143,34 @@ def load_switch_cli(sw, runtime_cli, thrift_port=9090):
     listening for digests.  ml_code (classifier) entries are placed at the
     top of s1-commands.txt by step 4, so the classifier is ready as soon as
     those first lines load — no separate pre-load file is needed.
+
+    Returns (table_counts, load_time_seconds) where table_counts is a dict
+    mapping table name → entry count (plus a '__total__' key).
     """
     print(f"Loading P4 rules from {runtime_cli}...")
-    n_entries = 0
+    table_counts = {}
     try:
         with open(runtime_cli, 'r') as f:
             for line in f:
-                if line.lstrip().startswith('table_'):
-                    n_entries += 1
+                stripped = line.lstrip()
+                if stripped.startswith('table_add'):
+                    parts = stripped.split()
+                    if len(parts) >= 2:
+                        tbl = parts[1]
+                        table_counts[tbl] = table_counts.get(tbl, 0) + 1
     except Exception:
         pass
+    n_entries = sum(table_counts.values())
+    table_counts['__total__'] = n_entries
     if n_entries:
-        print(f"  ({n_entries:,} table entries to install — please wait, this may take ~{max(10, n_entries // 800)} seconds)")
+        print(f"  ({n_entries:,} table entries to install — timing will be reported on completion)")
 
     os.makedirs('logs', exist_ok=True)
 
+    load_time = 0.0
     try:
         with open(runtime_cli, 'r') as fin, open('logs/cli_output.log', 'w') as fout:
+            t_start = time.time()   # start BEFORE Popen so subprocess init is included
             proc = subprocess.Popen(
                 ['simple_switch_CLI', '--thrift-port', str(thrift_port)],
                 stdin=fin,
@@ -167,6 +178,7 @@ def load_switch_cli(sw, runtime_cli, thrift_port=9090):
                 stderr=subprocess.STDOUT
             )
             proc.wait()   # <-- BLOCK until all entries are installed
+            load_time = time.time() - t_start
 
         if proc.returncode != 0:
             print(f"WARNING: simple_switch_CLI exited with non-zero code {proc.returncode} "
@@ -185,10 +197,12 @@ def load_switch_cli(sw, runtime_cli, thrift_port=9090):
         if errors:
             print(f"WARNING: {errors} CLI errors during rule loading (check logs/cli_output.log)")
         if not errors and not table_full:
-            print(f"Rules loaded successfully. CLI output logged to logs/cli_output.log")
+            print(f"Rules loaded successfully in {load_time:.2f}s. CLI output logged to logs/cli_output.log")
     except FileNotFoundError as e:
         print(f"ERROR: Runtime CLI file not found: {e}")
         raise
+
+    return table_counts, load_time
 
 def build_digest_entry(p4info_helper, digest_name):
     """Build a DigestEntry configuration for the switch."""
@@ -346,6 +360,29 @@ def load_digest_schema(p4info_path, digest_name):
     except Exception as e:
         print(f"WARNING: Unable to load digest schema from P4Info: {e}")
         return []
+
+def detect_model_type_from_p4info(p4info_path):
+    """Detect model type by inspecting compiled P4 table names in the p4info.
+
+    Returns 'rf', 'xgb', or None (meaning DT/unknown).
+    This is the authoritative check because rf_votes is INTERNAL metadata
+    that is never placed in digest_t, so digest-field inspection alone cannot
+    distinguish RF from DT.
+    """
+    try:
+        p4info = p4info_pb2.P4Info()
+        with open(p4info_path, 'r') as f:
+            text_format.Merge(f.read(), p4info)
+        table_aliases = {t.preamble.alias for t in p4info.tables}
+        table_names   = {t.preamble.name  for t in p4info.tables}
+        all_names = table_aliases | table_names
+        if any('rf_vote' in n for n in all_names):
+            return 'rf'
+        if any('xgb_score' in n or 'gb_score' in n for n in all_names):
+            return 'xgb'
+        return None
+    except Exception:
+        return None
 
 def build_digest_field_index(digest_fields):
     return {name: idx for idx, name in enumerate(digest_fields)}
@@ -1036,29 +1073,34 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
     xgb_model_path = os.path.join(script_dir, 'model/xgb.model')
     gb_model_path = os.path.join(script_dir, 'model/gb.model')
 
-    # Infer model type from digest structure (most reliable when multiple params exist)
-    # RF and XGB have distinctive extra fields in the digest; DT has neither.
-    # If the digest was loaded successfully and neither marker is present, it is
-    # definitively DT — do NOT fall through to the file-based heuristic which
-    # would wrongly pick up leftover rf_params.json from a
-    # previous run.
+    # Infer model type from the compiled P4 program (p4info tables) — authoritative.
+    # NOTE: rf_votes is INTERNAL metadata in P4 and is never placed in digest_t,
+    # so checking digest fields for "rf_votes" is always False for RF models.
+    # Instead we inspect the registered table names: rf_vote_classify → RF,
+    # xgb_score_* → XGB, otherwise fall back to params files or DT.
     model_type = None
     declared_dt_type = None
     digest_based_detection = False
+    p4info_model_type = detect_model_type_from_p4info(p4info_file_path)
+
     if digest_fields:
         digest_based_detection = True
         if any(re.match(r"^xgb_score_c\d+$", f) for f in digest_fields):
             model_type = "xgb"
-        elif "rf_votes" in digest_fields:
-            model_type = "rf"
         else:
-            model_type = "dt"   # No RF/XGB markers → must be DT
-            try:
-                with open(dt_params_path, 'r') as f:
-                    _dtp = json.load(f)
-                declared_dt_type = _dtp.get("model_type")
-            except Exception:
-                declared_dt_type = None
+            # rf_votes never appears in digest_t; use p4info table inspection instead.
+            if p4info_model_type == "rf":
+                model_type = "rf"
+            elif p4info_model_type == "xgb":
+                model_type = "xgb"
+            else:
+                model_type = "dt"
+                try:
+                    with open(dt_params_path, 'r') as f:
+                        _dtp = json.load(f)
+                    declared_dt_type = _dtp.get("model_type")
+                except Exception:
+                    declared_dt_type = None
 
     # Fallback: check params files only when digest info was unavailable
     # (prioritize rf > xgb/gb > dt/knn/svm)
@@ -1209,8 +1251,77 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
         print(f"WARNING: Could not reset registers: {_e}\n")
 
     # Load rules via CLI
-    load_switch_cli(s1, runtime_cli_path)
+    table_counts, rules_load_time = load_switch_cli(s1, runtime_cli_path)
     print("Rules installed. Installing digest listener...\n")
+
+    # Write run metadata so analyze_results.py can include it in the report
+    # Classify each table as "transform" or "classifier" regardless of method.
+    # Transform tables: pca_component* (PCA), lda_component* (LDA),
+    #                   ae_component* (Autoencoder), umap_component* (UMAP)
+    # Classifier tables: ml_code (DT / KNN / SVM proxy),
+    #                    rf_tree_* / rf_vote_classify (RF),
+    #                    xgb_tree_* / xgb_classify (XGB / GB),
+    #                    cnn* (CNN)
+    _TRANSFORM_RE  = re.compile(r'(pca|lda|ae|umap)_component\d+$')
+    _CLASSIFIER_RE = re.compile(r'ml_code|rf_tree_|rf_vote_classify|xgb_tree_|xgb_classify|cnn')
+
+    _transform_per_component = {}  # table_name -> count (one entry per component table)
+    _n_model_entries = 0
+    for _tbl, _cnt in table_counts.items():
+        if _tbl == '__total__':
+            continue
+        if _TRANSFORM_RE.search(_tbl):
+            _transform_per_component[_tbl] = _cnt
+        elif _CLASSIFIER_RE.search(_tbl):
+            _n_model_entries += _cnt
+
+    # All component tables should have the same count; record a single per-component value
+    _pca_entries_per_component = next(iter(_transform_per_component.values()), 0)
+    _pca_total_entries = sum(_transform_per_component.values())
+
+    # Determine active model file path and its on-disk size
+    _model_file_map = {
+        'rf': rf_model_path, 'xgb': xgb_model_path, 'dt': dt_model_path,
+    }
+    _active_model_path = _model_file_map.get(model_type, dt_model_path)
+    if declared_dt_type in ('knn', 'svm'):
+        _cand = os.path.join(script_dir, f'model/{declared_dt_type}.model')
+        if os.path.exists(_cand):
+            _active_model_path = _cand
+    try:
+        _model_size_bytes = os.path.getsize(_active_model_path)
+    except OSError:
+        _model_size_bytes = 0
+
+    # Transform config size (encoding_params.json)
+    try:
+        _transform_config_size_bytes = os.path.getsize(pca_config_path)
+    except OSError:
+        _transform_config_size_bytes = 0
+
+    _run_metadata = {
+        "reduction_method":              reduction_method,
+        "n_components":                  n_components,
+        "pca_bits":                      pca_bits,
+        "transform_entries_per_component": _pca_entries_per_component,
+        "transform_total_entries":       _pca_total_entries,
+        "model_type":                    model_type,
+        "declared_dt_type":              declared_dt_type,
+        "model_entries":                 _n_model_entries,
+        "model_file":                    os.path.basename(_active_model_path),
+        "model_size_bytes":              _model_size_bytes,
+        "transform_config_size_bytes":   _transform_config_size_bytes,
+        "total_memory_bytes":            _model_size_bytes + _transform_config_size_bytes,
+        "total_table_entries":           table_counts.get('__total__', 0),
+        "rules_load_time_s":             round(rules_load_time, 3),
+        "table_counts":                  {k: v for k, v in table_counts.items() if k != '__total__'},
+        "runtime_cli":                   runtime_cli_path,
+    }
+    os.makedirs('logs', exist_ok=True)
+    _metadata_path = os.path.join('logs', 'run_metadata.json')
+    with open(_metadata_path, 'w') as _mf:
+        json.dump(_run_metadata, _mf, indent=2)
+    print(f"Run metadata written to {_metadata_path}\n")
 
     # Install digest configuration
     install_digest(p4info_helper, s1, digest_name)

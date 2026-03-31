@@ -27,5 +27,14 @@ basic.json
 control_plane/dataset/*.csv
 control_plane/pcaps/
 
+# Results / experiment outputs
+results/
+
+# Large generated table files (exceed GitHub 100 MB limit)
+**/tables/s1-commands.txt
+
+# Captured pcaps at repo root
+pcaps/
+
 # Mininet / runtime
 *.swp

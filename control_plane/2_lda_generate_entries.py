@@ -22,7 +22,7 @@ components, especially when classes overlap in the raw feature space.
 LDA produces at most min(n_features, n_classes-1) components.
 
 P4 deployment is identical to PCA: a surrogate DecisionTreeRegressor maps
-raw features -> quantised LDA codes via pca_component* range-match tables.
+raw features -> quantised LDA codes via lda_component* range-match tables.
 """
 
 import numpy as np
@@ -350,8 +350,8 @@ def write_p4_commands(dt, fnames, l2c, k, fmax_map, filename):
             clauses = format_ranges(dom, fnames, fmax_map)
             codes = l2c[nid]
             for j in range(k):
-                f.write(f"table_add MyIngress.pca_component{j+1} "
-                        f"set_pc{j+1}_code {' '.join(clauses)} => {int(codes[j])} {prio[0]}\n")
+                f.write(f"table_add MyIngress.lda_component{j+1} "
+                        f"set_ld{j+1}_code {' '.join(clauses)} => {int(codes[j])} {prio[0]}\n")
             return
         dfs(left[nid], path + [(nid, "<=")])
         dfs(right[nid], path + [(nid, ">")])

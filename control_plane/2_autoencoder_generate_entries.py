@@ -424,8 +424,8 @@ def write_p4_commands(dt, feature_names, leaf_mapping, n_codes, fmax_map, filena
             codes = leaf_mapping[node_id]
             for j in range(n_codes):
                 f.write(
-                    f"table_add MyIngress.pca_component{j+1} "
-                    f"set_pc{j+1}_code {' '.join(clauses)} => {int(codes[j])} {priority[0]}\n"
+                    f"table_add MyIngress.ae_component{j+1} "
+                    f"set_ae{j+1}_code {' '.join(clauses)} => {int(codes[j])} {priority[0]}\n"
                 )
             return
         dfs(left[node_id], path + [(node_id, "<=")])

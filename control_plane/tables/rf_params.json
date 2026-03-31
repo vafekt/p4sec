@@ -1,0 +1,20 @@
+{
+  "model_type": "rf",
+  "n_estimators": 8,
+  "n_classes": 6,
+  "vote_bits": 3,
+  "total_vote_bits": 24,
+  "classes": [
+    "Benign",
+    "DDoS",
+    "DoS",
+    "Malware",
+    "Mirai",
+    "Web"
+  ],
+  "feature_names": [
+    "PC1_code",
+    "PC2_code",
+    "PC3_code"
+  ]
+}
