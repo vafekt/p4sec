@@ -6,11 +6,11 @@
     "PC3_code"
   ],
   "feature_max_values": {
-    "PC1_code": 65535,
-    "PC2_code": 65535,
-    "PC3_code": 65535
+    "PC1_code": 4294967295,
+    "PC2_code": 4294967295,
+    "PC3_code": 4294967295
   },
   "needs_transform_tables": true,
   "n_components": 3,
-  "bits": 16
+  "bits": 32
 }

@@ -1,0 +1,31 @@
+{
+  "reduction_method": "pca",
+  "n_components": 3,
+  "pca_bits": 32,
+  "transform_entries_per_component": 13402,
+  "transform_total_entries": 40206,
+  "model_type": "rf",
+  "declared_dt_type": null,
+  "model_entries": 1712228,
+  "model_file": "rf.model",
+  "model_size_bytes": 7308547,
+  "transform_config_size_bytes": 2679,
+  "total_memory_bytes": 7311226,
+  "total_table_entries": 1752434,
+  "rules_load_time_s": 182.675,
+  "table_counts": {
+    "MyIngress.pca_component1": 13402,
+    "MyIngress.pca_component2": 13402,
+    "MyIngress.pca_component3": 13402,
+    "MyIngress.rf_tree_0": 4066,
+    "MyIngress.rf_tree_1": 4101,
+    "MyIngress.rf_tree_2": 4007,
+    "MyIngress.rf_tree_3": 4111,
+    "MyIngress.rf_tree_4": 4105,
+    "MyIngress.rf_tree_5": 4085,
+    "MyIngress.rf_tree_6": 4033,
+    "MyIngress.rf_tree_7": 4104,
+    "MyIngress.rf_vote_classify": 1679616
+  },
+  "runtime_cli": "/home/vafekt/Desktop/tutorials/exercises/p4sec/control_plane/tables/s1-commands.txt"
+}

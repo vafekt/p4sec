@@ -361,6 +361,29 @@ def load_digest_schema(p4info_path, digest_name):
         print(f"WARNING: Unable to load digest schema from P4Info: {e}")
         return []
 
+def detect_model_type_from_p4info(p4info_path):
+    """Detect model type by inspecting compiled P4 table names in the p4info.
+
+    Returns 'rf', 'xgb', or None (meaning DT/unknown).
+    This is the authoritative check because rf_votes is INTERNAL metadata
+    that is never placed in digest_t, so digest-field inspection alone cannot
+    distinguish RF from DT.
+    """
+    try:
+        p4info = p4info_pb2.P4Info()
+        with open(p4info_path, 'r') as f:
+            text_format.Merge(f.read(), p4info)
+        table_aliases = {t.preamble.alias for t in p4info.tables}
+        table_names   = {t.preamble.name  for t in p4info.tables}
+        all_names = table_aliases | table_names
+        if any('rf_vote' in n for n in all_names):
+            return 'rf'
+        if any('xgb_score' in n or 'gb_score' in n for n in all_names):
+            return 'xgb'
+        return None
+    except Exception:
+        return None
+
 def build_digest_field_index(digest_fields):
     return {name: idx for idx, name in enumerate(digest_fields)}
 
@@ -1050,29 +1073,34 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
     xgb_model_path = os.path.join(script_dir, 'model/xgb.model')
     gb_model_path = os.path.join(script_dir, 'model/gb.model')
 
-    # Infer model type from digest structure (most reliable when multiple params exist)
-    # RF and XGB have distinctive extra fields in the digest; DT has neither.
-    # If the digest was loaded successfully and neither marker is present, it is
-    # definitively DT — do NOT fall through to the file-based heuristic which
-    # would wrongly pick up leftover rf_params.json from a
-    # previous run.
+    # Infer model type from the compiled P4 program (p4info tables) — authoritative.
+    # NOTE: rf_votes is INTERNAL metadata in P4 and is never placed in digest_t,
+    # so checking digest fields for "rf_votes" is always False for RF models.
+    # Instead we inspect the registered table names: rf_vote_classify → RF,
+    # xgb_score_* → XGB, otherwise fall back to params files or DT.
     model_type = None
     declared_dt_type = None
     digest_based_detection = False
+    p4info_model_type = detect_model_type_from_p4info(p4info_file_path)
+
     if digest_fields:
         digest_based_detection = True
         if any(re.match(r"^xgb_score_c\d+$", f) for f in digest_fields):
             model_type = "xgb"
-        elif "rf_votes" in digest_fields:
-            model_type = "rf"
         else:
-            model_type = "dt"   # No RF/XGB markers → must be DT
-            try:
-                with open(dt_params_path, 'r') as f:
-                    _dtp = json.load(f)
-                declared_dt_type = _dtp.get("model_type")
-            except Exception:
-                declared_dt_type = None
+            # rf_votes never appears in digest_t; use p4info table inspection instead.
+            if p4info_model_type == "rf":
+                model_type = "rf"
+            elif p4info_model_type == "xgb":
+                model_type = "xgb"
+            else:
+                model_type = "dt"
+                try:
+                    with open(dt_params_path, 'r') as f:
+                        _dtp = json.load(f)
+                    declared_dt_type = _dtp.get("model_type")
+                except Exception:
+                    declared_dt_type = None
 
     # Fallback: check params files only when digest info was unavailable
     # (prioritize rf > xgb/gb > dt/knn/svm)
