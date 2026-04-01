@@ -180,7 +180,9 @@ def load_switch_cli(sw, runtime_cli, thrift_port=9090):
             proc.wait()   # <-- BLOCK until all entries are installed
             load_time = time.time() - t_start
 
-        if proc.returncode != 0:
+        # simple_switch_CLI exits with 1 on EOF (normal when piping a file via stdin).
+        # Only warn for unexpected codes (>1).
+        if proc.returncode not in (0, 1):
             print(f"WARNING: simple_switch_CLI exited with non-zero code {proc.returncode} "
                   f"— some entries may not have been loaded.")
 
