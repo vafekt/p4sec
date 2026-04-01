@@ -1353,7 +1353,14 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
                 "missing_fields": False,
                 "missing_class": False,
             }
-            
+
+            # Auto-drain: if no digest arrives for this long, assume tcpreplay ended
+            # and drain any flows stuck in P4 registers (UDP floods, etc.).
+            # Must be > FLOW_TIMEOUT (20s) so real timeouts have already fired first.
+            AUTO_DRAIN_TIMEOUT = 25.0
+            last_digest_time = time.time()
+            auto_drain_done = False
+
             while True:
                 msg = dclient.get_digest(timeout=0.5)
 
@@ -1443,9 +1450,38 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
                                   f"{f.get('min_iat',0)},{f.get('fwd_max_pkt_len',0)},{f.get('bwd_max_pkt_len',0)},{f.get('flags_psh',0)},{f.get('init_fwd_win',0)},"
                                   f"{format_codes_csv(entry['pca_codes'])}{class_id},{class_label}\n")
                         out.flush()
+
+                    # Auto-drain: fire once after traffic has been silent for 25s.
+                    # This recovers UDP flood flows (Mirai, DDoS) that never get
+                    # FIN/RST and whose P4 timeout only fires on next-packet arrival —
+                    # which never comes after tcpreplay ends.
+                    if not auto_drain_done and (time.time() - last_digest_time) > AUTO_DRAIN_TIMEOUT:
+                        auto_drain_done = True
+                        print(f"\nNo digest for {AUTO_DRAIN_TIMEOUT:.0f}s — auto-draining P4 registers "
+                              f"(catching UDP/non-FIN stuck flows)...")
+                        out.flush()
+                        _rf_m   = rf_model   if model_type == 'rf'  else None
+                        _xgb_m  = xgb_model  if model_type == 'xgb' else None
+                        _xgb_cm = xgb_class_mapping if model_type == 'xgb' else None
+                        try:
+                            _n = drain_p4_registers(
+                                p4info_helper, s1.client_stub, s1.device_id,
+                                pca_config, model_type, _rf_m, _xgb_m, _xgb_cm,
+                                CLASS_LABELS, n_components, pca_bits, out,
+                                transform_field_names,
+                                needs_transform=needs_transform,
+                                code_display_names=code_display_names,
+                                reduction_feature_columns=reduction_feature_columns,
+                            )
+                            packet_id += _n
+                            print(f"Auto-drain complete: {_n} flows recovered from registers.")
+                        except Exception as _ade:
+                            print(f"WARNING: Auto-drain failed: {_ade}")
                     continue
 
                 _digest_count_raw += 1
+                last_digest_time = time.time()   # reset inactivity timer on real digest
+                auto_drain_done  = False          # allow drain to re-run if a new replay starts
 
                 digest = msg.digest
                 # Validate digest name
@@ -1772,26 +1808,31 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
             # Drain any flows still in P4 registers that never got a FIN/RST or
             # 20-second timeout (the timeout only fires when a new packet arrives
             # at the same register slot — after tcpreplay ends, nothing does).
-            print("\nDraining stuck flows from P4 registers...")
-            try:
-                _rf_m   = rf_model   if model_type == 'rf'  else None
-                _xgb_m  = xgb_model  if model_type == 'xgb' else None
-                _xgb_cm = xgb_class_mapping if model_type == 'xgb' else None
-                drained = drain_p4_registers(
-                    p4info_helper, s1.client_stub, s1.device_id,
-                    pca_config, model_type, _rf_m, _xgb_m, _xgb_cm,
-                    CLASS_LABELS, n_components, pca_bits, final_out, transform_field_names,
-                    needs_transform=needs_transform,
-                    code_display_names=code_display_names,
-                    reduction_feature_columns=reduction_feature_columns,
-                )
-                if drained:
-                    packet_id += drained
-                    print(f"Register drain complete. Total flows recorded: {packet_id}")
-                else:
-                    print("Register drain: no stuck flows found.")
-            except Exception as _de:
-                print(f"WARNING: Register drain failed: {_de}")
+            # Skip if auto-drain already ran during the main loop (avoids duplicate rows).
+            _already_drained = locals().get('auto_drain_done', False)
+            if _already_drained:
+                print("\nRegister drain already completed via auto-drain — skipping.")
+            else:
+                print("\nDraining stuck flows from P4 registers...")
+                try:
+                    _rf_m   = rf_model   if model_type == 'rf'  else None
+                    _xgb_m  = xgb_model  if model_type == 'xgb' else None
+                    _xgb_cm = xgb_class_mapping if model_type == 'xgb' else None
+                    drained = drain_p4_registers(
+                        p4info_helper, s1.client_stub, s1.device_id,
+                        pca_config, model_type, _rf_m, _xgb_m, _xgb_cm,
+                        CLASS_LABELS, n_components, pca_bits, final_out, transform_field_names,
+                        needs_transform=needs_transform,
+                        code_display_names=code_display_names,
+                        reduction_feature_columns=reduction_feature_columns,
+                    )
+                    if drained:
+                        packet_id += drained
+                        print(f"Register drain complete. Total flows recorded: {packet_id}")
+                    else:
+                        print("Register drain: no stuck flows found.")
+                except Exception as _de:
+                    print(f"WARNING: Register drain failed: {_de}")
         dclient.stop()
         ShutdownAllSwitchConnections()
 
