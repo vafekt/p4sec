@@ -336,7 +336,7 @@ pd.DataFrame(mapping).to_csv(
 print("Saved transform_mapping.csv (AE columns)")
 
 encoding_params = {
-    "method": "Autoencoder",
+    "method": "autoencoder",
     "n_components": int(k),
     "bits": int(BITS),
     "max_val": int(MAX_VAL),
@@ -344,6 +344,7 @@ encoding_params = {
     "transform_max": ae_max.tolist(),
     "transform_range": ae_range.tolist(),
     "auto_selected": bool(USER_K is None),
+    "feature_names": feature_cols,
     "encoder_activation": ACTIVATION,
     "solver": SOLVER,
     "alpha": float(ALPHA),
@@ -375,6 +376,7 @@ reduction_config = {
 with open(os.path.join(TABLES_DIR, "reduction_config.json"), "w") as f:
     json.dump(reduction_config, f, indent=2)
 print("Saved reduction_config.json")
+
 
 feature_max_map = {feat: P4_FEATURE_MAX.get(feat, MAX_VAL) for feat in feature_cols}
 

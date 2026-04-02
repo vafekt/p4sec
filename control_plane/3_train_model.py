@@ -127,6 +127,12 @@ parser.add_argument('--svm-class-weight', default='none',
                     choices=['balanced', 'none'],
                     help='SVM class weighting (default: none)')
 
+# DT / RF class weighting (separate from SVM)
+parser.add_argument('--class-weight', default='balanced',
+                    choices=['balanced', 'none'],
+                    help='Class weighting for DT/RF (default: balanced — strongly recommended '
+                         'for imbalanced datasets; use none to disable)')
+
 # CNN-specific (PyTorch)
 parser.add_argument('--epochs', type=int, default=30,
                     help='CNN training epochs (default: 30)')
@@ -199,7 +205,18 @@ X, Y = X[mask].reset_index(drop=True), Y[mask]
 print(f"Samples         : {X.shape[0]}")
 print(f"Features        : {X.shape[1]}")
 
-# Train on 100% of data (consistent with pipeline convention)
+# ── Holdout split (evaluation only, 80/20 stratified) ────────────────────
+# The PRODUCTION model is trained on 100% of data so P4 table rules cover
+# all known patterns.  But to report honest out-of-sample accuracy we hold
+# out 20% and measure on that before retraining on the full set.
+from sklearn.model_selection import train_test_split as _tts
+_stratify = Y if len(np.unique(Y)) > 1 else None
+X_hold_eval, X_hold_test, y_hold_eval, y_hold_test = _tts(
+    X, Y, test_size=0.2, random_state=args.random_state,
+    stratify=_stratify)
+print(f"\nHoldout evaluation split: {len(y_hold_eval)} train / {len(y_hold_test)} test")
+
+# Train on 100% of data for production deployment
 X_train = X_test = X
 y_train = y_test = Y
 
@@ -237,12 +254,16 @@ def train_non_cnn(mt, X_train_in, y_train_in, X_test_in, y_test_in):
     if local_lr is None:
         local_lr = 0.3 if mt == 'xgb' else 0.1
 
+    # Resolve class_weight for DT/RF (None means no weighting)
+    tree_class_weight = None if args.class_weight == 'none' else 'balanced'
+
     if mt == 'dt':
         from sklearn.tree import DecisionTreeClassifier
         model_local = DecisionTreeClassifier(
             max_depth=local_max_depth,
             min_samples_leaf=args.min_samples_leaf,
             random_state=args.random_state,
+            class_weight=tree_class_weight,
         )
         model_local.fit(X_train_in, y_train_in)
         y_pred_local = model_local.predict(X_test_in)
@@ -255,6 +276,7 @@ def train_non_cnn(mt, X_train_in, y_train_in, X_test_in, y_test_in):
             max_depth=local_max_depth,
             min_samples_leaf=args.min_samples_leaf,
             random_state=args.random_state,
+            class_weight=tree_class_weight,
             n_jobs=-1,
         )
         model_local.fit(X_train_in, y_train_in)
@@ -536,22 +558,45 @@ else:
     )
 
 
-# ─── Evaluate ────────────────────────────────────────────────────────────
+# ─── Holdout evaluation (honest out-of-sample accuracy) ──────────────────
+if model_type not in ('cnn',):
+    _hold_model, _hold_pred, _hold_classes, _, _ = train_non_cnn(
+        model_type, X_hold_eval, y_hold_eval, X_hold_test, y_hold_test)
+    _hold_acc = accuracy_score(y_hold_test, _hold_pred)
+    _hold_labels = sorted(np.unique(Y))
+    _hold_cm  = confusion_matrix(y_hold_test, _hold_pred, labels=_hold_labels)
+    _hold_rep = classification_report(y_hold_test, _hold_pred,
+                                      labels=_hold_labels, output_dict=True,
+                                      zero_division=0)
+    print(f"\n{'='*60}")
+    print(f"HOLDOUT accuracy (80/20 split, UNSEEN test set): {_hold_acc:.4f}")
+    print(f"Holdout Confusion Matrix:\n{_hold_cm}")
+    for cls in _hold_labels:
+        r = _hold_rep.get(cls, {})
+        print(f"  {cls:10s}: prec={r.get('precision',0):.3f}  "
+              f"rec={r.get('recall',0):.3f}  "
+              f"f1={r.get('f1-score',0):.3f}  "
+              f"support={int(r.get('support',0))}")
+    print(f"{'='*60}\n")
+    del _hold_model  # free memory before retraining on full data
+
+# ─── Evaluate (production model, train==test) ─────────────────────────────
 acc    = accuracy_score(y_test, y_pred)
 labels = sorted(np.unique(Y))
 cm     = confusion_matrix(y_test, y_pred, labels=labels)
-report = classification_report(y_test, y_pred, labels=labels, output_dict=True)
+report = classification_report(y_test, y_pred, labels=labels,
+                               output_dict=True, zero_division=0)
 
 mis = y_pred != y_test
 if np.any(mis):
-    print(f"\nMisclassified (up to 20):")
-    for i in np.where(mis)[0][:20]:
+    print(f"Misclassified on training set (up to 5):")
+    for i in np.where(mis)[0][:5]:
         print(f"  {i}: true={y_test[i]}, pred={y_pred[i]}")
-    print(f"Total misclassified: {mis.sum()} / {len(y_test)}")
+    print(f"Total misclassified on training set: {mis.sum()} / {len(y_test)}")
 else:
-    print("\nPerfect accuracy.")
+    print("Perfect fit on training set (expected — model trained on all data).")
 
-print(f"Accuracy: {acc}")
+print(f"Training accuracy: {acc:.4f}")
 print(f"Labels:   {labels}")
 print(f"Confusion Matrix:\n{cm}")
 
@@ -566,7 +611,12 @@ metrics = {
     "feature_names":         feature_columns,
     "n_estimators":          args.n_estimators if model_type in ('rf', 'xgb', 'gb') else None,
     "max_depth":             max_depth,
+    "class_weight":          args.class_weight if model_type in ('dt', 'rf') else None,
 }
+if model_type not in ('cnn',) and '_hold_acc' in dir():
+    metrics["holdout_accuracy"]              = float(_hold_acc)
+    metrics["holdout_confusion_matrix"]      = _hold_cm.tolist()
+    metrics["holdout_classification_report"] = _hold_rep
 if model_type == 'cnn':
     metrics["framework"] = "torch"
     metrics["epochs"] = int(args.epochs)

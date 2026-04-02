@@ -1,0 +1,230 @@
+{
+  "model_type": "dt",
+  "labels": [
+    "Benign",
+    "DDoS",
+    "DoS",
+    "Malware",
+    "Mirai",
+    "Web"
+  ],
+  "accuracy": 1.0,
+  "confusion_matrix": [
+    [
+      5148,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    [
+      0,
+      362,
+      0,
+      0,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      17414,
+      0,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      0,
+      7164,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      0,
+      0,
+      306,
+      0
+    ],
+    [
+      0,
+      0,
+      0,
+      0,
+      0,
+      7984
+    ]
+  ],
+  "classification_report": {
+    "Benign": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1-score": 1.0,
+      "support": 5148.0
+    },
+    "DDoS": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1-score": 1.0,
+      "support": 362.0
+    },
+    "DoS": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1-score": 1.0,
+      "support": 17414.0
+    },
+    "Malware": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1-score": 1.0,
+      "support": 7164.0
+    },
+    "Mirai": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1-score": 1.0,
+      "support": 306.0
+    },
+    "Web": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1-score": 1.0,
+      "support": 7984.0
+    },
+    "accuracy": 1.0,
+    "macro avg": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1-score": 1.0,
+      "support": 38378.0
+    },
+    "weighted avg": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1-score": 1.0,
+      "support": 38378.0
+    }
+  },
+  "feature_names": [
+    "PC1_code",
+    "PC2_code",
+    "PC3_code",
+    "PC4_code",
+    "PC5_code",
+    "PC6_code",
+    "PC7_code",
+    "PC8_code",
+    "PC9_code",
+    "PC10_code"
+  ],
+  "n_estimators": null,
+  "max_depth": null,
+  "class_weight": "balanced",
+  "holdout_accuracy": 0.9726420010422094,
+  "holdout_confusion_matrix": [
+    [
+      994,
+      2,
+      0,
+      8,
+      0,
+      26
+    ],
+    [
+      0,
+      66,
+      0,
+      2,
+      0,
+      4
+    ],
+    [
+      0,
+      0,
+      3475,
+      6,
+      0,
+      2
+    ],
+    [
+      16,
+      2,
+      2,
+      1367,
+      2,
+      44
+    ],
+    [
+      4,
+      0,
+      0,
+      2,
+      51,
+      4
+    ],
+    [
+      14,
+      8,
+      4,
+      54,
+      4,
+      1513
+    ]
+  ],
+  "holdout_classification_report": {
+    "Benign": {
+      "precision": 0.9669260700389105,
+      "recall": 0.9650485436893204,
+      "f1-score": 0.9659863945578231,
+      "support": 1030.0
+    },
+    "DDoS": {
+      "precision": 0.8461538461538461,
+      "recall": 0.9166666666666666,
+      "f1-score": 0.88,
+      "support": 72.0
+    },
+    "DoS": {
+      "precision": 0.9982763573685722,
+      "recall": 0.9977031294860752,
+      "f1-score": 0.9979896611143021,
+      "support": 3483.0
+    },
+    "Malware": {
+      "precision": 0.9499652536483669,
+      "recall": 0.9539427773900907,
+      "f1-score": 0.9519498607242339,
+      "support": 1433.0
+    },
+    "Mirai": {
+      "precision": 0.8947368421052632,
+      "recall": 0.8360655737704918,
+      "f1-score": 0.864406779661017,
+      "support": 61.0
+    },
+    "Web": {
+      "precision": 0.9497802887633396,
+      "recall": 0.947401377582968,
+      "f1-score": 0.94858934169279,
+      "support": 1597.0
+    },
+    "accuracy": 0.9726420010422094,
+    "macro avg": {
+      "precision": 0.9343064430130498,
+      "recall": 0.9361380114309354,
+      "f1-score": 0.9348203396250278,
+      "support": 7676.0
+    },
+    "weighted avg": {
+      "precision": 0.9727112765476128,
+      "recall": 0.9726420010422094,
+      "f1-score": 0.9726542624695422,
+      "support": 7676.0
+    }
+  }
+}

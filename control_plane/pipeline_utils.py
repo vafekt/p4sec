@@ -110,9 +110,11 @@ def detect_feature_max_values(tables_dir):
         # Convert values to int (JSON may have stored them as float)
         return {k: int(v) for k, v in config['feature_max_values'].items()}
 
-    # Fallback: try encoding_params.json
-    enc_params_path = os.path.join(tables_dir, 'encoding_params.json')
-    if os.path.exists(enc_params_path):
+    # Fallback: try encoding_params.json (canonical) or legacy pca_encoding_params.json
+    for _enc_name in ['encoding_params.json', 'pca_encoding_params.json']:
+        enc_params_path = os.path.join(tables_dir, _enc_name)
+        if not os.path.exists(enc_params_path):
+            continue
         with open(enc_params_path) as f:
             enc_params = json.load(f)
         bits = enc_params.get('bits', 16)

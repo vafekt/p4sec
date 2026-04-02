@@ -313,12 +313,12 @@ control MyIngress(inout headers hdr,
 
     register<bit<1>>(MAX_REGISTER_ENTRIES) bloom_filter_1;  // indexed by CRC16 hash
     register<bit<1>>(MAX_REGISTER_ENTRIES) bloom_filter_2;  // indexed by CRC32 hash
-    register<bit<32>>(MAX_REGISTER_ENTRIES) reg_flow_hash_2;  // stores CRC32 at CRC16 slot for controller drain
-    register<bit<16>>(MAX_REGISTER_ENTRIES) reg_canon_src_port;  // canonical src port for controller drain
-    register<bit<16>>(MAX_REGISTER_ENTRIES) reg_canon_dst_port;  // canonical dst port for controller drain
-    register<bit<32>>(MAX_REGISTER_ENTRIES) reg_canon_src_ip;   // canonical src IP for controller drain
-    register<bit<32>>(MAX_REGISTER_ENTRIES) reg_canon_dst_ip;   // canonical dst IP for controller drain
-    register<bit<8>>(MAX_REGISTER_ENTRIES)  reg_protocol;       // IP protocol for controller drain
+    register<bit<32>>(MAX_REGISTER_ENTRIES) reg_flow_hash_2;  // stores CRC32 at CRC16 slot (Bloom filter slot bookkeeping)
+    register<bit<16>>(MAX_REGISTER_ENTRIES) reg_canon_src_port;  // canonical src port (written on new flow, reset on FIN/RST/timeout)
+    register<bit<16>>(MAX_REGISTER_ENTRIES) reg_canon_dst_port;  // canonical dst port
+    register<bit<32>>(MAX_REGISTER_ENTRIES) reg_canon_src_ip;   // canonical src IP
+    register<bit<32>>(MAX_REGISTER_ENTRIES) reg_canon_dst_ip;   // canonical dst IP
+    register<bit<8>>(MAX_REGISTER_ENTRIES)  reg_protocol;       // IP protocol
 
     action drop() {
         mark_to_drop(standard_metadata);
@@ -555,8 +555,6 @@ control MyIngress(inout headers hdr,
                 reg_min_iat.write(meta.flow_hash, min_iat);
             }
         }
-        // Only update meta.* for IAT when no timeout already set flow_ended —
-        // read_and_timeout_check() snapshot must not be overwritten.
         if (meta.flow_ended == 1w0) {
             meta.max_iat = max_iat;
             meta.min_iat = min_iat;
@@ -1072,20 +1070,19 @@ control MyIngress(inout headers hdr,
                 read_and_timeout_check();
             }
 
-            // Step 2: update current packet stats.
-            // update_packet_stats() also detects FIN/RST and, if triggered,
-            // sets meta.flow_ended=1 and snapshots features into meta.*.
-            // When read_and_timeout_check() already set meta.flow_ended=1 (timeout),
-            // the guarded meta.* writes inside update_packet_stats() are skipped,
-            // preserving the old flow's features for classification below.
+            // Step 2: update stats for the current packet. meta.* writes inside
+            // update_packet_stats() are guarded by (flow_ended == 1w0) so the
+            // timeout snapshot in meta.* is preserved when the timer fired.
             if (meta.hash_collision == 1w0) {
                 update_packet_stats();
             }
 
-            // Step 3: single classification block — each PCA table applied exactly once.
+            // Classify if flow ended (timeout from read_and_timeout_check, or
+            // FIN/RST detected inside update_packet_stats).
             if (meta.flow_ended == 1w1 &&
                     (meta.fwd_pkt_count + meta.bwd_pkt_count) >= 2) {
 
+                // Apply PC transformations
                 pca_component1.apply();
                 pca_component2.apply();
                 pca_component3.apply();
@@ -1096,7 +1093,11 @@ control MyIngress(inout headers hdr,
                 pca_component8.apply();
                 pca_component9.apply();
                 pca_component10.apply();
+
+                // Apply classifier
                 ml_code.apply();
+
+                // Send digest
                 digest<digest_t>(1, {
                     meta.canon_src_ip,
                     meta.canon_dst_ip,
@@ -1132,6 +1133,7 @@ control MyIngress(inout headers hdr,
                     meta.pc10_code,
                     meta.ml_result
                 });
+
             } // end if flow_ended
 
             if (hdr.ipv4.isValid()) {

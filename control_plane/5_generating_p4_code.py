@@ -574,6 +574,12 @@ control MyIngress(inout headers hdr,
 
     register<bit<1>>(MAX_REGISTER_ENTRIES) bloom_filter_1;  // indexed by CRC16 hash
     register<bit<1>>(MAX_REGISTER_ENTRIES) bloom_filter_2;  // indexed by CRC32 hash
+    register<bit<32>>(MAX_REGISTER_ENTRIES) reg_flow_hash_2;  // stores CRC32 at CRC16 slot (Bloom filter slot bookkeeping)
+    register<bit<16>>(MAX_REGISTER_ENTRIES) reg_canon_src_port;  // canonical src port (written on new flow, reset on FIN/RST/timeout)
+    register<bit<16>>(MAX_REGISTER_ENTRIES) reg_canon_dst_port;  // canonical dst port
+    register<bit<32>>(MAX_REGISTER_ENTRIES) reg_canon_src_ip;   // canonical src IP
+    register<bit<32>>(MAX_REGISTER_ENTRIES) reg_canon_dst_ip;   // canonical dst IP
+    register<bit<8>>(MAX_REGISTER_ENTRIES)  reg_protocol;       // IP protocol
 
     action drop() {
         mark_to_drop(standard_metadata);
@@ -648,7 +654,7 @@ control MyIngress(inout headers hdr,
         }
     }
 
-    action update_flow_state() {
+    action read_and_timeout_check() {
         bit<48> current_time_us = standard_metadata.ingress_global_timestamp;
         bit<48> current_time = current_time_us * 1000;
         bit<48> time_first;
@@ -692,47 +698,29 @@ control MyIngress(inout headers hdr,
         // Timeout check — previous flow on this slot has been idle
         if (time_first != 0 && time_last != 0 &&
                 (current_time - time_last) > FLOW_TIMEOUT) {
-            meta.flow_ended       = 1w1;
-            meta.duration         = time_last - time_first;
-            meta.max_iat          = max_iat;
-            meta.min_iat          = min_iat;
-            meta.urg_count        = urg_count;
-            meta.fwd_pkt_count    = fwd_pkt_count;
-            meta.bwd_pkt_count    = bwd_pkt_count;
-            meta.fwd_bytes        = fwd_bytes;
-            meta.bwd_bytes        = bwd_bytes;
-            meta.max_win_size     = max_win_size;
-            meta.flags_syn        = flags_syn;
-            meta.flags_ack        = flags_ack;
-            meta.flags_fin        = flags_fin;
-            meta.flags_rst        = flags_rst;
-            meta.fwd_max_pkt_len  = fwd_max_pkt_len;
-            meta.bwd_max_pkt_len  = bwd_max_pkt_len;
-            meta.flags_psh        = flags_psh;
-            meta.init_fwd_win     = init_fwd_win;
-            // Reset for new flow — mirrors RST/FIN reset block: ALL registers must be
-            // written here, not just local vars.  Any register with a conditional write
-            // below (urg_count, init_fwd_win, directional counters, etc.) would otherwise
-            // carry stale values from the previous flow into the new one.
-            time_first       = current_time;
-            time_last        = current_time;
-            max_iat          = 0;
-            min_iat          = 0;
-            fwd_pkt_count    = 0;
-            bwd_pkt_count    = 0;
-            fwd_bytes        = 0;
-            bwd_bytes        = 0;
-            max_win_size     = 0;
-            urg_count        = 0;
-            flags_syn        = 0;
-            flags_ack        = 0;
-            flags_fin        = 0;
-            flags_rst        = 0;
-            fwd_max_pkt_len  = 0;
-            bwd_max_pkt_len  = 0;
-            flags_psh        = 0;
-            init_fwd_win     = 0;
+            if ((fwd_pkt_count + bwd_pkt_count) >= 2) {
+                meta.flow_ended       = 1w1;
+                meta.duration         = time_last - time_first;
+                meta.max_iat          = max_iat;
+                meta.min_iat          = min_iat;
+                meta.urg_count        = urg_count;
+                meta.fwd_pkt_count    = fwd_pkt_count;
+                meta.bwd_pkt_count    = bwd_pkt_count;
+                meta.fwd_bytes        = fwd_bytes;
+                meta.bwd_bytes        = bwd_bytes;
+                meta.max_win_size     = max_win_size;
+                meta.flags_syn        = flags_syn;
+                meta.flags_ack        = flags_ack;
+                meta.flags_fin        = flags_fin;
+                meta.flags_rst        = flags_rst;
+                meta.fwd_max_pkt_len  = fwd_max_pkt_len;
+                meta.bwd_max_pkt_len  = bwd_max_pkt_len;
+                meta.flags_psh        = flags_psh;
+                meta.init_fwd_win     = init_fwd_win;
+            }
+            // Reset ALL registers for the new flow (regardless of pkt count)
             reg_time_first_pkt.write(meta.flow_hash, current_time);
+            reg_time_last_pkt.write(meta.flow_hash, current_time);
             reg_max_iat.write(meta.flow_hash, 0);
             reg_min_iat.write(meta.flow_hash, 0);
             reg_urg_count.write(meta.flow_hash, 0);
@@ -749,17 +737,71 @@ control MyIngress(inout headers hdr,
             reg_bwd_max_pkt_len.write(meta.flow_hash, 16w0);
             reg_flags_psh.write(meta.flow_hash, 32w0);
             reg_init_fwd_win.write(meta.flow_hash, 16w0);
-            bloom_filter_1.write(meta.flow_hash,   1w1);  // new flow claims slot
+            bloom_filter_1.write(meta.flow_hash,   1w1);
             bloom_filter_2.write(meta.flow_hash_2, 1w1);
+            reg_flow_hash_2.write(meta.flow_hash, meta.flow_hash_2);
+            reg_canon_src_port.write(meta.flow_hash, meta.canon_src_port);
+            reg_canon_dst_port.write(meta.flow_hash, meta.canon_dst_port);
+            reg_canon_src_ip.write(meta.flow_hash, meta.canon_src_ip);
+            reg_canon_dst_ip.write(meta.flow_hash, meta.canon_dst_ip);
+            reg_protocol.write(meta.flow_hash, meta.protocol);
         }
+    }
+
+    action update_packet_stats() {
+        bit<48> current_time_us = standard_metadata.ingress_global_timestamp;
+        bit<48> current_time = current_time_us * 1000;
+        bit<48> time_first;
+        bit<48> time_last;
+        iat_t   max_iat;
+        iat_t   min_iat;
+        bit<32> fwd_pkt_count;
+        bit<32> bwd_pkt_count;
+        bytes_t fwd_bytes;
+        bytes_t bwd_bytes;
+        bit<16> max_win_size;
+        bit<32> urg_count;
+        bit<32> flags_syn;
+        bit<32> flags_ack;
+        bit<32> flags_fin;
+        bit<32> flags_rst;
+        bit<16> fwd_max_pkt_len;
+        bit<16> bwd_max_pkt_len;
+        bit<32> flags_psh;
+        bit<16> init_fwd_win;
+
+        reg_time_first_pkt.read(time_first, meta.flow_hash);
+        reg_time_last_pkt.read(time_last, meta.flow_hash);
+        reg_max_iat.read(max_iat, meta.flow_hash);
+        reg_min_iat.read(min_iat, meta.flow_hash);
+        reg_fwd_pkt_count.read(fwd_pkt_count, meta.flow_hash);
+        reg_bwd_pkt_count.read(bwd_pkt_count, meta.flow_hash);
+        reg_fwd_bytes.read(fwd_bytes, meta.flow_hash);
+        reg_bwd_bytes.read(bwd_bytes, meta.flow_hash);
+        reg_max_win_size.read(max_win_size, meta.flow_hash);
+        reg_urg_count.read(urg_count, meta.flow_hash);
+        reg_flags_syn.read(flags_syn, meta.flow_hash);
+        reg_flags_ack.read(flags_ack, meta.flow_hash);
+        reg_flags_fin.read(flags_fin, meta.flow_hash);
+        reg_flags_rst.read(flags_rst, meta.flow_hash);
+        reg_fwd_max_pkt_len.read(fwd_max_pkt_len, meta.flow_hash);
+        reg_bwd_max_pkt_len.read(bwd_max_pkt_len, meta.flow_hash);
+        reg_flags_psh.read(flags_psh, meta.flow_hash);
+        reg_init_fwd_win.read(init_fwd_win, meta.flow_hash);
 
         // First packet for a new flow (fresh empty slot)
         if (time_first == 0) {
             time_first = current_time;
             meta.is_first_packet = 1w1;
             reg_time_first_pkt.write(meta.flow_hash, current_time);
-            bloom_filter_1.write(meta.flow_hash,   1w1);  // claim empty slot
+            bloom_filter_1.write(meta.flow_hash,   1w1);
             bloom_filter_2.write(meta.flow_hash_2, 1w1);
+            reg_flow_hash_2.write(meta.flow_hash, meta.flow_hash_2);
+            reg_canon_src_port.write(meta.flow_hash, meta.canon_src_port);
+            reg_canon_dst_port.write(meta.flow_hash, meta.canon_dst_port);
+            reg_canon_src_ip.write(meta.flow_hash, meta.canon_src_ip);
+            reg_canon_dst_ip.write(meta.flow_hash, meta.canon_dst_ip);
+            reg_protocol.write(meta.flow_hash, meta.protocol);
         }
 
         // IAT update (MaxIAT and MinIAT)
@@ -774,8 +816,10 @@ control MyIngress(inout headers hdr,
                 reg_min_iat.write(meta.flow_hash, min_iat);
             }
         }
-        meta.max_iat = max_iat;
-        meta.min_iat = min_iat;
+        if (meta.flow_ended == 1w0) {
+            meta.max_iat = max_iat;
+            meta.min_iat = min_iat;
+        }
 
         // Direction-based counters + max packet length per direction
         if (meta.is_reverse_dir == 1w0) {
@@ -802,12 +846,14 @@ control MyIngress(inout headers hdr,
                 reg_bwd_max_pkt_len.write(meta.flow_hash, bwd_max_pkt_len);
             }
         }
-        meta.fwd_pkt_count   = fwd_pkt_count;
-        meta.bwd_pkt_count   = bwd_pkt_count;
-        meta.fwd_bytes       = fwd_bytes;
-        meta.bwd_bytes       = bwd_bytes;
-        meta.fwd_max_pkt_len = fwd_max_pkt_len;
-        meta.bwd_max_pkt_len = bwd_max_pkt_len;
+        if (meta.flow_ended == 1w0) {
+            meta.fwd_pkt_count   = fwd_pkt_count;
+            meta.bwd_pkt_count   = bwd_pkt_count;
+            meta.fwd_bytes       = fwd_bytes;
+            meta.bwd_bytes       = bwd_bytes;
+            meta.fwd_max_pkt_len = fwd_max_pkt_len;
+            meta.bwd_max_pkt_len = bwd_max_pkt_len;
+        }
 
         // Window size (max)
         if (meta.protocol == TYPE_TCP) {
@@ -816,8 +862,10 @@ control MyIngress(inout headers hdr,
                 reg_max_win_size.write(meta.flow_hash, max_win_size);
             }
         }
-        meta.max_win_size = max_win_size;
-        meta.init_fwd_win = init_fwd_win;
+        if (meta.flow_ended == 1w0) {
+            meta.max_win_size = max_win_size;
+            meta.init_fwd_win = init_fwd_win;
+        }
 
         reg_time_last_pkt.write(meta.flow_hash, current_time);
 
@@ -838,12 +886,14 @@ control MyIngress(inout headers hdr,
             reg_flags_rst.write(meta.flow_hash, flags_rst);
             reg_flags_psh.write(meta.flow_hash, flags_psh);
         }
-        meta.urg_count  = urg_count;
-        meta.flags_syn  = flags_syn;
-        meta.flags_ack  = flags_ack;
-        meta.flags_fin  = flags_fin;
-        meta.flags_rst  = flags_rst;
-        meta.flags_psh  = flags_psh;
+        if (meta.flow_ended == 1w0) {
+            meta.urg_count  = urg_count;
+            meta.flags_syn  = flags_syn;
+            meta.flags_ack  = flags_ack;
+            meta.flags_fin  = flags_fin;
+            meta.flags_rst  = flags_rst;
+            meta.flags_psh  = flags_psh;
+        }
 
         // FIN/RST ends the flow
         if (meta.flow_ended == 1w0 &&
@@ -884,6 +934,12 @@ control MyIngress(inout headers hdr,
             reg_init_fwd_win.write(meta.flow_hash, 16w0);
             bloom_filter_1.write(meta.flow_hash,   1w0);  // release slot
             bloom_filter_2.write(meta.flow_hash_2, 1w0);
+            reg_flow_hash_2.write(meta.flow_hash, 32w0);  // clear CRC32 bookmark
+            reg_canon_src_port.write(meta.flow_hash, 16w0);  // clear port bookmark
+            reg_canon_dst_port.write(meta.flow_hash, 16w0);
+            reg_canon_src_ip.write(meta.flow_hash, 32w0);   // clear IP bookmark
+            reg_canon_dst_ip.write(meta.flow_hash, 32w0);
+            reg_protocol.write(meta.flow_hash, 8w0);        // clear protocol bookmark
         }
     }
 
@@ -1145,60 +1201,46 @@ control MyIngress(inout headers hdr,
     }}
 '''
 
-        # ── Apply block ──────────────────────────────────────────────────
-        code += '''
-    apply {
-        if ((hdr.ipv4.isValid() && (meta.protocol == TYPE_TCP || meta.protocol == TYPE_UDP ||
-                                    meta.protocol == TYPE_ICMP)) ||
-            hdr.arp.isValid()) {
-            compute_flow_hash();
-            // Only update state when no collision — colliding packets are forwarded
-            // without corrupting another flow's registers.
-            if (meta.hash_collision == 1w0) {
-                update_flow_state();
-            }
-
-            if (meta.flow_ended == 1w1 &&
-                    (meta.fwd_pkt_count + meta.bwd_pkt_count) >= 2) {
-'''
+        # ── Build classify+digest snippet (used for BOTH timeout and FIN/RST paths) ──
+        classify_snippet = ''
 
         # Transform tables (PCA/LDA/Autoencoder/UMAP only)
         if self.needs_transform:
-            code += f'\n                // Apply {pfx.upper()} transformations\n'
+            classify_snippet += f'\n                // Apply {pfx.upper()} transformations\n'
             for i in range(1, self.n_components + 1):
-                code += f'                {self.table_prefix}_component{i}.apply();\n'
+                classify_snippet += f'                {self.table_prefix}_component{i}.apply();\n'
 
         if self.model_type == 'cnn':
             input_bits = int(self.cnn_params.get('input_bits', 8))
-            code += '\n                // Quantize CNN inputs\n'
+            classify_snippet += '\n                // Quantize CNN inputs\n'
             for i, feat_name in enumerate(self.classifier_features):
                 meta_f = self._meta_field_for_feature(feat_name)
                 width = self._feature_bit_width(feat_name)
                 shift = max(0, width - input_bits)
                 if shift > 0:
-                    code += f'                meta.cnn_in{i} = (bit<{input_bits}>)({meta_f} >> {shift});\n'
+                    classify_snippet += f'                meta.cnn_in{i} = (bit<{input_bits}>)({meta_f} >> {shift});\n'
                 else:
-                    code += f'                meta.cnn_in{i} = (bit<{input_bits}>){meta_f};\n'
+                    classify_snippet += f'                meta.cnn_in{i} = (bit<{input_bits}>){meta_f};\n'
 
         # Classifier
-        code += '\n                // Apply classifier\n'
+        classify_snippet += '\n                // Apply classifier\n'
         if self.model_type == 'dt':
-            code += '                ml_code.apply();\n'
+            classify_snippet += '                ml_code.apply();\n'
         elif self.model_type == 'rf':
             n_est = self.rf_params.get('n_estimators', 8)
             total_vb = n_est * self.rf_params.get('vote_bits', 2)
-            code += f'                meta.rf_votes = {total_vb}w0;\n'
+            classify_snippet += f'                meta.rf_votes = {total_vb}w0;\n'
             for i in range(n_est):
-                code += f'                rf_tree_{i}.apply();\n'
-            code += '                rf_vote_classify.apply();\n'
+                classify_snippet += f'                rf_tree_{i}.apply();\n'
+            classify_snippet += '                rf_vote_classify.apply();\n'
         elif self.model_type == 'xgb':
             total_trees = self.xgb_params.get('total_trees', 0)
             n_cls = self.xgb_params.get('n_classes', 2)
             for c in range(n_cls):
-                code += f'                meta.xgb_score_c{c} = 16w0;\n'
+                classify_snippet += f'                meta.xgb_score_c{c} = 16w0;\n'
             for tidx in range(total_trees):
-                code += f'                xgb_tree_{tidx}.apply();\n'
-            code += '                xgb_classify.apply();\n'
+                classify_snippet += f'                xgb_tree_{tidx}.apply();\n'
+            classify_snippet += '                xgb_classify.apply();\n'
         elif self.model_type == 'cnn':
             hidden1_units = int(self.cnn_params.get('hidden1_units', 0))
             hidden2_units = int(self.cnn_params.get('hidden2_units', 0))
@@ -1213,94 +1255,94 @@ control MyIngress(inout headers hdr,
             b2_int = self.cnn_params.get('b2_int', [0] * hidden2_units)
             b3_int = self.cnn_params.get('b3_int', [0] * n_cls)
 
-            code += '                // CNN hidden accumulators init\n'
+            classify_snippet += '                // CNN hidden accumulators init\n'
             for h in range(hidden1_units):
                 bias = int(b1_int[h]) if h < len(b1_int) else 0
                 bias_u = (bias + (1 << 32)) % (1 << 32)
-                code += f'                meta.cnn1_h{h}_sum = 32w{bias_u};\n'
+                classify_snippet += f'                meta.cnn1_h{h}_sum = 32w{bias_u};\n'
 
-            code += '                // CNN class scores init\n'
+            classify_snippet += '                // CNN class scores init\n'
             for c in range(n_cls):
                 bias = int(b3_int[c]) if c < len(b3_int) else 0
                 bias_u = (bias + (1 << 32)) % (1 << 32)
-                code += f'                meta.cnn_score_c{c} = 32w{bias_u};\n'
+                classify_snippet += f'                meta.cnn_score_c{c} = 32w{bias_u};\n'
 
-            code += '                // CNN hidden1 layer lookups\n'
+            classify_snippet += '                // CNN hidden1 layer lookups\n'
             for h in range(hidden1_units):
                 for fi in range(len(self.classifier_features)):
-                    code += f'                cnn1_h{h}_f{fi}.apply();\n'
+                    classify_snippet += f'                cnn1_h{h}_f{fi}.apply();\n'
 
             if use_quanti:
-                code += '                // CNN quantize hidden1 (table)\n'
+                classify_snippet += '                // CNN quantize hidden1 (table)\n'
                 for h in range(hidden1_units):
-                    code += (f'                if (meta.cnn1_h{h}_sum[31:31] == 1w1) '
-                             f'{{ meta.cnn1_h{h} = {hidden_bits}w0; }}\n')
-                    code += (f'                else {{ cnn1_quant_h{h}.apply(); }}\n')
+                    classify_snippet += (f'                if (meta.cnn1_h{h}_sum[31:31] == 1w1) '
+                                         f'{{ meta.cnn1_h{h} = {hidden_bits}w0; }}\n')
+                    classify_snippet += (f'                else {{ cnn1_quant_h{h}.apply(); }}\n')
             else:
-                code += '                // CNN ReLU + quantize hidden1\n'
+                classify_snippet += '                // CNN ReLU + quantize hidden1\n'
                 for h in range(hidden1_units):
-                    code += (f'                if (meta.cnn1_h{h}_sum[31:31] == 1w1) '
-                             f'{{ meta.cnn1_h{h} = {hidden_bits}w0; }}\n')
-                    code += (f'                else if ((meta.cnn1_h{h}_sum >> {h1_shift}) > {h_max}) '
-                             f'{{ meta.cnn1_h{h} = {hidden_bits}w{h_max}; }}\n')
-                    code += (f'                else {{ meta.cnn1_h{h} = '
-                             f'(bit<{hidden_bits}>)(meta.cnn1_h{h}_sum >> {h1_shift}); }}\n')
+                    classify_snippet += (f'                if (meta.cnn1_h{h}_sum[31:31] == 1w1) '
+                                         f'{{ meta.cnn1_h{h} = {hidden_bits}w0; }}\n')
+                    classify_snippet += (f'                else if ((meta.cnn1_h{h}_sum >> {h1_shift}) > {h_max}) '
+                                         f'{{ meta.cnn1_h{h} = {hidden_bits}w{h_max}; }}\n')
+                    classify_snippet += (f'                else {{ meta.cnn1_h{h} = '
+                                         f'(bit<{hidden_bits}>)(meta.cnn1_h{h}_sum >> {h1_shift}); }}\n')
 
             pooled = hidden1_units // max(1, pool)
-            code += '                // CNN maxpool\n'
+            classify_snippet += '                // CNN maxpool\n'
             for p in range(pooled):
                 idx0 = p * pool
                 if pool == 1:
-                    code += f'                meta.cnn_p{p} = meta.cnn1_h{idx0};\n'
+                    classify_snippet += f'                meta.cnn_p{p} = meta.cnn1_h{idx0};\n'
                 else:
                     idx1 = idx0 + 1
-                    code += (f'                if (meta.cnn1_h{idx0} >= meta.cnn1_h{idx1}) '
-                             f'{{ meta.cnn_p{p} = meta.cnn1_h{idx0}; }} '
-                             f'else {{ meta.cnn_p{p} = meta.cnn1_h{idx1}; }}\n')
+                    classify_snippet += (f'                if (meta.cnn1_h{idx0} >= meta.cnn1_h{idx1}) '
+                                         f'{{ meta.cnn_p{p} = meta.cnn1_h{idx0}; }} '
+                                         f'else {{ meta.cnn_p{p} = meta.cnn1_h{idx1}; }}\n')
 
-            code += '                // CNN hidden2 accumulators init\n'
+            classify_snippet += '                // CNN hidden2 accumulators init\n'
             for h in range(hidden2_units):
                 bias = int(b2_int[h]) if h < len(b2_int) else 0
                 bias_u = (bias + (1 << 32)) % (1 << 32)
-                code += f'                meta.cnn2_h{h}_sum = 32w{bias_u};\n'
+                classify_snippet += f'                meta.cnn2_h{h}_sum = 32w{bias_u};\n'
 
-            code += '                // CNN hidden2 layer lookups\n'
+            classify_snippet += '                // CNN hidden2 layer lookups\n'
             for h in range(hidden2_units):
                 for p in range(pooled):
-                    code += f'                cnn2_h{h}_p{p}.apply();\n'
+                    classify_snippet += f'                cnn2_h{h}_p{p}.apply();\n'
 
             if use_quanti:
-                code += '                // CNN quantize hidden2 (table)\n'
+                classify_snippet += '                // CNN quantize hidden2 (table)\n'
                 for h in range(hidden2_units):
-                    code += (f'                if (meta.cnn2_h{h}_sum[31:31] == 1w1) '
-                             f'{{ meta.cnn2_h{h} = {hidden_bits}w0; }}\n')
-                    code += (f'                else {{ cnn2_quant_h{h}.apply(); }}\n')
+                    classify_snippet += (f'                if (meta.cnn2_h{h}_sum[31:31] == 1w1) '
+                                         f'{{ meta.cnn2_h{h} = {hidden_bits}w0; }}\n')
+                    classify_snippet += (f'                else {{ cnn2_quant_h{h}.apply(); }}\n')
             else:
-                code += '                // CNN ReLU + quantize hidden2\n'
+                classify_snippet += '                // CNN ReLU + quantize hidden2\n'
                 for h in range(hidden2_units):
-                    code += (f'                if (meta.cnn2_h{h}_sum[31:31] == 1w1) '
-                             f'{{ meta.cnn2_h{h} = {hidden_bits}w0; }}\n')
-                    code += (f'                else if ((meta.cnn2_h{h}_sum >> {h2_shift}) > {h_max}) '
-                             f'{{ meta.cnn2_h{h} = {hidden_bits}w{h_max}; }}\n')
-                    code += (f'                else {{ meta.cnn2_h{h} = '
-                             f'(bit<{hidden_bits}>)(meta.cnn2_h{h}_sum >> {h2_shift}); }}\n')
+                    classify_snippet += (f'                if (meta.cnn2_h{h}_sum[31:31] == 1w1) '
+                                         f'{{ meta.cnn2_h{h} = {hidden_bits}w0; }}\n')
+                    classify_snippet += (f'                else if ((meta.cnn2_h{h}_sum >> {h2_shift}) > {h_max}) '
+                                         f'{{ meta.cnn2_h{h} = {hidden_bits}w{h_max}; }}\n')
+                    classify_snippet += (f'                else {{ meta.cnn2_h{h} = '
+                                         f'(bit<{hidden_bits}>)(meta.cnn2_h{h}_sum >> {h2_shift}); }}\n')
 
-            code += '                // CNN output layer lookups\n'
+            classify_snippet += '                // CNN output layer lookups\n'
             for c in range(n_cls):
                 for h in range(hidden2_units):
-                    code += f'                cnn_out_c{c}_h{h}.apply();\n'
+                    classify_snippet += f'                cnn_out_c{c}_h{h}.apply();\n'
 
-            code += '                // CNN argmax (signed compare)\n'
+            classify_snippet += '                // CNN argmax (signed compare)\n'
             if n_cls > 0:
-                code += '                meta.ml_result = 0;\n'
-                code += '                bit<32> best = meta.cnn_score_c0;\n'
+                classify_snippet += '                meta.ml_result = 0;\n'
+                classify_snippet += '                bit<32> best = meta.cnn_score_c0;\n'
                 for c in range(1, n_cls):
-                    code += (f'                if ((best[31:31] == 1w1 && meta.cnn_score_c{c}[31:31] == 1w0) || '
-                             f'(best[31:31] == meta.cnn_score_c{c}[31:31] && meta.cnn_score_c{c} > best)) '
-                             f'{{ best = meta.cnn_score_c{c}; meta.ml_result = {c}; }}\n')
+                    classify_snippet += (f'                if ((best[31:31] == 1w1 && meta.cnn_score_c{c}[31:31] == 1w0) || '
+                                         f'(best[31:31] == meta.cnn_score_c{c}[31:31] && meta.cnn_score_c{c} > best)) '
+                                         f'{{ best = meta.cnn_score_c{c}; meta.ml_result = {c}; }}\n')
 
-        # Digest
-        code += '''
+        # Digest fields
+        classify_snippet += '''
                 // Send digest
                 digest<digest_t>(1, {
                     meta.canon_src_ip,
@@ -1328,15 +1370,40 @@ control MyIngress(inout headers hdr,
 '''
         if self.needs_transform:
             for i in range(1, self.n_components + 1):
-                code += f'                    meta.{pfx}{i}_code,\n'
-
+                classify_snippet += f'                    meta.{pfx}{i}_code,\n'
         if self.model_type == 'xgb':
             n_cls = self.xgb_params.get('n_classes', 2)
             for c in range(n_cls):
-                code += f'                    meta.xgb_score_c{c},\n'
+                classify_snippet += f'                    meta.xgb_score_c{c},\n'
+        classify_snippet += '                    meta.ml_result\n                });\n'
 
-        code += '''                    meta.ml_result
-                });
+        # ── Apply block ──────────────────────────────────────────────────
+        code += '''
+    apply {
+        if ((hdr.ipv4.isValid() && (meta.protocol == TYPE_TCP || meta.protocol == TYPE_UDP ||
+                                    meta.protocol == TYPE_ICMP)) ||
+            hdr.arp.isValid()) {
+            compute_flow_hash();
+            // Step 1: read registers, check timeout, snapshot old flow features
+            // into meta.* if timed out, then reset registers for the new flow.
+            if (meta.hash_collision == 1w0) {
+                read_and_timeout_check();
+            }
+
+            // Step 2: update stats for the current packet. meta.* writes inside
+            // update_packet_stats() are guarded by (flow_ended == 1w0) so the
+            // timeout snapshot in meta.* is preserved when the timer fired.
+            if (meta.hash_collision == 1w0) {
+                update_packet_stats();
+            }
+
+            // Classify if flow ended (timeout from read_and_timeout_check, or
+            // FIN/RST detected inside update_packet_stats).
+            if (meta.flow_ended == 1w1 &&
+                    (meta.fwd_pkt_count + meta.bwd_pkt_count) >= 2) {
+'''
+        code += classify_snippet
+        code += '''
             } // end if flow_ended
 
             if (hdr.ipv4.isValid()) {
@@ -2497,86 +2564,46 @@ control SwitchIngress(
     }}
 '''
 
-        # ── Apply block (TNA) ────────────────────────────────────────────
-        code += '''
-    apply {
-        if ((hdr.ipv4.isValid() && (meta.protocol == TYPE_TCP || meta.protocol == TYPE_UDP ||
-                                    meta.protocol == TYPE_ICMP)) ||
-            hdr.arp.isValid()) {
-            compute_flow_hash();
-            read_flow_state_t.apply();
-
-            if (meta.time_first != 0 && meta.time_last != 0 &&
-                    (ig_intr_md.ingress_mac_tstamp - meta.time_last) > (bit<48>)FLOW_TIMEOUT) {
-                meta.flow_ended = 1w1;
-                meta.duration   = meta.time_last - meta.time_first;
-                reset_flow_regs_t.apply();
-                meta.is_first_packet = 1w1;
-            } else if (meta.time_first == 0) {
-                init_flow_t.apply();
-                meta.is_first_packet = 1w1;
-            }
-
-            update_time_last_t.apply();
-
-            if (meta.is_reverse_dir == 1w0) {
-                update_fwd_counters_t.apply();
-            } else {
-                update_bwd_counters_t.apply();
-            }
-
-            if (meta.protocol == TYPE_TCP) {
-                update_tcp_features_t.apply();
-            }
-
-            if (meta.flow_ended == 1w0 && meta.protocol == TYPE_TCP &&
-                    (meta.flags_fin > 32w0 || meta.flags_rst > 32w0)) {
-                meta.flow_ended = 1w1;
-                meta.duration   = ig_intr_md.ingress_mac_tstamp - meta.time_first;
-                clear_flow_regs_t.apply();
-            }
-
-            if (meta.flow_ended == 1w1 &&
-                    (meta.fwd_pkt_count + meta.bwd_pkt_count) >= 2) {
-'''
+        # ── Build classify+digest snippet (used for both timeout and FIN/RST) ──
+        classify_snippet = ''
 
         # Transform tables (PCA/LDA/Autoencoder/UMAP only)
         if self.needs_transform:
-            code += f'\n                // Apply {pfx.upper()} transformations\n'
+            classify_snippet += f'\n                // Apply {pfx.upper()} transformations\n'
             for i in range(1, self.n_components + 1):
-                code += f'                {self.table_prefix}_component{i}.apply();\n'
+                classify_snippet += f'                {self.table_prefix}_component{i}.apply();\n'
 
         if self.model_type == 'cnn':
             input_bits = int(self.cnn_params.get('input_bits', 8))
-            code += '\n                // Quantize CNN inputs\n'
+            classify_snippet += '\n                // Quantize CNN inputs\n'
             for i, feat_name in enumerate(self.classifier_features):
                 meta_f = self._meta_field_for_feature(feat_name)
                 width = self._feature_bit_width(feat_name)
                 shift = max(0, width - input_bits)
                 if shift > 0:
-                    code += f'                meta.cnn_in{i} = (bit<{input_bits}>)({meta_f} >> {shift});\n'
+                    classify_snippet += f'                meta.cnn_in{i} = (bit<{input_bits}>)({meta_f} >> {shift});\n'
                 else:
-                    code += f'                meta.cnn_in{i} = (bit<{input_bits}>){meta_f};\n'
+                    classify_snippet += f'                meta.cnn_in{i} = (bit<{input_bits}>){meta_f};\n'
 
         # Classifier
-        code += '\n                // Apply classifier\n'
+        classify_snippet += '\n                // Apply classifier\n'
         if self.model_type == 'dt':
-            code += '                ml_code.apply();\n'
+            classify_snippet += '                ml_code.apply();\n'
         elif self.model_type == 'rf':
             n_est = self.rf_params.get('n_estimators', 8)
             total_vb = n_est * self.rf_params.get('vote_bits', 2)
-            code += f'                meta.rf_votes = {total_vb}w0;\n'
+            classify_snippet += f'                meta.rf_votes = {total_vb}w0;\n'
             for i in range(n_est):
-                code += f'                rf_tree_{i}.apply();\n'
-            code += '                rf_vote_classify.apply();\n'
+                classify_snippet += f'                rf_tree_{i}.apply();\n'
+            classify_snippet += '                rf_vote_classify.apply();\n'
         elif self.model_type == 'xgb':
             total_trees = self.xgb_params.get('total_trees', 0)
             n_cls = self.xgb_params.get('n_classes', 2)
             for c in range(n_cls):
-                code += f'                meta.xgb_score_c{c} = 16w0;\n'
+                classify_snippet += f'                meta.xgb_score_c{c} = 16w0;\n'
             for tidx in range(total_trees):
-                code += f'                xgb_tree_{tidx}.apply();\n'
-            code += '                xgb_classify.apply();\n'
+                classify_snippet += f'                xgb_tree_{tidx}.apply();\n'
+            classify_snippet += '                xgb_classify.apply();\n'
         elif self.model_type == 'cnn':
             hidden1_units = int(self.cnn_params.get('hidden1_units', 0))
             hidden2_units = int(self.cnn_params.get('hidden2_units', 0))
@@ -2591,96 +2618,154 @@ control SwitchIngress(
             b2_int = self.cnn_params.get('b2_int', [0] * hidden2_units)
             b3_int = self.cnn_params.get('b3_int', [0] * n_cls)
 
-            code += '                // CNN hidden accumulators init\n'
+            classify_snippet += '                // CNN hidden accumulators init\n'
             for h in range(hidden1_units):
                 bias = int(b1_int[h]) if h < len(b1_int) else 0
                 bias_u = (bias + (1 << 32)) % (1 << 32)
-                code += f'                meta.cnn1_h{h}_sum = 32w{bias_u};\n'
+                classify_snippet += f'                meta.cnn1_h{h}_sum = 32w{bias_u};\n'
 
-            code += '                // CNN class scores init\n'
+            classify_snippet += '                // CNN class scores init\n'
             for c in range(n_cls):
                 bias = int(b3_int[c]) if c < len(b3_int) else 0
                 bias_u = (bias + (1 << 32)) % (1 << 32)
-                code += f'                meta.cnn_score_c{c} = 32w{bias_u};\n'
+                classify_snippet += f'                meta.cnn_score_c{c} = 32w{bias_u};\n'
 
-            code += '                // CNN hidden1 layer lookups\n'
+            classify_snippet += '                // CNN hidden1 layer lookups\n'
             for h in range(hidden1_units):
                 for fi in range(len(self.classifier_features)):
-                    code += f'                cnn1_h{h}_f{fi}.apply();\n'
+                    classify_snippet += f'                cnn1_h{h}_f{fi}.apply();\n'
 
             if use_quanti:
-                code += '                // CNN quantize hidden1 (table)\n'
+                classify_snippet += '                // CNN quantize hidden1 (table)\n'
                 for h in range(hidden1_units):
-                    code += (f'                if (meta.cnn1_h{h}_sum[31:31] == 1w1) '
-                             f'{{ meta.cnn1_h{h} = {hidden_bits}w0; }}\n')
-                    code += (f'                else {{ cnn1_quant_h{h}.apply(); }}\n')
+                    classify_snippet += (f'                if (meta.cnn1_h{h}_sum[31:31] == 1w1) '
+                                         f'{{ meta.cnn1_h{h} = {hidden_bits}w0; }}\n')
+                    classify_snippet += (f'                else {{ cnn1_quant_h{h}.apply(); }}\n')
             else:
-                code += '                // CNN ReLU + quantize hidden1\n'
+                classify_snippet += '                // CNN ReLU + quantize hidden1\n'
                 for h in range(hidden1_units):
-                    code += (f'                if (meta.cnn1_h{h}_sum[31:31] == 1w1) '
-                             f'{{ meta.cnn1_h{h} = {hidden_bits}w0; }}\n')
-                    code += (f'                else if ((meta.cnn1_h{h}_sum >> {h1_shift}) > {h_max}) '
-                             f'{{ meta.cnn1_h{h} = {hidden_bits}w{h_max}; }}\n')
-                    code += (f'                else {{ meta.cnn1_h{h} = '
-                             f'(bit<{hidden_bits}>)(meta.cnn1_h{h}_sum >> {h1_shift}); }}\n')
+                    classify_snippet += (f'                if (meta.cnn1_h{h}_sum[31:31] == 1w1) '
+                                         f'{{ meta.cnn1_h{h} = {hidden_bits}w0; }}\n')
+                    classify_snippet += (f'                else if ((meta.cnn1_h{h}_sum >> {h1_shift}) > {h_max}) '
+                                         f'{{ meta.cnn1_h{h} = {hidden_bits}w{h_max}; }}\n')
+                    classify_snippet += (f'                else {{ meta.cnn1_h{h} = '
+                                         f'(bit<{hidden_bits}>)(meta.cnn1_h{h}_sum >> {h1_shift}); }}\n')
 
             pooled = hidden1_units // max(1, pool)
-            code += '                // CNN maxpool\n'
+            classify_snippet += '                // CNN maxpool\n'
             for p in range(pooled):
                 idx0 = p * pool
                 if pool == 1:
-                    code += f'                meta.cnn_p{p} = meta.cnn1_h{idx0};\n'
+                    classify_snippet += f'                meta.cnn_p{p} = meta.cnn1_h{idx0};\n'
                 else:
                     idx1 = idx0 + 1
-                    code += (f'                if (meta.cnn1_h{idx0} >= meta.cnn1_h{idx1}) '
-                             f'{{ meta.cnn_p{p} = meta.cnn1_h{idx0}; }} '
-                             f'else {{ meta.cnn_p{p} = meta.cnn1_h{idx1}; }}\n')
+                    classify_snippet += (f'                if (meta.cnn1_h{idx0} >= meta.cnn1_h{idx1}) '
+                                         f'{{ meta.cnn_p{p} = meta.cnn1_h{idx0}; }} '
+                                         f'else {{ meta.cnn_p{p} = meta.cnn1_h{idx1}; }}\n')
 
-            code += '                // CNN hidden2 accumulators init\n'
+            classify_snippet += '                // CNN hidden2 accumulators init\n'
             for h in range(hidden2_units):
                 bias = int(b2_int[h]) if h < len(b2_int) else 0
                 bias_u = (bias + (1 << 32)) % (1 << 32)
-                code += f'                meta.cnn2_h{h}_sum = 32w{bias_u};\n'
+                classify_snippet += f'                meta.cnn2_h{h}_sum = 32w{bias_u};\n'
 
-            code += '                // CNN hidden2 layer lookups\n'
+            classify_snippet += '                // CNN hidden2 layer lookups\n'
             for h in range(hidden2_units):
                 for p in range(pooled):
-                    code += f'                cnn2_h{h}_p{p}.apply();\n'
+                    classify_snippet += f'                cnn2_h{h}_p{p}.apply();\n'
 
             if use_quanti:
-                code += '                // CNN quantize hidden2 (table)\n'
+                classify_snippet += '                // CNN quantize hidden2 (table)\n'
                 for h in range(hidden2_units):
-                    code += (f'                if (meta.cnn2_h{h}_sum[31:31] == 1w1) '
-                             f'{{ meta.cnn2_h{h} = {hidden_bits}w0; }}\n')
-                    code += (f'                else {{ cnn2_quant_h{h}.apply(); }}\n')
+                    classify_snippet += (f'                if (meta.cnn2_h{h}_sum[31:31] == 1w1) '
+                                         f'{{ meta.cnn2_h{h} = {hidden_bits}w0; }}\n')
+                    classify_snippet += (f'                else {{ cnn2_quant_h{h}.apply(); }}\n')
             else:
-                code += '                // CNN ReLU + quantize hidden2\n'
+                classify_snippet += '                // CNN ReLU + quantize hidden2\n'
                 for h in range(hidden2_units):
-                    code += (f'                if (meta.cnn2_h{h}_sum[31:31] == 1w1) '
-                             f'{{ meta.cnn2_h{h} = {hidden_bits}w0; }}\n')
-                    code += (f'                else if ((meta.cnn2_h{h}_sum >> {h2_shift}) > {h_max}) '
-                             f'{{ meta.cnn2_h{h} = {hidden_bits}w{h_max}; }}\n')
-                    code += (f'                else {{ meta.cnn2_h{h} = '
-                             f'(bit<{hidden_bits}>)(meta.cnn2_h{h}_sum >> {h2_shift}); }}\n')
+                    classify_snippet += (f'                if (meta.cnn2_h{h}_sum[31:31] == 1w1) '
+                                         f'{{ meta.cnn2_h{h} = {hidden_bits}w0; }}\n')
+                    classify_snippet += (f'                else if ((meta.cnn2_h{h}_sum >> {h2_shift}) > {h_max}) '
+                                         f'{{ meta.cnn2_h{h} = {hidden_bits}w{h_max}; }}\n')
+                    classify_snippet += (f'                else {{ meta.cnn2_h{h} = '
+                                         f'(bit<{hidden_bits}>)(meta.cnn2_h{h}_sum >> {h2_shift}); }}\n')
 
-            code += '                // CNN output layer lookups\n'
+            classify_snippet += '                // CNN output layer lookups\n'
             for c in range(n_cls):
                 for h in range(hidden2_units):
-                    code += f'                cnn_out_c{c}_h{h}.apply();\n'
+                    classify_snippet += f'                cnn_out_c{c}_h{h}.apply();\n'
 
-            code += '                // CNN argmax (signed compare)\n'
+            classify_snippet += '                // CNN argmax (signed compare)\n'
             if n_cls > 0:
-                code += '                meta.ml_result = 0;\n'
-                code += '                bit<32> best = meta.cnn_score_c0;\n'
+                classify_snippet += '                meta.ml_result = 0;\n'
+                classify_snippet += '                bit<32> best = meta.cnn_score_c0;\n'
                 for c in range(1, n_cls):
-                    code += (f'                if ((best[31:31] == 1w1 && meta.cnn_score_c{c}[31:31] == 1w0) || '
-                             f'(best[31:31] == meta.cnn_score_c{c}[31:31] && meta.cnn_score_c{c} > best)) '
-                             f'{{ best = meta.cnn_score_c{c}; meta.ml_result = {c}; }}\n')
+                    classify_snippet += (f'                if ((best[31:31] == 1w1 && meta.cnn_score_c{c}[31:31] == 1w0) || '
+                                         f'(best[31:31] == meta.cnn_score_c{c}[31:31] && meta.cnn_score_c{c} > best)) '
+                                         f'{{ best = meta.cnn_score_c{c}; meta.ml_result = {c}; }}\n')
 
         # Set digest flag (TNA uses deparser-based digest)
+        classify_snippet += '                meta.send_digest = 1w1;\n'
+
+        # ── Apply block (TNA) ────────────────────────────────────────────
         code += '''
-                meta.send_digest = 1w1;
-            } // end if flow_ended
+    apply {
+        if ((hdr.ipv4.isValid() && (meta.protocol == TYPE_TCP || meta.protocol == TYPE_UDP ||
+                                    meta.protocol == TYPE_ICMP)) ||
+            hdr.arp.isValid()) {
+            compute_flow_hash();
+            // Step 1: read all register state into meta.* (old flow's values)
+            read_flow_state_t.apply();
+
+            if (meta.time_first != 0 && meta.time_last != 0 &&
+                    (ig_intr_md.ingress_mac_tstamp - meta.time_last) > (bit<48>)FLOW_TIMEOUT) {
+                meta.flow_ended = 1w1;
+                meta.duration   = meta.time_last - meta.time_first;
+                reset_flow_regs_t.apply();
+                meta.is_first_packet = 1w1;
+            } else if (meta.time_first == 0) {
+                init_flow_t.apply();
+                meta.is_first_packet = 1w1;
+            }
+
+            // Step 2: classify the timed-out flow NOW — meta.* still holds the
+            // old flow's features before update_counters overwrites them.
+            if (meta.flow_ended == 1w1 &&
+                    (meta.fwd_pkt_count + meta.bwd_pkt_count) >= 2) {
+'''
+        code += classify_snippet
+        code += '''
+            } // end timeout classification
+            meta.flow_ended = 1w0;  // reset so FIN/RST can trigger for the new flow
+
+            // Step 3: update registers for the current packet
+            update_time_last_t.apply();
+
+            if (meta.is_reverse_dir == 1w0) {
+                update_fwd_counters_t.apply();
+            } else {
+                update_bwd_counters_t.apply();
+            }
+
+            if (meta.protocol == TYPE_TCP) {
+                update_tcp_features_t.apply();
+            }
+
+            // Step 4: check for FIN/RST termination
+            if (meta.flow_ended == 1w0 && meta.protocol == TYPE_TCP &&
+                    (meta.flags_fin > 32w0 || meta.flags_rst > 32w0)) {
+                meta.flow_ended = 1w1;
+                meta.duration   = ig_intr_md.ingress_mac_tstamp - meta.time_first;
+                clear_flow_regs_t.apply();
+            }
+
+            // Step 5: classify FIN/RST terminated flow
+            if (meta.flow_ended == 1w1 &&
+                    (meta.fwd_pkt_count + meta.bwd_pkt_count) >= 2) {
+'''
+        code += classify_snippet
+        code += '''
+            } // end FIN/RST classification
 
             if (hdr.ipv4.isValid()) {
                 ipv4_lpm.apply();

@@ -5,12 +5,12 @@ LDA (Linear Discriminant Analysis) + surrogate DT pipeline with quantization.
 Drop-in replacement for 2_pca_generate_entries.py.
 
 Outputs (same locations, compatible with ALL step 3/4 scripts):
-  tables/pca_integer_mapping.csv     Columns: LD1_float…LDk_float, LD1_code…LDk_code, Label
-  tables/pca_encoding_params.json    Encoding metadata (LDA transform, min/max/range)
+  tables/transform_mapping.csv       Columns: LD1_float…LDk_float, LD1_code…LDk_code, Label
+  tables/encoding_params.json        Encoding metadata (LDA transform, min/max/range)
   tables/reduction_config.json       Universal config for steps 3/4
   tables/s1-commands.txt             P4 table_add commands for LDA transform tables
-  tables/pca_tree_if_rules.txt       Human-readable surrogate tree rules
-  tables/pca_metrics.json            Classification accuracy comparison
+  tables/transform_rules.txt         Human-readable surrogate tree rules
+  tables/transform_metrics.json      Classification accuracy comparison
 
 Why LDA?
 --------
@@ -68,8 +68,8 @@ parser = P4secArgumentParser(
     epilog=(
             "Outputs:\n"
             "  tables/s1-commands.txt           (P4 transform entries)\n"
-            "  tables/pca_encoding_params.json  (transform params; legacy filename used by all methods)\n"
-            "  tables/pca_integer_mapping.csv   (codes + labels; legacy filename used by all methods)\n"
+            "  tables/encoding_params.json      (transform params)\n"
+            "  tables/transform_mapping.csv     (codes + labels)\n"
             "  tables/reduction_config.json     (universal config)\n"
             "Code prefix: LD*_code\n"
         )
@@ -117,9 +117,11 @@ label_col = df.columns[-1]
 df_clean = df.replace([np.inf, -np.inf], np.nan).dropna()
 
 P4_FEATURE_COLS = [
-    "Protocol", "Duration", "MaxIAT", "UrgCount",
+    "Protocol", "SrcPort", "DstPort",
+    "Duration", "MaxIAT", "UrgCount",
     "FwdPktCount", "BwdPktCount", "FwdBytes", "BwdBytes",
     "MaxWinSize", "FlagsSyn", "FlagsAck", "FlagsFin", "FlagsRst",
+    "MinIAT", "FwdMaxPktLen", "BwdMaxPktLen", "FlagsPsh", "InitFwdWinBytes",
 ]
 X_df = df_clean[P4_FEATURE_COLS].astype(int)
 feature_cols = X_df.columns.tolist()
@@ -190,7 +192,7 @@ for j in range(k):
 # 5. Surrogate DT: raw features -> quantized LDA codes
 # ==========================================================
 tree = DecisionTreeRegressor(
-    max_depth=12, min_samples_split=2, min_samples_leaf=1, random_state=42)
+    max_depth=None, min_samples_leaf=1, max_leaf_nodes=300000, random_state=42)
 tree.fit(X_train, LD_code_train)
 
 leaf_ids = tree.apply(X_train)
@@ -247,7 +249,7 @@ metrics = {
     "quantized_codes":   {"accuracy": float(acc_code)},
     "tree_approx_codes": {"accuracy": float(acc_tree)},
 }
-with open(os.path.join(TABLES_DIR, "pca_metrics.json"), "w") as f:
+with open(os.path.join(TABLES_DIR, "transform_metrics.json"), "w") as f:
     json.dump(metrics, f, indent=2)
 
 # ==========================================================
@@ -265,26 +267,28 @@ for j in range(k):
 mapping["Label"] = y_all
 
 pd.DataFrame(mapping).to_csv(
-    os.path.join(TABLES_DIR, "pca_integer_mapping.csv"), index=False)
-print("Saved pca_integer_mapping.csv (LD columns)")
+    os.path.join(TABLES_DIR, "transform_mapping.csv"), index=False)
+print("Saved transform_mapping.csv (LD columns)")
 
 # ==========================================================
 # 8. Save encoding parameters  (backward-compat keys)
 # ==========================================================
 encoding_params = {
-    "method": "LDA",
+    "method": "lda",
     "n_components": int(k),
     "bits": int(BITS),
     "max_val": int(MAX_VAL),
-    "pc_min": ld_min.tolist(),
-    "pc_max": ld_max.tolist(),
-    "pc_range": ld_range.tolist(),
+    "transform_min": ld_min.tolist(),
+    "transform_max": ld_max.tolist(),
+    "transform_range": ld_range.tolist(),
     "auto_selected": bool(USER_K is None),
-    "pca_components": lda.scalings_[:, :k].T.tolist(),
-    "pca_mean": lda.xbar_.tolist(),
+    "transform_components": lda.scalings_[:, :k].T.tolist(),
+    "transform_mean": lda.xbar_.tolist(),
+    "feature_names": feature_cols,
 }
-with open(os.path.join(TABLES_DIR, "pca_encoding_params.json"), "w") as f:
+with open(os.path.join(TABLES_DIR, "encoding_params.json"), "w") as f:
     json.dump(encoding_params, f, indent=2)
+print("Saved encoding_params.json")
 
 # ==========================================================
 # 9. Save universal reduction_config.json
@@ -303,6 +307,7 @@ reduction_config = {
 with open(os.path.join(TABLES_DIR, "reduction_config.json"), "w") as f:
     json.dump(reduction_config, f, indent=2)
 print("Saved reduction_config.json")
+
 
 # ==========================================================
 # 10. Generate P4 table_add commands for LDA transform tables
@@ -384,7 +389,7 @@ def write_if_rules(dt, fnames, l2c, filename, k):
         dfs(0, [])
 
 write_if_rules(tree, feature_cols, leaf_to_codes,
-               os.path.join(TABLES_DIR, "pca_tree_if_rules.txt"), k)
+               os.path.join(TABLES_DIR, "transform_rules.txt"), k)
 
 print("\n" + "=" * 60)
 print("LDA complete.  Run any step 3/4 classifier next:")

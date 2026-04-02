@@ -8,7 +8,7 @@
     "Web"
   ],
   "raw_features": {
-    "accuracy": 0.9999182873018467,
+    "accuracy": 1.0,
     "classification_report": {
       "Benign": {
         "precision": 1.0,
@@ -20,44 +20,44 @@
         "precision": 1.0,
         "recall": 1.0,
         "f1-score": 1.0,
-        "support": 318.0
+        "support": 181.0
       },
       "DoS": {
         "precision": 1.0,
         "recall": 1.0,
         "f1-score": 1.0,
-        "support": 1173.0
+        "support": 8707.0
       },
       "Malware": {
-        "precision": 0.9997209042701647,
+        "precision": 1.0,
         "recall": 1.0,
-        "f1-score": 0.9998604326587579,
+        "f1-score": 1.0,
         "support": 3582.0
       },
       "Mirai": {
         "precision": 1.0,
         "recall": 1.0,
         "f1-score": 1.0,
-        "support": 216.0
+        "support": 153.0
       },
       "Web": {
         "precision": 1.0,
-        "recall": 0.9997714285714285,
-        "f1-score": 0.9998857012229969,
-        "support": 4375.0
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 3992.0
       },
-      "accuracy": 0.9999182873018467,
+      "accuracy": 1.0,
       "macro avg": {
-        "precision": 0.9999534840450274,
-        "recall": 0.9999619047619047,
-        "f1-score": 0.9999576889802925,
-        "support": 12238.0
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 19189.0
       },
       "weighted avg": {
-        "precision": 0.9999183101075119,
-        "recall": 0.9999182873018467,
-        "f1-score": 0.999918288334228,
-        "support": 12238.0
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 19189.0
       }
     },
     "confusion_matrix": [
@@ -71,7 +71,7 @@
       ],
       [
         0,
-        318,
+        181,
         0,
         0,
         0,
@@ -80,7 +80,7 @@
       [
         0,
         0,
-        1173,
+        8707,
         0,
         0,
         0
@@ -98,21 +98,21 @@
         0,
         0,
         0,
-        216,
+        153,
         0
       ],
       [
         0,
         0,
         0,
-        1,
         0,
-        4374
+        0,
+        3992
       ]
     ]
   },
   "original_pca": {
-    "accuracy": 0.9999182873018467,
+    "accuracy": 1.0,
     "classification_report": {
       "Benign": {
         "precision": 1.0,
@@ -124,44 +124,44 @@
         "precision": 1.0,
         "recall": 1.0,
         "f1-score": 1.0,
-        "support": 318.0
+        "support": 181.0
       },
       "DoS": {
         "precision": 1.0,
         "recall": 1.0,
         "f1-score": 1.0,
-        "support": 1173.0
+        "support": 8707.0
       },
       "Malware": {
-        "precision": 0.9997209042701647,
+        "precision": 1.0,
         "recall": 1.0,
-        "f1-score": 0.9998604326587579,
+        "f1-score": 1.0,
         "support": 3582.0
       },
       "Mirai": {
         "precision": 1.0,
         "recall": 1.0,
         "f1-score": 1.0,
-        "support": 216.0
+        "support": 153.0
       },
       "Web": {
         "precision": 1.0,
-        "recall": 0.9997714285714285,
-        "f1-score": 0.9998857012229969,
-        "support": 4375.0
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 3992.0
       },
-      "accuracy": 0.9999182873018467,
+      "accuracy": 1.0,
       "macro avg": {
-        "precision": 0.9999534840450274,
-        "recall": 0.9999619047619047,
-        "f1-score": 0.9999576889802925,
-        "support": 12238.0
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 19189.0
       },
       "weighted avg": {
-        "precision": 0.9999183101075119,
-        "recall": 0.9999182873018467,
-        "f1-score": 0.999918288334228,
-        "support": 12238.0
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 19189.0
       }
     },
     "confusion_matrix": [
@@ -175,7 +175,7 @@
       ],
       [
         0,
-        318,
+        181,
         0,
         0,
         0,
@@ -184,7 +184,7 @@
       [
         0,
         0,
-        1173,
+        8707,
         0,
         0,
         0
@@ -202,21 +202,21 @@
         0,
         0,
         0,
-        216,
+        153,
         0
       ],
       [
         0,
         0,
         0,
-        1,
         0,
-        4374
+        0,
+        3992
       ]
     ]
   },
   "quantized_codes": {
-    "accuracy": 0.9999182873018467,
+    "accuracy": 1.0,
     "classification_report": {
       "Benign": {
         "precision": 1.0,
@@ -228,44 +228,44 @@
         "precision": 1.0,
         "recall": 1.0,
         "f1-score": 1.0,
-        "support": 318.0
+        "support": 181.0
       },
       "DoS": {
         "precision": 1.0,
         "recall": 1.0,
         "f1-score": 1.0,
-        "support": 1173.0
+        "support": 8707.0
       },
       "Malware": {
-        "precision": 0.9997209042701647,
+        "precision": 1.0,
         "recall": 1.0,
-        "f1-score": 0.9998604326587579,
+        "f1-score": 1.0,
         "support": 3582.0
       },
       "Mirai": {
         "precision": 1.0,
         "recall": 1.0,
         "f1-score": 1.0,
-        "support": 216.0
+        "support": 153.0
       },
       "Web": {
         "precision": 1.0,
-        "recall": 0.9997714285714285,
-        "f1-score": 0.9998857012229969,
-        "support": 4375.0
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 3992.0
       },
-      "accuracy": 0.9999182873018467,
+      "accuracy": 1.0,
       "macro avg": {
-        "precision": 0.9999534840450274,
-        "recall": 0.9999619047619047,
-        "f1-score": 0.9999576889802925,
-        "support": 12238.0
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 19189.0
       },
       "weighted avg": {
-        "precision": 0.9999183101075119,
-        "recall": 0.9999182873018467,
-        "f1-score": 0.999918288334228,
-        "support": 12238.0
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 19189.0
       }
     },
     "confusion_matrix": [
@@ -279,7 +279,7 @@
       ],
       [
         0,
-        318,
+        181,
         0,
         0,
         0,
@@ -288,7 +288,7 @@
       [
         0,
         0,
-        1173,
+        8707,
         0,
         0,
         0
@@ -306,21 +306,21 @@
         0,
         0,
         0,
-        216,
+        153,
         0
       ],
       [
         0,
         0,
         0,
-        1,
         0,
-        4374
+        0,
+        3992
       ]
     ]
   },
   "tree_approx_codes": {
-    "accuracy": 0.9999182873018467,
+    "accuracy": 1.0,
     "classification_report": {
       "Benign": {
         "precision": 1.0,
@@ -332,44 +332,44 @@
         "precision": 1.0,
         "recall": 1.0,
         "f1-score": 1.0,
-        "support": 318.0
+        "support": 181.0
       },
       "DoS": {
         "precision": 1.0,
         "recall": 1.0,
         "f1-score": 1.0,
-        "support": 1173.0
+        "support": 8707.0
       },
       "Malware": {
-        "precision": 0.9997209042701647,
+        "precision": 1.0,
         "recall": 1.0,
-        "f1-score": 0.9998604326587579,
+        "f1-score": 1.0,
         "support": 3582.0
       },
       "Mirai": {
         "precision": 1.0,
         "recall": 1.0,
         "f1-score": 1.0,
-        "support": 216.0
+        "support": 153.0
       },
       "Web": {
         "precision": 1.0,
-        "recall": 0.9997714285714285,
-        "f1-score": 0.9998857012229969,
-        "support": 4375.0
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 3992.0
       },
-      "accuracy": 0.9999182873018467,
+      "accuracy": 1.0,
       "macro avg": {
-        "precision": 0.9999534840450274,
-        "recall": 0.9999619047619047,
-        "f1-score": 0.9999576889802925,
-        "support": 12238.0
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 19189.0
       },
       "weighted avg": {
-        "precision": 0.9999183101075119,
-        "recall": 0.9999182873018467,
-        "f1-score": 0.999918288334228,
-        "support": 12238.0
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 19189.0
       }
     },
     "confusion_matrix": [
@@ -383,7 +383,7 @@
       ],
       [
         0,
-        318,
+        181,
         0,
         0,
         0,
@@ -392,7 +392,7 @@
       [
         0,
         0,
-        1173,
+        8707,
         0,
         0,
         0
@@ -410,16 +410,16 @@
         0,
         0,
         0,
-        216,
+        153,
         0
       ],
       [
         0,
         0,
         0,
-        1,
         0,
-        4374
+        0,
+        3992
       ]
     ]
   }

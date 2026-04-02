@@ -441,8 +441,7 @@ encoding_params = {
     "transform_range": pc_range.tolist(),
     "auto_selected": bool(USER_N_COMPONENTS is None),
     "variance_target": float(VAR_TARGET) if USER_N_COMPONENTS is None else None,
-    # PCA transform matrix — needed by 6_controller.py register drain to classify
-    # flows that are stuck in P4 registers (no FIN/RST, no timeout fired).
+    # PCA transform matrix — kept for offline tooling / reproducibility.
     "transform_components": pca.components_.tolist(),  # shape (k, n_features)
     "transform_mean":       pca.mean_.tolist(),         # shape (n_features,)
 }

@@ -72,8 +72,8 @@ def parse_args():
         epilog=(
             "Outputs:\n"
             "  tables/s1-commands.txt           (P4 transform entries)\n"
-            "  tables/pca_encoding_params.json  (transform params; legacy filename used by all methods)\n"
-            "  tables/pca_integer_mapping.csv   (codes + labels; legacy filename used by all methods)\n"
+            "  tables/encoding_params.json      (transform params)\n"
+            "  tables/transform_mapping.csv     (codes + labels)\n"
             "  tables/reduction_config.json     (universal config)\n"
             "Code prefix: UM*_code\n"
         )
@@ -136,14 +136,13 @@ df = pd.read_csv(csv_path)
 label_col = df.columns[-1]
 df_clean = df.replace([np.inf, -np.inf], np.nan).dropna()
 
-# P4 feature order
+# P4 feature order — all 20 features, same as PCA pipeline
 P4_FEATURE_COLS = [
-    "Protocol",
+    "Protocol", "SrcPort", "DstPort",
     "Duration", "MaxIAT", "UrgCount",
-    "FwdPktCount", "BwdPktCount",
-    "FwdBytes", "BwdBytes",
-    "MaxWinSize",
-    "FlagsSyn", "FlagsAck", "FlagsFin", "FlagsRst",
+    "FwdPktCount", "BwdPktCount", "FwdBytes", "BwdBytes",
+    "MaxWinSize", "FlagsSyn", "FlagsAck", "FlagsFin", "FlagsRst",
+    "MinIAT", "FwdMaxPktLen", "BwdMaxPktLen", "FlagsPsh", "InitFwdWinBytes",
 ]
 X_df = df_clean[P4_FEATURE_COLS].astype(int)
 feature_cols = X_df.columns.tolist()
@@ -220,9 +219,9 @@ for j in range(k):
 # 5. Train DecisionTreeRegressor for mapping RAW -> UMAP codes (multi-output)
 # ==========================================================
 tree = DecisionTreeRegressor(
-    max_depth=12,
-    min_samples_split=2,
+    max_depth=None,
     min_samples_leaf=1,
+    max_leaf_nodes=300000,
     random_state=42
 )
 tree.fit(X_train, UM_code_train)
@@ -305,7 +304,7 @@ metrics = {
     },
 }
 
-metrics_path = os.path.join(TABLES_DIR, "umap_metrics.json")
+metrics_path = os.path.join(TABLES_DIR, "transform_metrics.json")
 with open(metrics_path, "w") as f:
     json.dump(metrics, f, indent=2)
 print("Saved detailed metrics to:", metrics_path)
@@ -325,7 +324,7 @@ for j in range(k):
 mapping_dict["Label"] = y_all
 
 mapping_df = pd.DataFrame(mapping_dict)
-mapping_csv_path = os.path.join(TABLES_DIR, "pca_integer_mapping.csv")
+mapping_csv_path = os.path.join(TABLES_DIR, "transform_mapping.csv")
 mapping_df.to_csv(mapping_csv_path, index=False)
 print(f"\nMapping UMAP -> integer + Label saved to: {mapping_csv_path}")
 
@@ -350,9 +349,10 @@ encoding_params = {
     "n_components": int(k),
     "bits": int(BITS),
     "max_val": int(MAX_VAL),
-    "pc_min": um_min.tolist(),
-    "pc_max": um_max.tolist(),
-    "pc_range": um_range.tolist(),
+    "transform_min": um_min.tolist(),
+    "transform_max": um_max.tolist(),
+    "transform_range": um_range.tolist(),
+    "feature_names": feature_cols,
     "umap_params": {
         "n_neighbors": int(args.n_neighbors),
         "min_dist": float(args.min_dist),
@@ -364,7 +364,7 @@ encoding_params = {
 if umap_model_path:
     encoding_params["umap_model_path"] = os.path.relpath(umap_model_path, os.path.dirname(__file__))
 
-params_path = os.path.join(TABLES_DIR, "pca_encoding_params.json")
+params_path = os.path.join(TABLES_DIR, "encoding_params.json")
 with open(params_path, "w") as f:
     json.dump(encoding_params, f, indent=2)
 print(f"Encoding parameters saved to: {params_path}")
@@ -387,6 +387,7 @@ reduction_config_path = os.path.join(TABLES_DIR, "reduction_config.json")
 with open(reduction_config_path, "w") as f:
     json.dump(reduction_config, f, indent=2)
 print(f"Reduction config saved to: {reduction_config_path}")
+
 
 # ==========================================================
 # 10. Export P4 table_add commands for UMAP transformation
@@ -471,21 +472,7 @@ def write_umap_p4_commands(dt, feature_names, leaf_to_codes, k, max_val, feature
     with open(filename, "w") as f:
         dfs(0, [])
 
-FEATURE_MAX_DEFAULTS = {
-    "Protocol":    (2**8  - 1),
-    "Duration":    (2**48 - 1),
-    "MaxIAT":      (2**48 - 1),
-    "UrgCount":    (2**32 - 1),
-    "FwdPktCount": (2**32 - 1),
-    "BwdPktCount": (2**32 - 1),
-    "FwdBytes":    (2**32 - 1),
-    "BwdBytes":    (2**32 - 1),
-    "MaxWinSize":  (2**16 - 1),
-    "FlagsSyn":    (2**32 - 1),
-    "FlagsAck":    (2**32 - 1),
-    "FlagsFin":    (2**32 - 1),
-    "FlagsRst":    (2**32 - 1),
-}
+from pipeline_utils import P4_FEATURE_MAX as FEATURE_MAX_DEFAULTS
 
 feature_max_map = {}
 for feat in feature_cols:

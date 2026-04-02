@@ -20,13 +20,18 @@ import grpc
 import subprocess
 import json
 import pandas as pd
-import pickle
 import numpy as np
 import math
 import re
+import warnings
 from time import sleep
 from queue import Queue, Empty
 from threading import Thread
+
+# Suppress sklearn warning when predicting with a numpy array on a model
+# fitted with a DataFrame (feature names mismatch is cosmetic, not a bug).
+warnings.filterwarnings('ignore', message='.*does not have valid feature names.*',
+                        category=UserWarning)
 from google.protobuf import text_format
 from p4.config.v1 import p4info_pb2
 
@@ -215,20 +220,41 @@ def build_digest_entry(p4info_helper, digest_name):
     de.config.ack_timeout_ns = 1
     return de
 
-def install_digest(p4info_helper, sw, digest_name):
-    """Install digest configuration on the switch."""
+def install_digest(p4info_helper, sw, digest_name, election_id=2):
+    """Install digest configuration on the switch.
+
+    BMv2's P4Runtime server always returns UNKNOWN as the top-level gRPC
+    status for any write error (actual code is in Status.details).  The most
+    common case is ALREADY_EXISTS when the digest was left configured from a
+    previous controller run.  We handle this by retrying with MODIFY.
+    """
     de = build_digest_entry(p4info_helper, digest_name)
-    req = p4runtime_pb2.WriteRequest()
-    req.device_id = sw.device_id
-    req.election_id.low = 1
-    u = req.updates.add()
-    u.type = p4runtime_pb2.Update.INSERT
-    u.entity.digest_entry.CopyFrom(de)
-    try:
+
+    def _write(update_type):
+        req = p4runtime_pb2.WriteRequest()
+        req.device_id = sw.device_id
+        req.election_id.low = election_id
+        u = req.updates.add()
+        u.type = update_type
+        u.entity.digest_entry.CopyFrom(de)
         sw.client_stub.Write(req)
+
+    # Try INSERT first; if that fails (e.g. ALREADY_EXISTS from a previous
+    # session), fall back to MODIFY which overwrites the existing config.
+    try:
+        _write(p4runtime_pb2.Update.INSERT)
         print(f"Digest '{digest_name}' installed successfully.")
+        return
+    except grpc.RpcError:
+        pass
+
+    try:
+        _write(p4runtime_pb2.Update.MODIFY)
+        print(f"Digest '{digest_name}' updated (MODIFY) successfully.")
+        return
     except grpc.RpcError as e:
-        print(f"WARNING: Digest installation failed: {e.code().name} - {e.details()}")
+        print(f"WARNING: Digest installation failed (INSERT+MODIFY both failed): "
+              f"{e.code().name} - {e.details()}")
         raise
 
 def bytes_to_int(bb):
@@ -405,7 +431,7 @@ def parse_transform_field_names(digest_fields):
     """
     codes = []
     for name in digest_fields:
-        m = re.match(r"^(pc|ld|ae|um)(\d+)_code$", name)
+        m = re.match(r"^(pc|ld|ae|um)(\d+)_code$", name, re.IGNORECASE)
         if m:
             codes.append((int(m.group(2)), name))
     if not codes:
@@ -459,50 +485,6 @@ def format_codes_csv(codes):
     if not codes:
         return ""
     return ','.join(str(c) for c in codes) + ','
-
-
-def apply_hidden_activation(values, activation_name):
-    values = np.asarray(values, dtype=np.float64)
-    if activation_name == 'identity':
-        return values
-    if activation_name == 'relu':
-        return np.maximum(values, 0.0)
-    if activation_name == 'tanh':
-        return np.tanh(values)
-    if activation_name == 'logistic':
-        clipped = np.clip(values, -60.0, 60.0)
-        return 1.0 / (1.0 + np.exp(-clipped))
-    raise ValueError(f"Unsupported autoencoder activation: {activation_name}")
-
-
-def encode_autoencoder_codes(raw_features, encoding_config, max_val):
-    scaler_mean = encoding_config.get('scaler_mean')
-    scaler_scale = encoding_config.get('scaler_scale')
-    encoder_weights = encoding_config.get('encoder_weights')
-    encoder_bias = encoding_config.get('encoder_bias')
-    activation_name = encoding_config.get('encoder_activation', 'tanh')
-    pc_min = encoding_config.get('transform_min')
-    pc_range = encoding_config.get('transform_range')
-
-    required = [scaler_mean, scaler_scale, encoder_weights, encoder_bias, pc_min, pc_range]
-    if any(x is None for x in required):
-        raise ValueError('Autoencoder encoding parameters are incomplete')
-
-    mean_vec = np.array(scaler_mean, dtype=np.float64)
-    scale_vec = np.array(scaler_scale, dtype=np.float64)
-    safe_scale = np.where(scale_vec == 0, 1.0, scale_vec)
-    weight_mat = np.array(encoder_weights, dtype=np.float64)
-    bias_vec = np.array(encoder_bias, dtype=np.float64)
-    transform_min_arr = np.array(pc_min, dtype=np.float64)
-    transform_range_arr = np.array(pc_range, dtype=np.float64)
-    transform_range_safe = np.where(transform_range_arr == 0, 1.0, transform_range_arr)
-
-    scaled = (raw_features - mean_vec) / safe_scale
-    latent_linear = scaled @ weight_mat + bias_vec
-    latent = apply_hidden_activation(latent_linear, activation_name)
-    latent_norm = (latent - transform_min_arr) / transform_range_safe
-    codes = np.rint(np.clip(latent_norm * max_val, 0, max_val)).astype(int)
-    return codes.tolist()
 
 
 # Map canonical feature names (from reduction_config) to entry["features"] / entry["flags"] keys
@@ -660,287 +642,6 @@ class DigestClient:
         except Exception:
             pass
 
-
-def _cli_send(commands, thrift_port=9090, timeout=90):
-    """Send one or more CLI commands to simple_switch_CLI, return stdout text."""
-    import subprocess as _sp
-    input_bytes = (''.join(commands)).encode()
-    try:
-        proc = _sp.Popen(
-            ['simple_switch_CLI', '--thrift-port', str(thrift_port)],
-            stdin=_sp.PIPE, stdout=_sp.PIPE, stderr=_sp.PIPE,
-        )
-        stdout, stderr = proc.communicate(input=input_bytes, timeout=timeout)
-        if stderr:
-            err_text = stderr.decode(errors='replace').strip()
-            if err_text:
-                print(f"    [CLI stderr] {err_text[:300]}")
-        return stdout.decode(errors='replace')
-    except FileNotFoundError:
-        print("    ERROR: 'simple_switch_CLI' not found in PATH. "
-              "Make sure BMv2 is installed and the CLI is on PATH.")
-        return ''
-    except Exception as e:
-        print(f"    CLI command failed: {e}")
-        return ''
-
-
-def _parse_reg_output(text):
-    """Parse simple_switch_CLI register_read output → {index: value} (non-zero only)."""
-    result = {}
-    for line in text.splitlines():
-        line = line.strip()
-        if '[' not in line or '=' not in line:
-            continue
-        try:
-            idx_part, val_part = line.rsplit('=', 1)
-            idx = int(idx_part[idx_part.index('[') + 1 : idx_part.index(']')])
-            val = int(val_part.strip())
-            if val != 0:
-                result[idx] = val
-        except (ValueError, IndexError):
-            continue
-    return result
-
-
-def _read_register_via_cli(reg_name, index=None, thrift_port=9090, timeout=90):
-    """Read a BMv2 register via simple_switch_CLI.
-
-    index=None → read all entries (full array scan)
-    index=int  → read a single slot (fast targeted read)
-
-    Returns {index: value} for non-zero entries.
-    """
-    cmd = f"register_read {reg_name}" + (f" {index}" if index is not None else "") + "\n"
-    return _parse_reg_output(_cli_send([cmd], thrift_port=thrift_port, timeout=timeout))
-
-
-def drain_p4_registers(p4info_helper, stub, device_id, pca_config,
-                       model_type, rf_model, xgb_model, xgb_class_mapping,
-                       CLASS_LABELS, n_components, pca_bits, out, pca_field_names,
-                       needs_transform=True, code_display_names=None,
-                       reduction_feature_columns=None):
-    """
-    Read every P4 register slot via P4Runtime and classify flows that are still
-    sitting in registers (no FIN/RST seen, 20-second timeout never fired because
-    no new packets arrived after tcpreplay ended).
-    Appends recovered flows to `out` (already-open CSV file in append mode).
-    Returns the number of flows drained.
-    """
-    transform_method = str(pca_config.get('method', 'pca')).lower()
-
-    # PCA/LDA/UMAP transform parameters
-    pca_components = pca_config.get('transform_components')  # list[list[float]], shape (k, F)
-    pca_mean       = pca_config.get('transform_mean')        # list[float], shape (F,)
-    pc_min         = pca_config.get('transform_min')          # list[float], shape (k,)
-    pc_range       = pca_config.get('transform_range')        # list[float], shape (k,)
-    max_val        = pca_config.get('max_val', (1 << pca_bits) - 1)
-    umap_tree      = pca_config.get('_umap_tree')
-    umap_model     = pca_config.get('_umap_model')
-
-    if needs_transform:
-        if transform_method == 'autoencoder':
-            can_classify = all(x is not None for x in [
-                pca_config.get('scaler_mean'),
-                pca_config.get('scaler_scale'),
-                pca_config.get('encoder_weights'),
-                pca_config.get('encoder_bias'),
-                pc_min,
-                pc_range,
-            ])
-        elif transform_method == 'umap':
-            can_classify = umap_tree is not None or (
-                umap_model is not None and pc_min is not None and pc_range is not None
-            )
-        else:
-            can_classify = all(x is not None for x in [pca_components, pca_mean, pc_min, pc_range])
-        if not can_classify:
-            print("  NOTE: Transform components missing from encoding params — "
-                  "re-run step 2, then restart controller for drain classification.")
-    else:
-        # Feature Selection: can classify if we have a model
-        can_classify = True
-
-    REGS = {
-        'time_first':    'MyIngress.reg_time_first_pkt',
-        'time_last':     'MyIngress.reg_time_last_pkt',
-        'max_iat':       'MyIngress.reg_max_iat',
-        'urg_count':     'MyIngress.reg_urg_count',
-        'fwd_pkt_count': 'MyIngress.reg_fwd_pkt_count',
-        'bwd_pkt_count': 'MyIngress.reg_bwd_pkt_count',
-        'fwd_bytes':     'MyIngress.reg_fwd_bytes',
-        'bwd_bytes':     'MyIngress.reg_bwd_bytes',
-        'max_win_size':  'MyIngress.reg_max_win_size',
-        'flags_syn':     'MyIngress.reg_flags_syn',
-        'flags_ack':     'MyIngress.reg_flags_ack',
-        'flags_fin':     'MyIngress.reg_flags_fin',
-        'flags_rst':     'MyIngress.reg_flags_rst',
-        'min_iat':         'MyIngress.reg_min_iat',
-        'fwd_max_pkt_len': 'MyIngress.reg_fwd_max_pkt_len',
-        'bwd_max_pkt_len': 'MyIngress.reg_bwd_max_pkt_len',
-        'flags_psh':       'MyIngress.reg_flags_psh',
-        'init_fwd_win':    'MyIngress.reg_init_fwd_win',
-    }
-
-    # BMv2 P4Runtime gRPC returns UNIMPLEMENTED for register reads.
-    # Use simple_switch_CLI (thrift) instead: two-phase to avoid timeout.
-    # Phase 1: scan reg_time_first_pkt (full array) to find active slots.
-    # Phase 2: targeted per-index reads for all other registers (fast).
-    print("  Draining P4 registers via simple_switch_CLI …")
-    print("  Phase 1: scanning reg_time_first_pkt for active slots …", flush=True)
-    time_first_map = _read_register_via_cli(
-        'MyIngress.reg_time_first_pkt', thrift_port=9090, timeout=120)
-
-    if not time_first_map:
-        print("  No active flow slots found (reg_time_first_pkt all-zero or CLI unavailable).")
-        return 0
-
-    print(f"  Phase 2: reading {len(time_first_map)} active slot(s) from remaining registers …",
-          flush=True)
-    remaining_regs = {k: v for k, v in REGS.items() if k != 'time_first'}
-    reg_data = {'time_first': time_first_map}
-    active_indices = list(time_first_map.keys())
-    for key, full_name in remaining_regs.items():
-        cmds = [f"register_read {full_name} {idx}\n" for idx in active_indices]
-        text = _cli_send(cmds, thrift_port=9090, timeout=60)
-        reg_data[key] = _parse_reg_output(text)
-
-    fwd_count_map  = reg_data.get('fwd_pkt_count', {})
-    bwd_count_map  = reg_data.get('bwd_pkt_count', {})
-
-    active_slots = [
-        slot for slot, tf in time_first_map.items()
-        if tf != 0 and (fwd_count_map.get(slot, 0) + bwd_count_map.get(slot, 0)) >= 2
-    ]
-    if not active_slots:
-        print("  No stuck flows found (all active slots have < 2 packets).")
-        return 0
-
-    print(f"  Found {len(active_slots)} stuck flows in P4 registers.")
-    pca_width = len(str(max_val))
-    drained = 0
-
-    for slot in active_slots:
-        time_first     = time_first_map.get(slot, 0)
-        time_last      = reg_data.get('time_last',       {}).get(slot, 0)
-        duration       = time_last - time_first if time_last >= time_first else 0
-        max_iat        = reg_data.get('max_iat',         {}).get(slot, 0)
-        urg_count      = reg_data.get('urg_count',       {}).get(slot, 0)
-        fwd            = fwd_count_map.get(slot, 0)
-        bwd            = bwd_count_map.get(slot, 0)
-        fwd_bytes      = reg_data.get('fwd_bytes',       {}).get(slot, 0)
-        bwd_bytes      = reg_data.get('bwd_bytes',       {}).get(slot, 0)
-        win            = reg_data.get('max_win_size',    {}).get(slot, 0)
-        f_syn          = reg_data.get('flags_syn',       {}).get(slot, 0)
-        f_ack          = reg_data.get('flags_ack',       {}).get(slot, 0)
-        f_fin          = reg_data.get('flags_fin',       {}).get(slot, 0)
-        f_rst          = reg_data.get('flags_rst',       {}).get(slot, 0)
-        min_iat        = reg_data.get('min_iat',         {}).get(slot, 0)
-        fwd_max_pkt    = reg_data.get('fwd_max_pkt_len', {}).get(slot, 0)
-        bwd_max_pkt    = reg_data.get('bwd_max_pkt_len', {}).get(slot, 0)
-        f_psh          = reg_data.get('flags_psh',       {}).get(slot, 0)
-        init_fwd_win   = reg_data.get('init_fwd_win',    {}).get(slot, 0)
-
-        class_id    = -1
-        class_label = 'unclassified'
-        pca_codes   = [0] * max(n_components, 1)
-
-        if can_classify:
-            try:
-                proto_guess = 6 if (f_syn or f_ack or f_fin or f_rst) else 17
-                # All 20 raw features in canonical order (src/dst port unknown from registers → 0)
-                raw = np.array([[proto_guess, 0, 0,
-                                  duration, max_iat, urg_count,
-                                  fwd, bwd, fwd_bytes, bwd_bytes, win,
-                                  f_syn, f_ack, f_fin, f_rst,
-                                  min_iat, fwd_max_pkt, bwd_max_pkt, f_psh, init_fwd_win]],
-                                dtype=np.float64)
-
-                if needs_transform:
-                    if transform_method == 'autoencoder':
-                        pca_codes = encode_autoencoder_codes(raw, pca_config, max_val)[:n_components]
-                    elif transform_method == 'umap':
-                        if umap_tree is not None:
-                            pred = umap_tree.predict(raw)
-                            pc_int = np.rint(np.clip(pred, 0, max_val)).astype(int)[0]
-                            pca_codes = pc_int.tolist()[:n_components]
-                        elif umap_model is not None:
-                            um_floats = umap_model.transform(raw)
-                            transform_min_arr    = np.array(pc_min)
-                            transform_range_arr  = np.array(pc_range)
-                            transform_range_safe = np.where(transform_range_arr == 0, 1, transform_range_arr)
-                            transform_norm       = (um_floats - transform_min_arr) / transform_range_safe
-                            pc_int               = np.rint(np.clip(transform_norm * max_val, 0, max_val)).astype(int)[0]
-                            pca_codes            = pc_int.tolist()[:n_components]
-                        else:
-                            pca_codes = [0] * max(n_components, 1)
-                    else:
-                        mean_vec             = np.array(pca_mean)
-                        comps_mat            = np.array(pca_components)
-                        transform_floats     = (raw - mean_vec) @ comps_mat.T
-                        transform_min_arr    = np.array(pc_min)
-                        transform_range_arr  = np.array(pc_range)
-                        transform_range_safe = np.where(transform_range_arr == 0, 1, transform_range_arr)
-                        transform_norm       = (transform_floats - transform_min_arr) / transform_range_safe
-                        pc_int               = np.rint(np.clip(transform_norm * max_val, 0, max_val)).astype(int)[0]
-                        pca_codes            = pc_int.tolist()[:n_components]
-                    if len(pca_codes) < n_components:
-                        pca_codes += [0] * (n_components - len(pca_codes))
-                    model_input = pca_codes
-                else:
-                    # Feature Selection: classify directly on selected raw features
-                    pca_codes = []  # no codes to report
-                    if reduction_feature_columns:
-                        # Build raw feature dict for lookup
-                        all_raw = {
-                            "Protocol": proto_guess,
-                            "SrcPort": 0, "DstPort": 0,  # not stored in registers
-                            "Duration": duration,
-                            "MaxIAT": max_iat, "UrgCount": urg_count,
-                            "FwdPktCount": fwd, "BwdPktCount": bwd,
-                            "FwdBytes": fwd_bytes, "BwdBytes": bwd_bytes,
-                            "MaxWinSize": win, "FlagsSyn": f_syn,
-                            "FlagsAck": f_ack, "FlagsFin": f_fin, "FlagsRst": f_rst,
-                            "MinIAT": min_iat, "FwdMaxPktLen": fwd_max_pkt,
-                            "BwdMaxPktLen": bwd_max_pkt, "FlagsPsh": f_psh,
-                            "InitFwdWinBytes": init_fwd_win,
-                        }
-                        model_input = [all_raw.get(f, 0) for f in reduction_feature_columns]
-                    else:
-                        model_input = raw[0].tolist()
-
-                if model_type == 'rf' and rf_model is not None:
-                    x_np        = np.array([model_input[:rf_model.n_features_in_]], dtype=np.float64)
-                    pred_label  = rf_model.predict(x_np)[0]
-                    class_id    = list(rf_model.classes_).index(pred_label)
-                    class_label = pred_label
-                elif model_type == 'xgb' and xgb_model is not None:
-                    x_np        = np.array([model_input[:xgb_model.n_features_in_]], dtype=np.float64)
-                    class_id    = int(xgb_model.predict(x_np)[0])
-                    class_label = (xgb_class_mapping or {}).get(class_id, f'unknown({class_id})')
-            except Exception as _e:
-                class_label = 'drain-err'
-
-        code_display = format_codes_display(pca_codes, code_display_names or [], pca_bits)
-        print(f"  [REG-SLOT {slot:<6}] "
-              f"Dur={duration:<12} MaxIAT={max_iat:<12} Urg={urg_count:<3} "
-              f"Fwd={fwd:<4} Bwd={bwd:<4} FwdB={fwd_bytes:<8} BwdB={bwd_bytes:<8} Win={win:<6} | "
-              f"Flags(S/A/F/R)={f_syn}/{f_ack}/{f_fin}/{f_rst} | "
-              f"{code_display + ' | ' if code_display else ''}"
-              f"Class={class_label}({class_id}) [REG-DRAIN]", flush=True)
-        out.write(
-            f"reg-slot-{slot},0,reg-drain,0,unknown,"
-            f"{duration},{max_iat},{urg_count},{fwd},{bwd},"
-            f"{fwd_bytes},{bwd_bytes},{win},"
-            f"{f_syn},{f_ack},{f_fin},{f_rst},"
-            f"{format_codes_csv(pca_codes)}"
-            f"{class_id},{class_label}\n"
-        )
-        drained += 1
-
-    return drained
-
-
 def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
     """Main controller logic: load rules, listen for digests, record predictions."""
     p4info_helper = p4runtime_lib.helper.P4InfoHelper(p4info_file_path)
@@ -983,46 +684,38 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
         code_display_prefix = 'PCA'
 
     pca_config = {}
-    try:
-        with open(pca_config_path, 'r') as f:
-            pca_config = json.load(f)
+    # Try canonical encoding_params.json first; fall back to legacy pca_encoding_params.json
+    _enc_candidates = [
+        pca_config_path,
+        os.path.join(script_dir, 'tables/pca_encoding_params.json'),
+    ]
+    _enc_loaded = False
+    for _enc_path in _enc_candidates:
+        if not os.path.exists(_enc_path):
+            continue
+        try:
+            with open(_enc_path, 'r') as f:
+                pca_config = json.load(f)
+            # Normalise legacy key names: pca_* → transform_* so all methods share same keys
+            for _old, _new in [('pca_components', 'transform_components'),
+                                ('pca_mean',       'transform_mean'),
+                                ('pc_min',         'transform_min'),
+                                ('pc_max',         'transform_max'),
+                                ('pc_range',       'transform_range')]:
+                if _old in pca_config and _new not in pca_config:
+                    pca_config[_new] = pca_config[_old]
             n_components = pca_config.get('n_components', 2)
             pca_bits = pca_config.get('bits', 16) or 16
-    except FileNotFoundError:
-        print(f"WARNING: Encoding config not found at {pca_config_path}, defaulting to 2 components")
+            _enc_loaded = True
+            print(f"Loaded encoding config: {_enc_path}")
+            break
+        except json.JSONDecodeError:
+            print(f"WARNING: Invalid JSON in {_enc_path}, skipping")
+    if not _enc_loaded:
+        print(f"WARNING: No encoding config found, defaulting to 2 components")
         n_components = 2
         pca_bits = 16
-    except json.JSONDecodeError:
-        print(f"WARNING: Invalid JSON in {pca_config_path}, defaulting to 2 components")
-        n_components = 2
-        pca_bits = 16
 
-    # Optional: load UMAP models for register drain classification
-    if reduction_method == 'umap':
-        def _resolve_path(path):
-            if not path:
-                return None
-            return path if os.path.isabs(path) else os.path.join(script_dir, path)
-
-        umap_tree_path = _resolve_path(pca_config.get('umap_tree_path'))
-        umap_model_path = _resolve_path(pca_config.get('umap_model_path'))
-
-        if umap_tree_path and os.path.exists(umap_tree_path):
-            try:
-                with open(umap_tree_path, 'rb') as f:
-                    pca_config['_umap_tree'] = pickle.load(f)
-                print(f"Loaded UMAP tree model: {umap_tree_path}")
-            except Exception as e:
-                print(f"WARNING: Unable to load UMAP tree model: {e}")
-
-        if umap_model_path and os.path.exists(umap_model_path):
-            try:
-                with open(umap_model_path, 'rb') as f:
-                    pca_config['_umap_model'] = pickle.load(f)
-                print(f"Loaded UMAP model: {umap_model_path}")
-            except Exception as e:
-                print(f"WARNING: Unable to load UMAP model: {e}")
-    
     # Load digest schema from P4Info for dynamic parsing
     digest_fields = load_digest_schema(p4info_file_path, digest_name)
     name_to_index = build_digest_field_index(digest_fields) if digest_fields else {}
@@ -1039,9 +732,9 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
         code_csv_headers = transform_field_names
         code_display_names = []
         for name in transform_field_names:
-            m = re.match(r"^(pc|ld|ae|um)(\d+)_code$", name)
+            m = re.match(r"^(pc|ld|ae|um)(\d+)_code$", name, re.IGNORECASE)
             if m:
-                pfx = {'pc': 'PCA', 'ld': 'LD', 'ae': 'AE', 'um': 'UM'}.get(m.group(1), m.group(1).upper())
+                pfx = {'pc': 'PCA', 'ld': 'LD', 'ae': 'AE', 'um': 'UM'}.get(m.group(1).lower(), m.group(1).upper())
                 code_display_names.append(f"{pfx}{m.group(2)}")
             else:
                 code_display_names.append(name)
@@ -1224,6 +917,15 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
 
     print("Connecting to P4 switch...")
     s1.MasterArbitrationUpdate()
+    # Force mastership with election_id=2 to beat any stale run_exercise.py
+    # connection (which uses election_id=1).  run_exercise.py keeps the gRPC
+    # channel alive (HTTP/2 connection pooling) even after closing the P4Runtime
+    # stream, so the switch may still hold election_id=1 mastership for it.
+    _force_arb = p4runtime_pb2.StreamMessageRequest()
+    _force_arb.arbitration.device_id = s1.device_id
+    _force_arb.arbitration.election_id.low = 2
+    s1.requests_stream.put(_force_arb)
+    s1.dispatcher.arbitration_queue.get()  # wait for ack
 
     # Reset all flow-state registers so stale state from any previous run
     # (e.g. tcpreplay before the controller started) doesn't produce ghost flows.
@@ -1235,7 +937,14 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
         "reg_flags_syn", "reg_flags_ack", "reg_flags_fin", "reg_flags_rst",
         "reg_min_iat", "reg_fwd_max_pkt_len", "reg_bwd_max_pkt_len",
         "reg_flags_psh", "reg_init_fwd_win",
-        "bloom_filter",
+        "reg_flow_hash_2",
+        "reg_canon_src_port",
+        "reg_canon_dst_port",
+        "reg_canon_src_ip",
+        "reg_canon_dst_ip",
+        "reg_protocol",
+        "bloom_filter_1",
+        "bloom_filter_2",
     ]
     reset_cmds = "\n".join(f"register_reset MyIngress.{r}" for r in reset_registers) + "\n"
     try:
@@ -1332,7 +1041,7 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
     print("Listening for traffic digests...\n")
 
     # Dedicated digest client
-    dclient = DigestClient(address='127.0.0.1:50051', device_id=0, election_id=2)
+    dclient = DigestClient(address='127.0.0.1:50051', device_id=0, election_id=3)
     dclient.start()
 
     _digest_count_raw  = 0   # total DigestList messages received
@@ -1340,6 +1049,7 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
     _filtered_count    = 0   # flows received but filtered (< 1 packets)
 
     os.makedirs('logs', exist_ok=True)
+
     try:
         with open("logs/predictions.csv", "w") as out:
             # Build CSV header dynamically based on reduction method
@@ -1353,13 +1063,6 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
                 "missing_fields": False,
                 "missing_class": False,
             }
-
-            # Auto-drain: if no digest arrives for this long, assume tcpreplay ended
-            # and drain any flows stuck in P4 registers (UDP floods, etc.).
-            # Must be > FLOW_TIMEOUT (20s) so real timeouts have already fired first.
-            AUTO_DRAIN_TIMEOUT = 25.0
-            last_digest_time = time.time()
-            auto_drain_done = False
 
             while True:
                 msg = dclient.get_digest(timeout=0.5)
@@ -1451,37 +1154,9 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
                                   f"{format_codes_csv(entry['pca_codes'])}{class_id},{class_label}\n")
                         out.flush()
 
-                    # Auto-drain: fire once after traffic has been silent for 25s.
-                    # This recovers UDP flood flows (Mirai, DDoS) that never get
-                    # FIN/RST and whose P4 timeout only fires on next-packet arrival —
-                    # which never comes after tcpreplay ends.
-                    if not auto_drain_done and (time.time() - last_digest_time) > AUTO_DRAIN_TIMEOUT:
-                        auto_drain_done = True
-                        print(f"\nNo digest for {AUTO_DRAIN_TIMEOUT:.0f}s — auto-draining P4 registers "
-                              f"(catching UDP/non-FIN stuck flows)...")
-                        out.flush()
-                        _rf_m   = rf_model   if model_type == 'rf'  else None
-                        _xgb_m  = xgb_model  if model_type == 'xgb' else None
-                        _xgb_cm = xgb_class_mapping if model_type == 'xgb' else None
-                        try:
-                            _n = drain_p4_registers(
-                                p4info_helper, s1.client_stub, s1.device_id,
-                                pca_config, model_type, _rf_m, _xgb_m, _xgb_cm,
-                                CLASS_LABELS, n_components, pca_bits, out,
-                                transform_field_names,
-                                needs_transform=needs_transform,
-                                code_display_names=code_display_names,
-                                reduction_feature_columns=reduction_feature_columns,
-                            )
-                            packet_id += _n
-                            print(f"Auto-drain complete: {_n} flows recovered from registers.")
-                        except Exception as _ade:
-                            print(f"WARNING: Auto-drain failed: {_ade}")
                     continue
 
                 _digest_count_raw += 1
-                last_digest_time = time.time()   # reset inactivity timer on real digest
-                auto_drain_done  = False          # allow drain to re-run if a new replay starts
 
                 digest = msg.digest
                 # Validate digest name
@@ -1805,34 +1480,7 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
                     )
                 print(f"In-memory flush complete. Total flows so far: {packet_id}")
 
-            # Drain any flows still in P4 registers that never got a FIN/RST or
-            # 20-second timeout (the timeout only fires when a new packet arrives
-            # at the same register slot — after tcpreplay ends, nothing does).
-            # Skip if auto-drain already ran during the main loop (avoids duplicate rows).
-            _already_drained = locals().get('auto_drain_done', False)
-            if _already_drained:
-                print("\nRegister drain already completed via auto-drain — skipping.")
-            else:
-                print("\nDraining stuck flows from P4 registers...")
-                try:
-                    _rf_m   = rf_model   if model_type == 'rf'  else None
-                    _xgb_m  = xgb_model  if model_type == 'xgb' else None
-                    _xgb_cm = xgb_class_mapping if model_type == 'xgb' else None
-                    drained = drain_p4_registers(
-                        p4info_helper, s1.client_stub, s1.device_id,
-                        pca_config, model_type, _rf_m, _xgb_m, _xgb_cm,
-                        CLASS_LABELS, n_components, pca_bits, final_out, transform_field_names,
-                        needs_transform=needs_transform,
-                        code_display_names=code_display_names,
-                        reduction_feature_columns=reduction_feature_columns,
-                    )
-                    if drained:
-                        packet_id += drained
-                        print(f"Register drain complete. Total flows recorded: {packet_id}")
-                    else:
-                        print("Register drain: no stuck flows found.")
-                except Exception as _de:
-                    print(f"WARNING: Register drain failed: {_de}")
+            print("P4 switch handles all flow timeouts — no controller drain needed.")
         dclient.stop()
         ShutdownAllSwitchConnections()
 

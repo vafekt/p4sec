@@ -1136,6 +1136,7 @@ control SwitchIngress(
                                     meta.protocol == TYPE_ICMP)) ||
             hdr.arp.isValid()) {
             compute_flow_hash();
+            // Step 1: read all register state into meta.* (old flow's values)
             read_flow_state_t.apply();
 
             if (meta.time_first != 0 && meta.time_last != 0 &&
@@ -1149,25 +1150,8 @@ control SwitchIngress(
                 meta.is_first_packet = 1w1;
             }
 
-            update_time_last_t.apply();
-
-            if (meta.is_reverse_dir == 1w0) {
-                update_fwd_counters_t.apply();
-            } else {
-                update_bwd_counters_t.apply();
-            }
-
-            if (meta.protocol == TYPE_TCP) {
-                update_tcp_features_t.apply();
-            }
-
-            if (meta.flow_ended == 1w0 && meta.protocol == TYPE_TCP &&
-                    (meta.flags_fin > 32w0 || meta.flags_rst > 32w0)) {
-                meta.flow_ended = 1w1;
-                meta.duration   = ig_intr_md.ingress_mac_tstamp - meta.time_first;
-                clear_flow_regs_t.apply();
-            }
-
+            // Step 2: classify the timed-out flow NOW — meta.* still holds the
+            // old flow's features before update_counters overwrites them.
             if (meta.flow_ended == 1w1 &&
                     (meta.fwd_pkt_count + meta.bwd_pkt_count) >= 2) {
 
@@ -1185,9 +1169,53 @@ control SwitchIngress(
 
                 // Apply classifier
                 ml_code.apply();
-
                 meta.send_digest = 1w1;
-            } // end if flow_ended
+
+            } // end timeout classification
+            meta.flow_ended = 1w0;  // reset so FIN/RST can trigger for the new flow
+
+            // Step 3: update registers for the current packet
+            update_time_last_t.apply();
+
+            if (meta.is_reverse_dir == 1w0) {
+                update_fwd_counters_t.apply();
+            } else {
+                update_bwd_counters_t.apply();
+            }
+
+            if (meta.protocol == TYPE_TCP) {
+                update_tcp_features_t.apply();
+            }
+
+            // Step 4: check for FIN/RST termination
+            if (meta.flow_ended == 1w0 && meta.protocol == TYPE_TCP &&
+                    (meta.flags_fin > 32w0 || meta.flags_rst > 32w0)) {
+                meta.flow_ended = 1w1;
+                meta.duration   = ig_intr_md.ingress_mac_tstamp - meta.time_first;
+                clear_flow_regs_t.apply();
+            }
+
+            // Step 5: classify FIN/RST terminated flow
+            if (meta.flow_ended == 1w1 &&
+                    (meta.fwd_pkt_count + meta.bwd_pkt_count) >= 2) {
+
+                // Apply PC transformations
+                pca_component1.apply();
+                pca_component2.apply();
+                pca_component3.apply();
+                pca_component4.apply();
+                pca_component5.apply();
+                pca_component6.apply();
+                pca_component7.apply();
+                pca_component8.apply();
+                pca_component9.apply();
+                pca_component10.apply();
+
+                // Apply classifier
+                ml_code.apply();
+                meta.send_digest = 1w1;
+
+            } // end FIN/RST classification
 
             if (hdr.ipv4.isValid()) {
                 ipv4_lpm.apply();
