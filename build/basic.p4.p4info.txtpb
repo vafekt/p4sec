@@ -1518,9 +1518,16 @@ actions {
 }
 actions {
   preamble {
-    id: 27858103
-    name: "MyIngress.update_flow_state"
-    alias: "update_flow_state"
+    id: 22397523
+    name: "MyIngress.read_and_timeout_check"
+    alias: "read_and_timeout_check"
+  }
+}
+actions {
+  preamble {
+    id: 27609568
+    name: "MyIngress.update_packet_stats"
+    alias: "update_packet_stats"
   }
 }
 actions {
@@ -1950,6 +1957,96 @@ registers {
     bitstring {
       bit {
         bitwidth: 1
+      }
+    }
+  }
+  size: 65536
+}
+registers {
+  preamble {
+    id: 384155524
+    name: "MyIngress.reg_flow_hash_2"
+    alias: "reg_flow_hash_2"
+  }
+  type_spec {
+    bitstring {
+      bit {
+        bitwidth: 32
+      }
+    }
+  }
+  size: 65536
+}
+registers {
+  preamble {
+    id: 384965439
+    name: "MyIngress.reg_canon_src_port"
+    alias: "reg_canon_src_port"
+  }
+  type_spec {
+    bitstring {
+      bit {
+        bitwidth: 16
+      }
+    }
+  }
+  size: 65536
+}
+registers {
+  preamble {
+    id: 372335919
+    name: "MyIngress.reg_canon_dst_port"
+    alias: "reg_canon_dst_port"
+  }
+  type_spec {
+    bitstring {
+      bit {
+        bitwidth: 16
+      }
+    }
+  }
+  size: 65536
+}
+registers {
+  preamble {
+    id: 377282157
+    name: "MyIngress.reg_canon_src_ip"
+    alias: "reg_canon_src_ip"
+  }
+  type_spec {
+    bitstring {
+      bit {
+        bitwidth: 32
+      }
+    }
+  }
+  size: 65536
+}
+registers {
+  preamble {
+    id: 369230267
+    name: "MyIngress.reg_canon_dst_ip"
+    alias: "reg_canon_dst_ip"
+  }
+  type_spec {
+    bitstring {
+      bit {
+        bitwidth: 32
+      }
+    }
+  }
+  size: 65536
+}
+registers {
+  preamble {
+    id: 376408517
+    name: "MyIngress.reg_protocol"
+    alias: "reg_protocol"
+  }
+  type_spec {
+    bitstring {
+      bit {
+        bitwidth: 8
       }
     }
   }

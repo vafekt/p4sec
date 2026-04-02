@@ -313,6 +313,12 @@ control MyIngress(inout headers hdr,
 
     register<bit<1>>(MAX_REGISTER_ENTRIES) bloom_filter_1;  // indexed by CRC16 hash
     register<bit<1>>(MAX_REGISTER_ENTRIES) bloom_filter_2;  // indexed by CRC32 hash
+    register<bit<32>>(MAX_REGISTER_ENTRIES) reg_flow_hash_2;  // stores CRC32 at CRC16 slot for controller drain
+    register<bit<16>>(MAX_REGISTER_ENTRIES) reg_canon_src_port;  // canonical src port for controller drain
+    register<bit<16>>(MAX_REGISTER_ENTRIES) reg_canon_dst_port;  // canonical dst port for controller drain
+    register<bit<32>>(MAX_REGISTER_ENTRIES) reg_canon_src_ip;   // canonical src IP for controller drain
+    register<bit<32>>(MAX_REGISTER_ENTRIES) reg_canon_dst_ip;   // canonical dst IP for controller drain
+    register<bit<8>>(MAX_REGISTER_ENTRIES)  reg_protocol;       // IP protocol for controller drain
 
     action drop() {
         mark_to_drop(standard_metadata);
@@ -387,7 +393,7 @@ control MyIngress(inout headers hdr,
         }
     }
 
-    action update_flow_state() {
+    action read_and_timeout_check() {
         bit<48> current_time_us = standard_metadata.ingress_global_timestamp;
         bit<48> current_time = current_time_us * 1000;
         bit<48> time_first;
@@ -431,47 +437,29 @@ control MyIngress(inout headers hdr,
         // Timeout check — previous flow on this slot has been idle
         if (time_first != 0 && time_last != 0 &&
                 (current_time - time_last) > FLOW_TIMEOUT) {
-            meta.flow_ended       = 1w1;
-            meta.duration         = time_last - time_first;
-            meta.max_iat          = max_iat;
-            meta.min_iat          = min_iat;
-            meta.urg_count        = urg_count;
-            meta.fwd_pkt_count    = fwd_pkt_count;
-            meta.bwd_pkt_count    = bwd_pkt_count;
-            meta.fwd_bytes        = fwd_bytes;
-            meta.bwd_bytes        = bwd_bytes;
-            meta.max_win_size     = max_win_size;
-            meta.flags_syn        = flags_syn;
-            meta.flags_ack        = flags_ack;
-            meta.flags_fin        = flags_fin;
-            meta.flags_rst        = flags_rst;
-            meta.fwd_max_pkt_len  = fwd_max_pkt_len;
-            meta.bwd_max_pkt_len  = bwd_max_pkt_len;
-            meta.flags_psh        = flags_psh;
-            meta.init_fwd_win     = init_fwd_win;
-            // Reset for new flow — mirrors RST/FIN reset block: ALL registers must be
-            // written here, not just local vars.  Any register with a conditional write
-            // below (urg_count, init_fwd_win, directional counters, etc.) would otherwise
-            // carry stale values from the previous flow into the new one.
-            time_first       = current_time;
-            time_last        = current_time;
-            max_iat          = 0;
-            min_iat          = 0;
-            fwd_pkt_count    = 0;
-            bwd_pkt_count    = 0;
-            fwd_bytes        = 0;
-            bwd_bytes        = 0;
-            max_win_size     = 0;
-            urg_count        = 0;
-            flags_syn        = 0;
-            flags_ack        = 0;
-            flags_fin        = 0;
-            flags_rst        = 0;
-            fwd_max_pkt_len  = 0;
-            bwd_max_pkt_len  = 0;
-            flags_psh        = 0;
-            init_fwd_win     = 0;
+            if ((fwd_pkt_count + bwd_pkt_count) >= 2) {
+                meta.flow_ended       = 1w1;
+                meta.duration         = time_last - time_first;
+                meta.max_iat          = max_iat;
+                meta.min_iat          = min_iat;
+                meta.urg_count        = urg_count;
+                meta.fwd_pkt_count    = fwd_pkt_count;
+                meta.bwd_pkt_count    = bwd_pkt_count;
+                meta.fwd_bytes        = fwd_bytes;
+                meta.bwd_bytes        = bwd_bytes;
+                meta.max_win_size     = max_win_size;
+                meta.flags_syn        = flags_syn;
+                meta.flags_ack        = flags_ack;
+                meta.flags_fin        = flags_fin;
+                meta.flags_rst        = flags_rst;
+                meta.fwd_max_pkt_len  = fwd_max_pkt_len;
+                meta.bwd_max_pkt_len  = bwd_max_pkt_len;
+                meta.flags_psh        = flags_psh;
+                meta.init_fwd_win     = init_fwd_win;
+            }
+            // Reset ALL registers for the new flow (regardless of pkt count)
             reg_time_first_pkt.write(meta.flow_hash, current_time);
+            reg_time_last_pkt.write(meta.flow_hash, current_time);
             reg_max_iat.write(meta.flow_hash, 0);
             reg_min_iat.write(meta.flow_hash, 0);
             reg_urg_count.write(meta.flow_hash, 0);
@@ -488,17 +476,71 @@ control MyIngress(inout headers hdr,
             reg_bwd_max_pkt_len.write(meta.flow_hash, 16w0);
             reg_flags_psh.write(meta.flow_hash, 32w0);
             reg_init_fwd_win.write(meta.flow_hash, 16w0);
-            bloom_filter_1.write(meta.flow_hash,   1w1);  // new flow claims slot
+            bloom_filter_1.write(meta.flow_hash,   1w1);
             bloom_filter_2.write(meta.flow_hash_2, 1w1);
+            reg_flow_hash_2.write(meta.flow_hash, meta.flow_hash_2);
+            reg_canon_src_port.write(meta.flow_hash, meta.canon_src_port);
+            reg_canon_dst_port.write(meta.flow_hash, meta.canon_dst_port);
+            reg_canon_src_ip.write(meta.flow_hash, meta.canon_src_ip);
+            reg_canon_dst_ip.write(meta.flow_hash, meta.canon_dst_ip);
+            reg_protocol.write(meta.flow_hash, meta.protocol);
         }
+    }
+
+    action update_packet_stats() {
+        bit<48> current_time_us = standard_metadata.ingress_global_timestamp;
+        bit<48> current_time = current_time_us * 1000;
+        bit<48> time_first;
+        bit<48> time_last;
+        iat_t   max_iat;
+        iat_t   min_iat;
+        bit<32> fwd_pkt_count;
+        bit<32> bwd_pkt_count;
+        bytes_t fwd_bytes;
+        bytes_t bwd_bytes;
+        bit<16> max_win_size;
+        bit<32> urg_count;
+        bit<32> flags_syn;
+        bit<32> flags_ack;
+        bit<32> flags_fin;
+        bit<32> flags_rst;
+        bit<16> fwd_max_pkt_len;
+        bit<16> bwd_max_pkt_len;
+        bit<32> flags_psh;
+        bit<16> init_fwd_win;
+
+        reg_time_first_pkt.read(time_first, meta.flow_hash);
+        reg_time_last_pkt.read(time_last, meta.flow_hash);
+        reg_max_iat.read(max_iat, meta.flow_hash);
+        reg_min_iat.read(min_iat, meta.flow_hash);
+        reg_fwd_pkt_count.read(fwd_pkt_count, meta.flow_hash);
+        reg_bwd_pkt_count.read(bwd_pkt_count, meta.flow_hash);
+        reg_fwd_bytes.read(fwd_bytes, meta.flow_hash);
+        reg_bwd_bytes.read(bwd_bytes, meta.flow_hash);
+        reg_max_win_size.read(max_win_size, meta.flow_hash);
+        reg_urg_count.read(urg_count, meta.flow_hash);
+        reg_flags_syn.read(flags_syn, meta.flow_hash);
+        reg_flags_ack.read(flags_ack, meta.flow_hash);
+        reg_flags_fin.read(flags_fin, meta.flow_hash);
+        reg_flags_rst.read(flags_rst, meta.flow_hash);
+        reg_fwd_max_pkt_len.read(fwd_max_pkt_len, meta.flow_hash);
+        reg_bwd_max_pkt_len.read(bwd_max_pkt_len, meta.flow_hash);
+        reg_flags_psh.read(flags_psh, meta.flow_hash);
+        reg_init_fwd_win.read(init_fwd_win, meta.flow_hash);
 
         // First packet for a new flow (fresh empty slot)
         if (time_first == 0) {
             time_first = current_time;
             meta.is_first_packet = 1w1;
             reg_time_first_pkt.write(meta.flow_hash, current_time);
-            bloom_filter_1.write(meta.flow_hash,   1w1);  // claim empty slot
+            bloom_filter_1.write(meta.flow_hash,   1w1);
             bloom_filter_2.write(meta.flow_hash_2, 1w1);
+            reg_flow_hash_2.write(meta.flow_hash, meta.flow_hash_2);
+            reg_canon_src_port.write(meta.flow_hash, meta.canon_src_port);
+            reg_canon_dst_port.write(meta.flow_hash, meta.canon_dst_port);
+            reg_canon_src_ip.write(meta.flow_hash, meta.canon_src_ip);
+            reg_canon_dst_ip.write(meta.flow_hash, meta.canon_dst_ip);
+            reg_protocol.write(meta.flow_hash, meta.protocol);
         }
 
         // IAT update (MaxIAT and MinIAT)
@@ -513,8 +555,12 @@ control MyIngress(inout headers hdr,
                 reg_min_iat.write(meta.flow_hash, min_iat);
             }
         }
-        meta.max_iat = max_iat;
-        meta.min_iat = min_iat;
+        // Only update meta.* for IAT when no timeout already set flow_ended —
+        // read_and_timeout_check() snapshot must not be overwritten.
+        if (meta.flow_ended == 1w0) {
+            meta.max_iat = max_iat;
+            meta.min_iat = min_iat;
+        }
 
         // Direction-based counters + max packet length per direction
         if (meta.is_reverse_dir == 1w0) {
@@ -541,12 +587,14 @@ control MyIngress(inout headers hdr,
                 reg_bwd_max_pkt_len.write(meta.flow_hash, bwd_max_pkt_len);
             }
         }
-        meta.fwd_pkt_count   = fwd_pkt_count;
-        meta.bwd_pkt_count   = bwd_pkt_count;
-        meta.fwd_bytes       = fwd_bytes;
-        meta.bwd_bytes       = bwd_bytes;
-        meta.fwd_max_pkt_len = fwd_max_pkt_len;
-        meta.bwd_max_pkt_len = bwd_max_pkt_len;
+        if (meta.flow_ended == 1w0) {
+            meta.fwd_pkt_count   = fwd_pkt_count;
+            meta.bwd_pkt_count   = bwd_pkt_count;
+            meta.fwd_bytes       = fwd_bytes;
+            meta.bwd_bytes       = bwd_bytes;
+            meta.fwd_max_pkt_len = fwd_max_pkt_len;
+            meta.bwd_max_pkt_len = bwd_max_pkt_len;
+        }
 
         // Window size (max)
         if (meta.protocol == TYPE_TCP) {
@@ -555,8 +603,10 @@ control MyIngress(inout headers hdr,
                 reg_max_win_size.write(meta.flow_hash, max_win_size);
             }
         }
-        meta.max_win_size = max_win_size;
-        meta.init_fwd_win = init_fwd_win;
+        if (meta.flow_ended == 1w0) {
+            meta.max_win_size = max_win_size;
+            meta.init_fwd_win = init_fwd_win;
+        }
 
         reg_time_last_pkt.write(meta.flow_hash, current_time);
 
@@ -577,12 +627,14 @@ control MyIngress(inout headers hdr,
             reg_flags_rst.write(meta.flow_hash, flags_rst);
             reg_flags_psh.write(meta.flow_hash, flags_psh);
         }
-        meta.urg_count  = urg_count;
-        meta.flags_syn  = flags_syn;
-        meta.flags_ack  = flags_ack;
-        meta.flags_fin  = flags_fin;
-        meta.flags_rst  = flags_rst;
-        meta.flags_psh  = flags_psh;
+        if (meta.flow_ended == 1w0) {
+            meta.urg_count  = urg_count;
+            meta.flags_syn  = flags_syn;
+            meta.flags_ack  = flags_ack;
+            meta.flags_fin  = flags_fin;
+            meta.flags_rst  = flags_rst;
+            meta.flags_psh  = flags_psh;
+        }
 
         // FIN/RST ends the flow
         if (meta.flow_ended == 1w0 &&
@@ -623,6 +675,12 @@ control MyIngress(inout headers hdr,
             reg_init_fwd_win.write(meta.flow_hash, 16w0);
             bloom_filter_1.write(meta.flow_hash,   1w0);  // release slot
             bloom_filter_2.write(meta.flow_hash_2, 1w0);
+            reg_flow_hash_2.write(meta.flow_hash, 32w0);  // clear CRC32 bookmark
+            reg_canon_src_port.write(meta.flow_hash, 16w0);  // clear port bookmark
+            reg_canon_dst_port.write(meta.flow_hash, 16w0);
+            reg_canon_src_ip.write(meta.flow_hash, 32w0);   // clear IP bookmark
+            reg_canon_dst_ip.write(meta.flow_hash, 32w0);
+            reg_protocol.write(meta.flow_hash, 8w0);        // clear protocol bookmark
         }
     }
 
@@ -1008,16 +1066,26 @@ control MyIngress(inout headers hdr,
                                     meta.protocol == TYPE_ICMP)) ||
             hdr.arp.isValid()) {
             compute_flow_hash();
-            // Only update state when no collision — colliding packets are forwarded
-            // without corrupting another flow's registers.
+            // Step 1: read registers, check timeout, snapshot old flow features
+            // into meta.* if timed out, then reset registers for the new flow.
             if (meta.hash_collision == 1w0) {
-                update_flow_state();
+                read_and_timeout_check();
             }
 
+            // Step 2: update current packet stats.
+            // update_packet_stats() also detects FIN/RST and, if triggered,
+            // sets meta.flow_ended=1 and snapshots features into meta.*.
+            // When read_and_timeout_check() already set meta.flow_ended=1 (timeout),
+            // the guarded meta.* writes inside update_packet_stats() are skipped,
+            // preserving the old flow's features for classification below.
+            if (meta.hash_collision == 1w0) {
+                update_packet_stats();
+            }
+
+            // Step 3: single classification block — each PCA table applied exactly once.
             if (meta.flow_ended == 1w1 &&
                     (meta.fwd_pkt_count + meta.bwd_pkt_count) >= 2) {
 
-                // Apply PC transformations
                 pca_component1.apply();
                 pca_component2.apply();
                 pca_component3.apply();
@@ -1028,11 +1096,7 @@ control MyIngress(inout headers hdr,
                 pca_component8.apply();
                 pca_component9.apply();
                 pca_component10.apply();
-
-                // Apply classifier
                 ml_code.apply();
-
-                // Send digest
                 digest<digest_t>(1, {
                     meta.canon_src_ip,
                     meta.canon_dst_ip,
