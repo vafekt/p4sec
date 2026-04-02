@@ -8,12 +8,12 @@ Output columns per flow (bidirectional, canonical key):
   Identifier columns (not used as ML features):
     SrcIP     - Canonical source IP
     DstIP     - Canonical destination IP
-    SrcPort   - Canonical source port
-    DstPort   - Canonical destination port
-    Protocol  - IP protocol number (6=TCP, 17=UDP, 1=ICMP, 253=ARP pseudo)
 
   ML feature columns — match EXACTLY what the P4 switch computes and
   sends as a digest when a flow ends (same names, same order):
+    Protocol  - IP protocol number (6=TCP, 17=UDP, 1=ICMP, 253=ARP pseudo)
+    SrcPort   - Canonical source port
+    DstPort   - Canonical destination port
     Duration     - Time from first to last packet (nanoseconds)
     MaxIAT       - Maximum inter-arrival time across consecutive packets (ns)
     UrgCount     - Number of packets with URG flag set

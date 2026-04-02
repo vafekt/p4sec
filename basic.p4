@@ -161,6 +161,9 @@ struct metadata {
 
     // Timestamp
     bit<48> ingress_timestamp;
+
+    // RF packed vote field (8 trees x 3 bits)
+    bit<24> rf_votes;
 }
 
 struct headers {
@@ -1038,8 +1041,11 @@ control MyIngress(inout headers hdr,
         meta.ml_result = val;
     }
 
-    // Decision Tree classification
-    table ml_code {
+    action set_rf_tree_0_vote(bit<3> vote) {
+        meta.rf_votes[2:0] = vote;
+    }
+
+    table rf_tree_0 {
         key = {
             meta.pc1_code                 : range;
             meta.pc2_code                 : range;
@@ -1053,10 +1059,189 @@ control MyIngress(inout headers hdr,
             meta.pc10_code                : range;
         }
         actions = {
-            set_result;
+            set_rf_tree_0_vote;
             NoAction;
         }
         size = NB_ENTRIES;
+    }
+
+    action set_rf_tree_1_vote(bit<3> vote) {
+        meta.rf_votes[5:3] = vote;
+    }
+
+    table rf_tree_1 {
+        key = {
+            meta.pc1_code                 : range;
+            meta.pc2_code                 : range;
+            meta.pc3_code                 : range;
+            meta.pc4_code                 : range;
+            meta.pc5_code                 : range;
+            meta.pc6_code                 : range;
+            meta.pc7_code                 : range;
+            meta.pc8_code                 : range;
+            meta.pc9_code                 : range;
+            meta.pc10_code                : range;
+        }
+        actions = {
+            set_rf_tree_1_vote;
+            NoAction;
+        }
+        size = NB_ENTRIES;
+    }
+
+    action set_rf_tree_2_vote(bit<3> vote) {
+        meta.rf_votes[8:6] = vote;
+    }
+
+    table rf_tree_2 {
+        key = {
+            meta.pc1_code                 : range;
+            meta.pc2_code                 : range;
+            meta.pc3_code                 : range;
+            meta.pc4_code                 : range;
+            meta.pc5_code                 : range;
+            meta.pc6_code                 : range;
+            meta.pc7_code                 : range;
+            meta.pc8_code                 : range;
+            meta.pc9_code                 : range;
+            meta.pc10_code                : range;
+        }
+        actions = {
+            set_rf_tree_2_vote;
+            NoAction;
+        }
+        size = NB_ENTRIES;
+    }
+
+    action set_rf_tree_3_vote(bit<3> vote) {
+        meta.rf_votes[11:9] = vote;
+    }
+
+    table rf_tree_3 {
+        key = {
+            meta.pc1_code                 : range;
+            meta.pc2_code                 : range;
+            meta.pc3_code                 : range;
+            meta.pc4_code                 : range;
+            meta.pc5_code                 : range;
+            meta.pc6_code                 : range;
+            meta.pc7_code                 : range;
+            meta.pc8_code                 : range;
+            meta.pc9_code                 : range;
+            meta.pc10_code                : range;
+        }
+        actions = {
+            set_rf_tree_3_vote;
+            NoAction;
+        }
+        size = NB_ENTRIES;
+    }
+
+    action set_rf_tree_4_vote(bit<3> vote) {
+        meta.rf_votes[14:12] = vote;
+    }
+
+    table rf_tree_4 {
+        key = {
+            meta.pc1_code                 : range;
+            meta.pc2_code                 : range;
+            meta.pc3_code                 : range;
+            meta.pc4_code                 : range;
+            meta.pc5_code                 : range;
+            meta.pc6_code                 : range;
+            meta.pc7_code                 : range;
+            meta.pc8_code                 : range;
+            meta.pc9_code                 : range;
+            meta.pc10_code                : range;
+        }
+        actions = {
+            set_rf_tree_4_vote;
+            NoAction;
+        }
+        size = NB_ENTRIES;
+    }
+
+    action set_rf_tree_5_vote(bit<3> vote) {
+        meta.rf_votes[17:15] = vote;
+    }
+
+    table rf_tree_5 {
+        key = {
+            meta.pc1_code                 : range;
+            meta.pc2_code                 : range;
+            meta.pc3_code                 : range;
+            meta.pc4_code                 : range;
+            meta.pc5_code                 : range;
+            meta.pc6_code                 : range;
+            meta.pc7_code                 : range;
+            meta.pc8_code                 : range;
+            meta.pc9_code                 : range;
+            meta.pc10_code                : range;
+        }
+        actions = {
+            set_rf_tree_5_vote;
+            NoAction;
+        }
+        size = NB_ENTRIES;
+    }
+
+    action set_rf_tree_6_vote(bit<3> vote) {
+        meta.rf_votes[20:18] = vote;
+    }
+
+    table rf_tree_6 {
+        key = {
+            meta.pc1_code                 : range;
+            meta.pc2_code                 : range;
+            meta.pc3_code                 : range;
+            meta.pc4_code                 : range;
+            meta.pc5_code                 : range;
+            meta.pc6_code                 : range;
+            meta.pc7_code                 : range;
+            meta.pc8_code                 : range;
+            meta.pc9_code                 : range;
+            meta.pc10_code                : range;
+        }
+        actions = {
+            set_rf_tree_6_vote;
+            NoAction;
+        }
+        size = NB_ENTRIES;
+    }
+
+    action set_rf_tree_7_vote(bit<3> vote) {
+        meta.rf_votes[23:21] = vote;
+    }
+
+    table rf_tree_7 {
+        key = {
+            meta.pc1_code                 : range;
+            meta.pc2_code                 : range;
+            meta.pc3_code                 : range;
+            meta.pc4_code                 : range;
+            meta.pc5_code                 : range;
+            meta.pc6_code                 : range;
+            meta.pc7_code                 : range;
+            meta.pc8_code                 : range;
+            meta.pc9_code                 : range;
+            meta.pc10_code                : range;
+        }
+        actions = {
+            set_rf_tree_7_vote;
+            NoAction;
+        }
+        size = NB_ENTRIES;
+    }
+
+    table rf_vote_classify {
+        key = {
+            meta.rf_votes : exact;
+        }
+        actions = {
+            set_result;
+            NoAction;
+        }
+        size = 16777216;
     }
 
     apply {
@@ -1095,7 +1280,16 @@ control MyIngress(inout headers hdr,
                 pca_component10.apply();
 
                 // Apply classifier
-                ml_code.apply();
+                meta.rf_votes = 24w0;
+                rf_tree_0.apply();
+                rf_tree_1.apply();
+                rf_tree_2.apply();
+                rf_tree_3.apply();
+                rf_tree_4.apply();
+                rf_tree_5.apply();
+                rf_tree_6.apply();
+                rf_tree_7.apply();
+                rf_vote_classify.apply();
 
                 // Send digest
                 digest<digest_t>(1, {

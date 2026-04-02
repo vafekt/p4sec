@@ -53,7 +53,7 @@ class P4secArgumentParser(argparse.ArgumentParser):
         print(LOGO, file=file)
         super().print_help(file)
 
-# ─── All 13 P4 raw flow features ────────────────────────────────────────────
+# ─── All 20 P4 raw flow features ────────────────────────────────────────────
 FLOW_FEATURES = [
     "Protocol", "SrcPort", "DstPort",
     "Duration", "MaxIAT", "UrgCount",

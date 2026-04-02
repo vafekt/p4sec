@@ -110,8 +110,10 @@ python3 1_extract_dataset.py --mode pcap --pcap-dir pcaps --output dataset/datas
 sudo python3 1_extract_dataset.py --mode live --interface eth0 --count 1000 --label skype --output dataset/live.csv
 ```
 
-**Extracts 17 Flow-Based Features:**
+**Extracts 20 Flow-Based Features:**
 - **Protocol**: IP protocol number (6=TCP, 17=UDP, etc.)
+- **SrcPort**: Canonical source port
+- **DstPort**: Canonical destination port
 - **Duration**: Flow duration in nanoseconds (time from first to last packet)
 - **MaxIAT**: Maximum inter-arrival time between consecutive packets in the flow
 - **MinIAT**: Minimum inter-arrival time between consecutive packets in the flow
@@ -474,8 +476,9 @@ cd .. && make clean && make
 - Shared utilities (`detect_feature_columns`, `detect_feature_max_values`, `load_reduction_config`) used by all pipeline steps
 - Ensures consistent feature detection regardless of reduction method
 
-### Extended Feature Set (17 features)
-- **Expanded from 9 → 13 → 17** flow-level features
+### Extended Feature Set (20 features)
+
+- **Expanded from 9 → 13 → 17 → 20** flow-level features
 - SYN/ACK/FIN/RST added as per-packet **counts** (not booleans); P4 registers upgraded to `register<bit<32>>`
 - Further added: **MinIAT**, **FwdMaxPktLen**, **BwdMaxPktLen**, **FlagsPsh**, **InitFwdWinBytes**
 
