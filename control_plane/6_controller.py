@@ -14,7 +14,6 @@ This controller:
 import argparse
 import sys
 import os
-import sys
 import time
 import grpc
 import subprocess

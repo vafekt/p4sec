@@ -8,7 +8,6 @@ import sys
 
 from sklearn.decomposition import PCA
 from sklearn.tree import DecisionTreeRegressor, DecisionTreeClassifier
-from sklearn.model_selection import train_test_split, cross_val_score
 from sklearn.metrics import r2_score, accuracy_score
 
 from pipeline_utils import P4_FEATURE_MAX, find_dataset_csv
