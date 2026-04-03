@@ -155,6 +155,13 @@ class P4CodeGenerator:
         self.needs_transform = self.reduction_config.get('needs_transform_tables', True)
 
         # Code prefix: "pc" for PCA, "ld" for LDA, "ae" for Autoencoder, "um" for UMAP.
+        _KNOWN_METHODS = {'pca', 'lda', 'autoencoder', 'umap', 'feature_selection'}
+        if method not in _KNOWN_METHODS:
+            import warnings
+            warnings.warn(
+                f"Unknown reduction method '{method}' in reduction_config.json — defaulting to PCA. "
+                f"Known methods: {sorted(_KNOWN_METHODS)}", stacklevel=2)
+
         if method == 'lda':
             self.code_prefix = 'ld'
         elif method == 'autoencoder':
@@ -2817,6 +2824,12 @@ control SwitchIngressDeparser(
                 meta.flags_fin,
                 meta.flags_rst,
 '''
+        code += '''                meta.min_iat,
+                meta.fwd_max_pkt_len,
+                meta.bwd_max_pkt_len,
+                meta.flags_psh,
+                meta.init_fwd_win,
+'''
         if self.needs_transform:
             for i in range(1, self.n_components + 1):
                 code += f'                meta.{pfx}{i}_code,\n'
@@ -2826,12 +2839,7 @@ control SwitchIngressDeparser(
             for c in range(n_cls):
                 code += f'                meta.xgb_score_c{c},\n'
 
-        code += '''                meta.min_iat,
-                meta.fwd_max_pkt_len,
-                meta.bwd_max_pkt_len,
-                meta.flags_psh,
-                meta.init_fwd_win,
-                meta.ml_result
+        code += '''                meta.ml_result
             });
         }
         pkt.emit(hdr.ethernet);
