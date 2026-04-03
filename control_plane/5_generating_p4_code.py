@@ -368,7 +368,7 @@ struct metadata {
 '''
         # RF packed votes
         if self.model_type == 'rf':
-            n_est     = self.rf_params.get('n_estimators', 8)
+            n_est     = self.rf_params.get('n_estimators', 4)
             vote_bits = self.rf_params.get('vote_bits', 2)
             total_vb  = n_est * vote_bits
             code += f'\n    // RF packed vote field ({n_est} trees x {vote_bits} bits)\n'
@@ -1002,8 +1002,9 @@ control MyIngress(inout headers hdr,
 '''
 
         elif self.model_type == 'rf':
-            n_est     = self.rf_params.get('n_estimators', 8)
+            n_est     = self.rf_params.get('n_estimators', 4)
             vote_bits = self.rf_params.get('vote_bits', 2)
+            n_classes = self.rf_params.get('n_classes', 2)
             rf_feats  = self.rf_params.get('feature_names', self.classifier_features)
 
             for i in range(n_est):
@@ -1030,6 +1031,7 @@ control MyIngress(inout headers hdr,
 '''
 
             total_vb = n_est * vote_bits
+            vote_table_size = n_classes ** n_est  # actual entries = n_classes^n_est, not 2^total_vb
             code += f'''
     table rf_vote_classify {{
         key = {{
@@ -1039,7 +1041,7 @@ control MyIngress(inout headers hdr,
             set_result;
             NoAction;
         }}
-        size = {2**total_vb};
+        size = {vote_table_size};
     }}
 '''
 
@@ -1227,7 +1229,7 @@ control MyIngress(inout headers hdr,
         if self.model_type == 'dt':
             classify_snippet += '                ml_code.apply();\n'
         elif self.model_type == 'rf':
-            n_est = self.rf_params.get('n_estimators', 8)
+            n_est = self.rf_params.get('n_estimators', 4)
             total_vb = n_est * self.rf_params.get('vote_bits', 2)
             classify_snippet += f'                meta.rf_votes = {total_vb}w0;\n'
             for i in range(n_est):
@@ -1658,7 +1660,7 @@ struct metadata {
 '''
         # RF packed votes
         if self.model_type == 'rf':
-            n_est     = self.rf_params.get('n_estimators', 8)
+            n_est     = self.rf_params.get('n_estimators', 4)
             vote_bits = self.rf_params.get('vote_bits', 2)
             total_vb  = n_est * vote_bits
             code += f'\n    // RF packed vote field ({n_est} trees x {vote_bits} bits)\n'
@@ -2366,8 +2368,9 @@ control SwitchIngress(
 '''
 
         elif self.model_type == 'rf':
-            n_est     = self.rf_params.get('n_estimators', 8)
+            n_est     = self.rf_params.get('n_estimators', 4)
             vote_bits = self.rf_params.get('vote_bits', 2)
+            n_classes = self.rf_params.get('n_classes', 2)
             rf_feats  = self.rf_params.get('feature_names', self.classifier_features)
 
             for i in range(n_est):
@@ -2394,6 +2397,7 @@ control SwitchIngress(
 '''
 
             total_vb = n_est * vote_bits
+            vote_table_size = n_classes ** n_est  # actual entries = n_classes^n_est, not 2^total_vb
             code += f'''
     table rf_vote_classify {{
         key = {{
@@ -2403,7 +2407,7 @@ control SwitchIngress(
             set_result;
             NoAction;
         }}
-        size = {2**total_vb};
+        size = {vote_table_size};
     }}
 '''
 
@@ -2590,7 +2594,7 @@ control SwitchIngress(
         if self.model_type == 'dt':
             classify_snippet += '                ml_code.apply();\n'
         elif self.model_type == 'rf':
-            n_est = self.rf_params.get('n_estimators', 8)
+            n_est = self.rf_params.get('n_estimators', 4)
             total_vb = n_est * self.rf_params.get('vote_bits', 2)
             classify_snippet += f'                meta.rf_votes = {total_vb}w0;\n'
             for i in range(n_est):
@@ -2939,7 +2943,7 @@ def load_rf_params(path='tables/rf_params.json'):
             return p
         except Exception as e:
             logger.warning(f"Could not read {path}: {e}")
-    return {"n_estimators": 8, "vote_bits": 2, "n_classes": 4}
+    return {"n_estimators": 4, "vote_bits": 2, "n_classes": 4}
 
 
 def load_xgb_params(path='tables/xgb_params.json'):
@@ -2951,7 +2955,7 @@ def load_xgb_params(path='tables/xgb_params.json'):
             return p
         except Exception as e:
             logger.warning(f"Could not read {path}: {e}")
-    return {"total_trees": 16, "n_classes": 2, "n_estimators": 8}
+    return {"total_trees": 8, "n_classes": 2, "n_estimators": 4}
 
 
 def load_cnn_params(path='tables/cnn_params.json'):

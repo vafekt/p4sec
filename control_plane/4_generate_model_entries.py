@@ -96,11 +96,28 @@ FEAT_MAX = detect_feature_max_values(tables_dir)
 
 # ─── Shared utilities ────────────────────────────────────────────────────
 
-def load_base_lines(path, drop_prefixes):
-    """Load existing commands, stripping lines that match drop_prefixes."""
+# All model-specific table prefixes across every backend.
+# load_base_lines() always strips ALL of these so that switching from one
+# model type to another never leaves stale entries in s1-commands.txt.
+ALL_MODEL_PREFIXES = (
+    "table_add MyIngress.ml_code",           # DT / KNN / SVM proxy
+    "table_add MyIngress.rf_tree_",          # RF
+    "table_add MyIngress.rf_vote_classify",  # RF
+    "table_add MyIngress.xgb_tree_",         # XGB / GB
+    "table_add MyIngress.xgb_classify",      # XGB / GB
+    "table_add MyIngress.cnn",               # CNN
+)
+
+
+def load_base_lines(path, drop_prefixes=None):
+    """Load existing s1-commands.txt, stripping all model-specific entries.
+
+    Always strips ALL_MODEL_PREFIXES regardless of drop_prefixes, so switching
+    model types never leaves stale table entries behind in the file.
+    """
     if not os.path.exists(path):
         return []
-    return [l for l in open(path) if not l.lstrip().startswith(drop_prefixes)]
+    return [l for l in open(path) if not l.lstrip().startswith(ALL_MODEL_PREFIXES)]
 
 
 def generate_cnn_entries(cnn_params, output_path):
@@ -474,8 +491,9 @@ if model_type == 'dt':
     base = load_base_lines(outputfile, RULE_PREFIXES)
 
     # Write ml_code entries FIRST so they load even if pca loading is interrupted
+    # BMv2: higher priority number = matched first → most-specific rules get highest numbers
     with open(outputfile, "w") as f:
-        for prio, (_, rs) in enumerate(rules, 1):
+        for prio, (_, rs) in zip(range(len(rules), 0, -1), rules):
             f.write(f"{rs} {prio}\n")
         for line in base:
             f.write(line)
@@ -518,10 +536,11 @@ elif model_type in ('knn', 'svm'):
     rules.sort(key=lambda x: x[0], reverse=True)
 
     base = load_base_lines(outputfile, RULE_PREFIXES)
+    # BMv2: higher priority number = matched first → most-specific rules get highest numbers
     with open(outputfile, "w") as f:
         for line in base:
             f.write(line)
-        for prio, (_, rs) in enumerate(rules, 1):
+        for prio, (_, rs) in zip(range(len(rules), 0, -1), rules):
             f.write(f"{rs} {prio}\n")
     print(f"Wrote {len(rules)} {model_type.upper()} proxy DT entries to {outputfile}")
 
@@ -558,7 +577,7 @@ elif model_type in ('rf',):
             rules = walk_sklearn_tree_rules(
                 est, FNAMES, fmax,
                 f"rf_tree_{i}", f"set_rf_tree_{i}_vote",
-                class_mapper=lambda lbl: label_enc.get(lbl, label_enc.get(str(lbl), 0)))
+                class_mapper=lambda lbl: label_enc.get(lbl, int(lbl) if not isinstance(lbl, str) else 0))
             rules.sort(key=lambda x: x[0], reverse=True)
             all_tree_rules.append(rules)
             print(f"  tree {i}: {len(rules)} entries")
@@ -576,8 +595,9 @@ elif model_type in ('rf',):
     with open(outputfile, "w") as f:
         for line in base:
             f.write(line)
+        # BMv2: higher priority number = matched first → most-specific rules get highest numbers
         for rules in all_tree_rules:
-            for prio, (_, rs) in enumerate(rules, 1):
+            for prio, (_, rs) in zip(range(len(rules), 0, -1), rules):
                 f.write(f"{rs} {prio}\n")
         for rs in agg_rules:
             f.write(f"{rs}\n")
@@ -666,13 +686,14 @@ elif model_type == 'xgb':
             tf.write(f"# {line}\n")
 
     base = load_base_lines(outputfile, RULE_PREFIXES)
+    # BMv2: higher priority number = matched first → most-specific rules get highest numbers
     with open(outputfile, "w") as f:
         for line in base:
             f.write(line)
         for rules in all_tree_rules:
-            for prio, (_, rs) in enumerate(rules, 1):
+            for prio, (_, rs) in zip(range(len(rules), 0, -1), rules):
                 f.write(f"{rs} {prio}\n")
-        for prio, (_, rs) in enumerate(proxy_rules, 1):
+        for prio, (_, rs) in zip(range(len(proxy_rules), 0, -1), proxy_rules):
             f.write(f"{rs} {prio}\n")
 
     total = sum(len(r) for r in all_tree_rules)
@@ -764,13 +785,14 @@ elif model_type == 'gb':
             tf.write(f"# {line}\n")
 
     base = load_base_lines(outputfile, RULE_PREFIXES)
+    # BMv2: higher priority number = matched first → most-specific rules get highest numbers
     with open(outputfile, "w") as f:
         for line in base:
             f.write(line)
         for rules in all_tree_rules:
-            for prio, (_, rs) in enumerate(rules, 1):
+            for prio, (_, rs) in zip(range(len(rules), 0, -1), rules):
                 f.write(f"{rs} {prio}\n")
-        for prio, (_, rs) in enumerate(proxy_rules, 1):
+        for prio, (_, rs) in zip(range(len(proxy_rules), 0, -1), proxy_rules):
             f.write(f"{rs} {prio}\n")
 
     total = sum(len(r) for r in all_tree_rules)

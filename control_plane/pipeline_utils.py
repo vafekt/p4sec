@@ -17,6 +17,7 @@ All step 2 scripts write this file.  All step 3/4 scripts read it.
 """
 
 import os
+import glob
 import json
 import pandas as pd
 
@@ -57,6 +58,29 @@ TRANSFORM_METHOD_TO_PREFIX = {
     'autoencoder': 'AE',
     'umap': 'UM',
 }
+
+
+def find_dataset_csv(script_file=None):
+    """
+    Locate the dataset CSV.  Searches control_plane/dataset/ then ../dataset/.
+    Prefers a file named 'dataset.csv'; falls back to the most-recently modified CSV.
+
+    Pass __file__ from the calling script so the search is relative to that script,
+    or omit it to search relative to this utils file.
+    """
+    base = os.path.dirname(os.path.abspath(script_file or __file__))
+    root = os.path.abspath(os.path.join(base, ".."))
+    for d in [os.path.join(base, "dataset"), os.path.join(root, "dataset")]:
+        if not os.path.isdir(d):
+            continue
+        csvs = glob.glob(os.path.join(d, "*.csv"))
+        if not csvs:
+            continue
+        preferred = [p for p in csvs if os.path.basename(p).lower() == "dataset.csv"]
+        if preferred:
+            return preferred[0]
+        return sorted(csvs, key=os.path.getmtime, reverse=True)[0]
+    raise FileNotFoundError("No CSV dataset found in any dataset/ directory")
 
 
 def load_reduction_config(tables_dir):

@@ -3,7 +3,6 @@ import numpy as np
 import pandas as pd
 import json
 import os
-import glob
 import argparse
 import sys
 import pickle
@@ -107,29 +106,10 @@ MAX_VAL = 2**BITS - 1
 # ==========================================================
 # 1. Load dataset & cleaning
 # ==========================================================
-ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 TABLES_DIR = os.path.join(os.path.dirname(__file__), "tables")
 os.makedirs(TABLES_DIR, exist_ok=True)
 
-def find_dataset_csv():
-    candidates_dirs = [
-        os.path.join(os.path.dirname(__file__), "dataset"),
-        os.path.join(ROOT_DIR, "dataset"),
-    ]
-    for d in candidates_dirs:
-        if not os.path.isdir(d):
-            continue
-        csvs = glob.glob(os.path.join(d, "*.csv"))
-        if not csvs:
-            continue
-        preferred = [p for p in csvs if os.path.basename(p).lower() == "dataset.csv"]
-        if preferred:
-            return preferred[0]
-        csvs.sort(key=lambda p: os.path.getmtime(p), reverse=True)
-        return csvs[0]
-    raise FileNotFoundError("No CSV dataset found in any dataset/ directory")
-
-csv_path = find_dataset_csv()
+csv_path = find_dataset_csv(__file__)
 print("Using dataset:", csv_path)
 df = pd.read_csv(csv_path)
 
@@ -237,8 +217,12 @@ leaf_to_codes = {}
 for leaf_id in unique_leaf_ids:
     idx = np.where(leaf_ids_train == leaf_id)[0]
     codes_in_leaf = UM_code_train[idx]
-    rep = np.rint(codes_in_leaf.mean(axis=0)).astype(int)
-    leaf_to_codes[leaf_id] = rep
+    labels_in_leaf = y_train[idx]
+    # Use majority-class centroid to avoid mixing codes from different classes
+    values, counts = np.unique(labels_in_leaf, return_counts=True)
+    majority_class = values[np.argmax(counts)]
+    mask = labels_in_leaf == majority_class
+    leaf_to_codes[leaf_id] = np.rint(codes_in_leaf[mask].mean(axis=0)).astype(int)
 
 def get_tree_codes(dt, leaf_to_codes, X, k):
     leaf_ids = dt.apply(X)
@@ -472,7 +456,7 @@ def write_umap_p4_commands(dt, feature_names, leaf_to_codes, k, max_val, feature
     with open(filename, "w") as f:
         dfs(0, [])
 
-from pipeline_utils import P4_FEATURE_MAX as FEATURE_MAX_DEFAULTS
+from pipeline_utils import P4_FEATURE_MAX as FEATURE_MAX_DEFAULTS, find_dataset_csv
 
 feature_max_map = {}
 for feat in feature_cols:
@@ -526,7 +510,7 @@ def write_if_rules_for_umap(dt, feature_names, leaf_to_codes, filename):
         f.write("# Maps raw features to UMAP component codes\n\n")
         dfs(0, [])
 
-rules_if_path = os.path.join(TABLES_DIR, "umap_tree_if_rules.txt")
+rules_if_path = os.path.join(TABLES_DIR, "transform_rules.txt")
 write_if_rules_for_umap(tree, feature_cols, leaf_to_codes, rules_if_path)
 print(f"IF rules (feature ranges -> UM*_code) saved to: {rules_if_path}")
 

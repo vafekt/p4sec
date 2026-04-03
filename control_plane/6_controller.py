@@ -141,7 +141,29 @@ class FlowAggregator:
         self.flows.clear()
         return remaining
 
-def load_switch_cli(sw, runtime_cli, thrift_port=9090):
+def _run_cli_chunk(lines, thrift_port, log_fh):
+    """Run simple_switch_CLI with the given lines written to a temp file.
+
+    Returns (returncode, elapsed_seconds).
+    """
+    import tempfile
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as tf:
+        tf.writelines(lines)
+        tmp_path = tf.name
+    try:
+        t0 = time.time()
+        with open(tmp_path, 'r') as fin:
+            proc = subprocess.Popen(
+                ['simple_switch_CLI', '--thrift-port', str(thrift_port)],
+                stdin=fin, stdout=log_fh, stderr=subprocess.STDOUT
+            )
+            proc.wait()
+        return proc.returncode, time.time() - t0
+    finally:
+        os.unlink(tmp_path)
+
+
+def load_switch_cli(sw, runtime_cli, thrift_port=9090, chunk_size=50000):
     """Load P4 table rules via simple_switch_CLI.
 
     Blocks until all entries are installed before the controller starts
@@ -149,20 +171,26 @@ def load_switch_cli(sw, runtime_cli, thrift_port=9090):
     top of s1-commands.txt by step 4, so the classifier is ready as soon as
     those first lines load — no separate pre-load file is needed.
 
+    Large tables (e.g. rf_vote_classify with 1.68 M entries) are loaded in
+    chunks of `chunk_size` entries each, each with a fresh Thrift connection,
+    to avoid BMv2 dropping the connection mid-load.
+
     Returns (table_counts, load_time_seconds) where table_counts is a dict
     mapping table name → entry count (plus a '__total__' key).
     """
     print(f"Loading P4 rules from {runtime_cli}...")
     table_counts = {}
+    all_lines = []
     try:
         with open(runtime_cli, 'r') as f:
-            for line in f:
-                stripped = line.lstrip()
-                if stripped.startswith('table_add'):
-                    parts = stripped.split()
-                    if len(parts) >= 2:
-                        tbl = parts[1]
-                        table_counts[tbl] = table_counts.get(tbl, 0) + 1
+            all_lines = f.readlines()
+        for line in all_lines:
+            stripped = line.lstrip()
+            if stripped.startswith('table_add'):
+                parts = stripped.split()
+                if len(parts) >= 2:
+                    tbl = parts[1]
+                    table_counts[tbl] = table_counts.get(tbl, 0) + 1
     except Exception:
         pass
     n_entries = sum(table_counts.values())
@@ -172,24 +200,46 @@ def load_switch_cli(sw, runtime_cli, thrift_port=9090):
 
     os.makedirs('logs', exist_ok=True)
 
+    # Partition lines: everything that is NOT a large-table entry goes into
+    # base_lines; large exact-match tables (rf_vote_classify, xgb_classify,
+    # cnn_* etc.) are separated and loaded in chunks.
+    LARGE_TABLE_KEYWORDS = ('rf_vote_classify', 'xgb_classify', 'cnn_')
+    base_lines = []
+    large_lines = []
+    for line in all_lines:
+        stripped = line.lstrip()
+        if stripped.startswith('table_add') and any(kw in stripped for kw in LARGE_TABLE_KEYWORDS):
+            large_lines.append(line)
+        else:
+            base_lines.append(line)
+
     load_time = 0.0
     try:
-        with open(runtime_cli, 'r') as fin, open('logs/cli_output.log', 'w') as fout:
-            t_start = time.time()   # start BEFORE Popen so subprocess init is included
-            proc = subprocess.Popen(
-                ['simple_switch_CLI', '--thrift-port', str(thrift_port)],
-                stdin=fin,
-                stdout=fout,
-                stderr=subprocess.STDOUT
-            )
-            proc.wait()   # <-- BLOCK until all entries are installed
-            load_time = time.time() - t_start
+        with open('logs/cli_output.log', 'w') as fout:
+            t_start = time.time()
 
-        # simple_switch_CLI exits with 1 on EOF (normal when piping a file via stdin).
-        # Only warn for unexpected codes (>1).
-        if proc.returncode not in (0, 1):
-            print(f"WARNING: simple_switch_CLI exited with non-zero code {proc.returncode} "
-                  f"— some entries may not have been loaded.")
+            # --- Pass 1: base rules (pca, rf_tree, etc.) ---
+            rc, dt = _run_cli_chunk(base_lines, thrift_port, fout)
+            load_time += dt
+            if rc not in (0, 1):
+                print(f"WARNING: CLI pass 1 exited with code {rc} — some base entries may not have been loaded.")
+            else:
+                print(f"  Pass 1 (base rules, {len(base_lines):,} lines): {dt:.1f}s")
+
+            # --- Pass 2+: large table in chunks ---
+            if large_lines:
+                n_chunks = math.ceil(len(large_lines) / chunk_size)
+                print(f"  Loading {len(large_lines):,} large-table entries in {n_chunks} chunk(s) of {chunk_size:,}...")
+                for chunk_idx in range(n_chunks):
+                    chunk = large_lines[chunk_idx * chunk_size:(chunk_idx + 1) * chunk_size]
+                    rc, dt = _run_cli_chunk(chunk, thrift_port, fout)
+                    load_time += dt
+                    if rc not in (0, 1):
+                        print(f"  WARNING: chunk {chunk_idx+1}/{n_chunks} exited with code {rc}")
+                    else:
+                        print(f"  Chunk {chunk_idx+1}/{n_chunks} ({len(chunk):,} entries): {dt:.1f}s")
+
+            load_time = time.time() - t_start  # use wall-clock total
 
         errors = 0
         table_full = 0
@@ -265,8 +315,12 @@ def bytes_to_int(bb):
     return v
 
 def bytes_to_ip(bb):
-    """Convert byte array to IPv4 address string."""
-    return '.'.join(str(b) for b in bb)
+    """Convert byte array to IPv4 address string.
+    Handles P4Runtime bitstrings which may omit leading zero-bytes."""
+    v = 0
+    for b in bb:
+        v = (v << 8) + int(b)
+    return f"{(v>>24)&0xff}.{(v>>16)&0xff}.{(v>>8)&0xff}.{v&0xff}"
 
 def load_class_labels(model_path):
     """Load class labels from a trained sklearn model.

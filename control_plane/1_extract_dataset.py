@@ -5,22 +5,25 @@ Extracts flow-based features from PCAP files or live network capture.
 
 Output columns per flow (bidirectional, canonical key):
 
-  Identifier columns (not used as ML features):
-    SrcIP     - Canonical source IP
-    DstIP     - Canonical destination IP
+  Flow identifier columns (written to CSV but excluded from ML training by default):
+    SrcIP     - Canonical source IP   (always excluded; not a P4 match feature)
+    DstIP     - Canonical destination IP (always excluded; not a P4 match feature)
 
-  ML feature columns — match EXACTLY what the P4 switch computes and
-  sends as a digest when a flow ends (same names, same order):
-    Protocol  - IP protocol number (6=TCP, 17=UDP, 1=ICMP, 253=ARP pseudo)
-    SrcPort   - Canonical source port
-    DstPort   - Canonical destination port
-    Duration     - Time from first to last packet (nanoseconds)
-    MaxIAT       - Maximum inter-arrival time across consecutive packets (ns)
-    UrgCount     - Number of packets with URG flag set
-    FwdPktCount  - Packet count in forward (canonical) direction
-    BwdPktCount  - Packet count in backward (reverse) direction
-    FwdBytes     - Total bytes in forward direction
-    BwdBytes     - Total bytes in backward direction
+  ML feature columns — all 20 match EXACTLY what the P4 switch computes and
+  sends as a digest when a flow ends (same names, same order).
+  Protocol, SrcPort, DstPort are available as ML features and are selectable
+  by the Feature Selection step (step 2); PCA/LDA/UMAP operate on the 17
+  traffic-statistic features below.
+    Protocol        - IP protocol number (6=TCP, 17=UDP, 1=ICMP, 253=ARP pseudo)
+    SrcPort         - Canonical source port (bit<16>)
+    DstPort         - Canonical destination port (bit<16>) — strong classification signal
+    Duration        - Time from first to last packet (nanoseconds)
+    MaxIAT          - Maximum inter-arrival time across consecutive packets (ns)
+    UrgCount        - Number of packets with URG flag set
+    FwdPktCount     - Packet count in forward (canonical) direction
+    BwdPktCount     - Packet count in backward (reverse) direction
+    FwdBytes        - Total bytes in forward direction
+    BwdBytes        - Total bytes in backward direction
     MaxWinSize      - Maximum TCP window size observed in flow (0 for non-TCP)
     FlagsSyn        - Number of packets with SYN flag set (0 for non-TCP)
     FlagsAck        - Number of packets with ACK flag set (0 for non-TCP)

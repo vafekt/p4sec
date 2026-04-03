@@ -18,7 +18,6 @@ Outputs (same locations, compatible with steps 3/4/5/6):
 
 import argparse
 import sys
-import glob
 import json
 import os
 
@@ -36,7 +35,7 @@ from sklearn.neural_network import MLPRegressor
 from sklearn.preprocessing import StandardScaler
 from sklearn.tree import DecisionTreeClassifier
 
-from pipeline_utils import P4_FEATURE_MAX
+from pipeline_utils import P4_FEATURE_MAX, find_dataset_csv
 
 LOGO = """---------------------------------------------------------------------------
 ------PPPPPPPP------4444------SSSSSSSS------EEEEEEEE------CCCCCCCC---------
@@ -101,7 +100,6 @@ if BITS not in [8, 16, 24, 32]:
 
 MAX_VAL = 2 ** BITS - 1
 
-ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 TABLES_DIR = os.path.join(os.path.dirname(__file__), "tables")
 os.makedirs(TABLES_DIR, exist_ok=True)
 
@@ -114,17 +112,6 @@ P4_FEATURE_COLS = [
 ]
 
 
-def find_dataset_csv():
-    for d in [os.path.join(os.path.dirname(__file__), "dataset"),
-              os.path.join(ROOT_DIR, "dataset")]:
-        if not os.path.isdir(d):
-            continue
-        csvs = glob.glob(os.path.join(d, "*.csv"))
-        if not csvs:
-            continue
-        preferred = [p for p in csvs if os.path.basename(p).lower() == "dataset.csv"]
-        return preferred[0] if preferred else sorted(csvs, key=os.path.getmtime, reverse=True)[0]
-    raise FileNotFoundError("No CSV dataset found in any dataset/ directory")
 
 
 def hidden_activation(values, activation_name):
@@ -153,7 +140,7 @@ def decode_latent(latent_code, latent_min, latent_range_safe, max_val):
     return (latent_code / max_val) * latent_range_safe.reshape(1, -1) + latent_min.reshape(1, -1)
 
 
-csv_path = find_dataset_csv()
+csv_path = find_dataset_csv(__file__)
 print("Using dataset:", csv_path)
 df = pd.read_csv(csv_path)
 label_col = df.columns[-1]
@@ -229,7 +216,7 @@ for j in range(k):
     print(f"AE{j+1} quantization R2: {r2:.6f}")
 
 from sklearn.tree import DecisionTreeRegressor as _DTReg
-tree = _DTReg(max_depth=None, min_samples_leaf=1, random_state=RANDOM_STATE)
+tree = _DTReg(max_depth=None, min_samples_leaf=1, max_leaf_nodes=300000, random_state=RANDOM_STATE)
 tree.fit(X_train, AE_code_train)
 
 leaf_ids_train = tree.apply(X_train)

@@ -29,7 +29,6 @@ import numpy as np
 import pandas as pd
 import json
 import os
-import glob
 import argparse
 import sys
 
@@ -39,7 +38,7 @@ from sklearn.metrics import (
     r2_score, accuracy_score, confusion_matrix, classification_report,
 )
 
-from pipeline_utils import P4_FEATURE_MAX, ALL_RAW_FEATURES
+from pipeline_utils import P4_FEATURE_MAX, ALL_RAW_FEATURES, find_dataset_csv
 
 LOGO = """---------------------------------------------------------------------------
 ------PPPPPPPP------4444------SSSSSSSS------EEEEEEEE------CCCCCCCC---------
@@ -94,23 +93,10 @@ MAX_VAL = 2**BITS - 1
 # ==========================================================
 # 1. Load dataset
 # ==========================================================
-ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 TABLES_DIR = os.path.join(os.path.dirname(__file__), "tables")
 os.makedirs(TABLES_DIR, exist_ok=True)
 
-def find_dataset_csv():
-    for d in [os.path.join(os.path.dirname(__file__), "dataset"),
-              os.path.join(ROOT_DIR, "dataset")]:
-        if not os.path.isdir(d):
-            continue
-        csvs = glob.glob(os.path.join(d, "*.csv"))
-        if not csvs:
-            continue
-        preferred = [p for p in csvs if os.path.basename(p).lower() == "dataset.csv"]
-        return preferred[0] if preferred else sorted(csvs, key=os.path.getmtime, reverse=True)[0]
-    raise FileNotFoundError("No CSV dataset found in any dataset/ directory")
-
-csv_path = find_dataset_csv()
+csv_path = find_dataset_csv(__file__)
 print("Using dataset:", csv_path)
 df = pd.read_csv(csv_path)
 label_col = df.columns[-1]
@@ -202,7 +188,12 @@ print(f"Surrogate tree leaves: {len(unique_leaves)}")
 leaf_to_codes = {}
 for lid in unique_leaves:
     idx = np.where(leaf_ids == lid)[0]
-    leaf_to_codes[lid] = np.rint(LD_code_train[idx].mean(axis=0)).astype(int)
+    labels_in_leaf = y_train[idx]
+    # Use majority-class centroid to avoid mixing codes from different classes
+    values, counts = np.unique(labels_in_leaf, return_counts=True)
+    majority_class = values[np.argmax(counts)]
+    mask = labels_in_leaf == majority_class
+    leaf_to_codes[lid] = np.rint(LD_code_train[idx][mask].mean(axis=0)).astype(int)
 
 def get_tree_codes(dt, l2c, X, k):
     ids = dt.apply(X)

@@ -3,7 +3,6 @@ import numpy as np
 import pandas as pd
 import json
 import os
-import glob
 import argparse
 import sys
 
@@ -11,6 +10,8 @@ from sklearn.decomposition import PCA
 from sklearn.tree import DecisionTreeRegressor, DecisionTreeClassifier
 from sklearn.model_selection import train_test_split, cross_val_score
 from sklearn.metrics import r2_score, accuracy_score
+
+from pipeline_utils import P4_FEATURE_MAX, find_dataset_csv
 
 LOGO = """---------------------------------------------------------------------------
 ------PPPPPPPP------4444------SSSSSSSS------EEEEEEEE------CCCCCCCC---------
@@ -91,28 +92,7 @@ PCAPS_DIR = os.path.join(ROOT_DIR, "pcaps")
 TABLES_DIR = os.path.join(os.path.dirname(__file__), "tables")
 os.makedirs(TABLES_DIR, exist_ok=True)
 
-# Locate dataset CSV inside a `dataset/` directory (filename not fixed)
-def find_dataset_csv():
-    candidates_dirs = [
-        os.path.join(os.path.dirname(__file__), "dataset"),
-        os.path.join(ROOT_DIR, "dataset"),
-    ]
-    for d in candidates_dirs:
-        if not os.path.isdir(d):
-            continue
-        csvs = glob.glob(os.path.join(d, "*.csv"))
-        if not csvs:
-            continue
-        # Prefer a file named dataset.csv if present
-        preferred = [p for p in csvs if os.path.basename(p).lower() == "dataset.csv"]
-        if preferred:
-            return preferred[0]
-        # Otherwise pick the most recently modified CSV
-        csvs.sort(key=lambda p: os.path.getmtime(p), reverse=True)
-        return csvs[0]
-    raise FileNotFoundError("No CSV dataset found in any dataset/ directory")
-
-csv_path = find_dataset_csv()
+csv_path = find_dataset_csv(__file__)
 print("Using dataset:", csv_path)
 df = pd.read_csv(csv_path)
 
@@ -122,11 +102,7 @@ label_col = df.columns[-1]
 # Remove NaN / Inf
 df_clean = df.replace([np.inf, -np.inf], np.nan).dropna()
 
-# ==========================================================
-# Select exactly the 20 P4-compatible features in the EXACT order
-# that the pca_component* tables declare their key fields.
-# 1_extract_dataset.py now outputs these columns directly.
-# ==========================================================
+# All 20 P4-compatible features in canonical order
 P4_FEATURE_COLS = [
     "Protocol", "SrcPort", "DstPort",
     "Duration", "MaxIAT", "UrgCount",
@@ -157,10 +133,7 @@ print("Example labels:", np.unique(y)[:10])
 if USER_N_COMPONENTS is not None:
     print("Using PCA components (specified):", USER_N_COMPONENTS)
 else:
-    # If not set, use n_features-1 (or 1 if only one feature)
-    n_features = X.shape[1]
-    k_auto = max(1, n_features - 1)
-    print(f"PCA components not specified; using n_features-1: {k_auto}")
+    print(f"PCA components not specified; will auto-select for {VAR_TARGET*100:.0f}% explained variance")
 
 # ==========================================================
 # 2. Train/test split (NO NORMALIZATION)
@@ -179,10 +152,10 @@ print("Train size:", X_train.shape[0], "Test size:", X_test.shape[0])
 # 3. PCA (auto-select components if not provided), fit on RAW train, apply to both
 # ===========================================================
 if USER_N_COMPONENTS is None:
-    # Use n_features-1 (or 1 if only one feature)
-    n_features = X_train.shape[1]
-    k_auto = max(1, n_features - 1)
-    pca = PCA(n_components=k_auto, random_state=42)
+    # Use variance target to auto-select minimum components.
+    # sklearn PCA accepts a float in (0,1) as n_components and selects
+    # the smallest k that explains >= VAR_TARGET of total variance.
+    pca = PCA(n_components=VAR_TARGET, random_state=42)
 else:
     pca = PCA(n_components=USER_N_COMPONENTS, random_state=42)
 
@@ -190,6 +163,9 @@ PC_train = pca.fit_transform(X_train)   # Fit on RAW features
 PC_test = pca.transform(X_test)         # Transform RAW features
 
 k = PC_train.shape[1]
+if USER_N_COMPONENTS is None:
+    print(f"Auto-selected {k} PCA components "
+          f"({pca.explained_variance_ratio_.sum()*100:.1f}% variance, target {VAR_TARGET*100:.0f}%)")
 print("PC_train shape:", PC_train.shape)
 print("PC_test shape:", PC_test.shape)
 
@@ -586,27 +562,12 @@ def write_pca_p4_commands(dt, feature_names, leaf_to_codes, k, max_val, feature_
     with open(filename, "w") as f:
         dfs(0, [])
 
-# Build feature max values based on P4 field widths (fallback to dataset max)
-FEATURE_MAX_DEFAULTS = {
-    "Protocol":    (2**8  - 1),   # bit<8>
-    "Duration":    (2**48 - 1),
-    "MaxIAT":      (2**48 - 1),
-    "UrgCount":    (2**32 - 1),
-    "FwdPktCount": (2**32 - 1),
-    "BwdPktCount": (2**32 - 1),
-    "FwdBytes":    (2**32 - 1),
-    "BwdBytes":    (2**32 - 1),
-    "MaxWinSize":  (2**16 - 1),
-    "FlagsSyn":    (2**32 - 1),   # bit<32> count
-    "FlagsAck":    (2**32 - 1),   # bit<32> count
-    "FlagsFin":    (2**32 - 1),   # bit<32> count
-    "FlagsRst":    (2**32 - 1),   # bit<32> count
-}
-
+# Build feature max values from the canonical P4 type widths in pipeline_utils.
+# Fallback to dataset max only for any feature not in the canonical dict.
 feature_max_map = {}
 for feat in feature_cols:
-    if feat in FEATURE_MAX_DEFAULTS:
-        feature_max_map[feat] = FEATURE_MAX_DEFAULTS[feat]
+    if feat in P4_FEATURE_MAX:
+        feature_max_map[feat] = P4_FEATURE_MAX[feat]
     else:
         feature_max_map[feat] = int(np.nanmax(X_df[feat])) if feat in X_df.columns else MAX_VAL
 

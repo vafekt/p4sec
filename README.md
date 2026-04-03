@@ -110,27 +110,34 @@ python3 1_extract_dataset.py --mode pcap --pcap-dir pcaps --output dataset/datas
 sudo python3 1_extract_dataset.py --mode live --interface eth0 --count 1000 --label skype --output dataset/live.csv
 ```
 
-**Extracts 20 Flow-Based Features:**
-- **Protocol**: IP protocol number (6=TCP, 17=UDP, etc.)
-- **SrcPort**: Canonical source port
-- **DstPort**: Canonical destination port
-- **Duration**: Flow duration in nanoseconds (time from first to last packet)
-- **MaxIAT**: Maximum inter-arrival time between consecutive packets in the flow
-- **MinIAT**: Minimum inter-arrival time between consecutive packets in the flow
-- **UrgCount**: Number of packets with the TCP URG flag set
-- **FwdPktCount**: Number of packets in the forward direction
-- **BwdPktCount**: Number of packets in the backward/return direction
-- **FwdBytes**: Total payload bytes in the forward direction
-- **BwdBytes**: Total payload bytes in the backward direction
-- **FwdMaxPktLen**: Maximum IP packet length in the forward direction
-- **BwdMaxPktLen**: Maximum IP packet length in the backward direction
-- **MaxWinSize**: Maximum TCP window size observed across all packets in the flow
-- **InitFwdWinBytes**: TCP window size of the very first forward-direction packet
-- **FlagsSyn**: Count of packets with the TCP SYN flag set
-- **FlagsAck**: Count of packets with the TCP ACK flag set
-- **FlagsFin**: Count of packets with the TCP FIN flag set
-- **FlagsRst**: Count of packets with the TCP RST flag set
-- **FlagsPsh**: Count of packets with the TCP PSH flag set
+**Extracts 20 Flow-Based Features** (all present in the P4 digest; SrcIP and DstIP are written to the CSV as flow identifiers but are not used as ML match keys):
+
+| Feature | P4 Type | Description |
+|---|---|---|
+| **Protocol** | bit<8> | IP protocol number (6=TCP, 17=UDP, 1=ICMP, 253=ARP) |
+| **SrcPort** | bit<16> | Canonical source port |
+| **DstPort** | bit<16> | Canonical destination port — strong classification signal |
+| **Duration** | bit<48> | Flow duration in nanoseconds (first → last packet) |
+| **MaxIAT** | bit<48> | Maximum inter-arrival time between consecutive packets |
+| **MinIAT** | bit<48> | Minimum inter-arrival time between consecutive packets |
+| **UrgCount** | bit<32> | Count of packets with TCP URG flag |
+| **FwdPktCount** | bit<32> | Packet count in the forward (canonical) direction |
+| **BwdPktCount** | bit<32> | Packet count in the backward direction |
+| **FwdBytes** | bit<32> | Total payload bytes in the forward direction |
+| **BwdBytes** | bit<32> | Total payload bytes in the backward direction |
+| **FwdMaxPktLen** | bit<16> | Maximum packet length in the forward direction |
+| **BwdMaxPktLen** | bit<16> | Maximum packet length in the backward direction |
+| **MaxWinSize** | bit<16> | Maximum TCP window size observed across the flow |
+| **InitFwdWinBytes** | bit<16> | TCP window size of the first forward-direction packet |
+| **FlagsSyn** | bit<32> | Count of packets with TCP SYN flag |
+| **FlagsAck** | bit<32> | Count of packets with TCP ACK flag |
+| **FlagsFin** | bit<32> | Count of packets with TCP FIN flag |
+| **FlagsRst** | bit<32> | Count of packets with TCP RST flag |
+| **FlagsPsh** | bit<32> | Count of packets with TCP PSH flag |
+
+**Which features are used by each step-2 method:**
+- **PCA / LDA / UMAP**: operate on the 17 traffic-statistic features (Duration through FlagsPsh — excludes Protocol/SrcPort/DstPort for the transform, though they are available)
+- **Feature Selection**: all 20 are scored and ranked; the top-k selected features (including Protocol/DstPort if discriminative) become direct P4 match keys
 
 **Flow Aggregation:** Packets are grouped by 5-tuple (src_ip, dst_ip, src_port, dst_port, protocol) to create per-flow statistics. The flow direction is canonicalized so that A→B and B→A map to the same flow entry.
 
@@ -231,10 +238,12 @@ python3 3_train_model.py --model-type cnn --p4-export --p4-hidden 8
 Common optional hyperparameters:
 ```bash
 python3 3_train_model.py --model-type rf \
-    --n-estimators 16 \
+    --n-estimators 8 \
     --max-depth 6 \
     --random-state 42
 ```
+
+> **Default ensemble size:** `--n-estimators` defaults to **4** trees for RF / XGB / GB. Increase for higher accuracy at the cost of more P4 table entries and a larger `rf_vote_classify` table (`n_classes^n_estimators` entries).
 
 **Output:** Trained model (`model/<model_type>.model`) and metrics (`tables/<model_type>_metrics.json`)
 **Note:** KNN and SVM deploy in P4 via a DecisionTree proxy; run Steps 4–5 as usual.
@@ -278,6 +287,8 @@ python3 5_generating_p4_code.py --model-type cnn
 **Note:** For CNN P4 deployment, train with `--p4-export` first to generate `tables/cnn_params.json`.
 
 **Output:** `../basic.p4` (auto-generated with reduction-method- and model-specific logic)
+
+> **Important:** Step 5 must be re-run whenever you change `--n-estimators` (or any RF/XGB parameter). The `rf_vote_classify` table `size` in `basic.p4` is computed as `n_classes^n_estimators` — if `basic.p4` is stale, the table may be over- or under-sized for the actual entry count.
 
 **P4 Architecture (reduction method determines transform stage):**
 - **PCA / LDA / Autoencoder / UMAP:** `pca_component*` / `lda_component*` range-match tables map raw features → quantised codes; classifier tables match on codes
@@ -373,6 +384,7 @@ cd /tutorials/exercises/p4sec/control_plane
 python3 1_extract_dataset.py --mode pcap --pcap-dir pcaps && \
 python3 2_feature_selection_generate_entries.py --components 8 && \
 python3 3_train_model.py --model-type knn
+```
 
 ### Using PCA + SVM (DT proxy deployable)
 
@@ -382,7 +394,6 @@ cd /tutorials/exercises/p4sec/control_plane
 python3 1_extract_dataset.py --mode pcap --pcap-dir pcaps && \
 python3 2_pca_generate_entries.py && \
 python3 3_train_model.py --model-type svm
-```
 ```
 
 ### Using PCA + XGBoost
@@ -459,6 +470,36 @@ cd .. && make clean && make
 
 ## Recent Improvements
 
+### RF Vote Table: Correct Size Formula
+- `rf_vote_classify` table size was previously declared as `2^(n_estimators × vote_bits)` — up to **16 M slots** for 8 trees / 6 classes, which caused BMv2 to over-allocate memory and drop the Thrift connection mid-load
+- Fixed to `n_classes^n_estimators` (the actual number of entries): **6^4 = 1,296** for the default 4-tree / 6-class configuration
+- Step 5 (`5_generating_p4_code.py`) now computes this automatically for any class/tree count
+
+| Config | Old (wrong) | New (correct) |
+|---|---|---|
+| 6 classes, 4 trees | 2^12 = 4,096 | **6^4 = 1,296** |
+| 6 classes, 8 trees | 2^24 = 16,777,216 | **6^8 = 1,679,616** |
+| 6 classes, 10 trees | 2^30 = 1,073,741,824 | **6^10 = 60,466,176** |
+
+### Chunked CLI Entry Loading
+- BMv2's Thrift server drops the connection after ~800K sequential `table_add` RPCs, leaving large tables (e.g. `rf_vote_classify` with 1.68 M entries for 8 trees) partially loaded — the critical last entries were silently missing, causing those flows to be classified as Benign
+- The controller (`6_controller.py`) now loads `rf_vote_classify` / `xgb_classify` / `cnn_*` entries in chunks of **50,000** per Thrift session (`chunk_size` parameter in `load_switch_cli()`), with a fresh connection per chunk — total entries loaded is identical, but no connection is ever dropped
+
+### BMv2 Priority Semantics Fix
+- In BMv2's `simple_switch_CLI`, **higher priority number = matched first** (opposite of P4Runtime semantics)
+- Entry generation (`4_generate_model_entries.py`) previously assigned priority 1 to the most-specific rule and priority N to the widest catch-all — causing the catch-all leaf to always win and every flow to be classified as Benign
+- Fixed: most-specific rules now receive priority N (highest), catch-all rules receive priority 1
+
+### IPv4 Zero-Byte Padding Fix
+- P4Runtime strips leading zero-bytes from bitstrings: `0.0.0.0` arrived as `b'\x00'` (1 byte), causing `ipaddress.ip_address('0')` to raise `ValueError` and crash the controller
+- Fixed: `bytes_to_ip()` now reconstructs the full 32-bit address via integer arithmetic regardless of how many bytes P4Runtime sends
+
+### Default Estimator Count: 8 → 4
+- `--n-estimators` default reduced from 8 to **4** in `3_train_model.py`
+- All fallback defaults in `5_generating_p4_code.py` updated to match; if `rf_params.json` already exists with a different value, that stored value takes precedence
+- With 4 trees and 6 classes: `rf_vote_classify` has only **1,296 entries** (vs 1.68 M for 8 trees), loading in under a second
+- **Re-run step 5** (`5_generating_p4_code.py`) after changing `--n-estimators` so that `basic.p4` is regenerated with the correctly sized `rf_vote_classify` table
+
 ### Four Dimensionality Reduction Methods
 - **PCA** (`2_pca_generate_entries.py`): principal components that maximise variance
 - **LDA** (`2_lda_generate_entries.py`): components that maximise class separation — typically better accuracy with fewer dimensions
@@ -477,10 +518,10 @@ cd .. && make clean && make
 - Ensures consistent feature detection regardless of reduction method
 
 ### Extended Feature Set (20 features)
-
 - **Expanded from 9 → 13 → 17 → 20** flow-level features
 - SYN/ACK/FIN/RST added as per-packet **counts** (not booleans); P4 registers upgraded to `register<bit<32>>`
 - Further added: **MinIAT**, **FwdMaxPktLen**, **BwdMaxPktLen**, **FlagsPsh**, **InitFwdWinBytes**
+- **Protocol**, **SrcPort**, **DstPort** promoted from flow-key identifiers to first-class ML features — all three have full P4 type mappings and are available as direct match keys in Feature Selection mode
 
 ### Robust Controller Startup
 - **Model/digest mismatch detection:** at startup, `model.n_features_in_` is compared against the P4 digest's component count; a clear one-time warning is printed if they differ
@@ -509,7 +550,6 @@ p4sec/
 ├── Makefile                                         # P4 compilation
 ├── requirements.txt                                 # Python dependencies
 ├── basic.p4                                         # Generated P4 program (reduction+model-specific)
-├── basic.p4info                                     # P4 program metadata
 ├── control_plane/
 │   ├── pipeline_utils.py                           # Shared utilities (feature detection, config I/O)
 │   ├── 1_extract_dataset.py                        # Feature extraction (PCAP/PCAPNG, live)
@@ -538,6 +578,7 @@ p4sec/
 │   │   └── <model_type>_tree.txt                  # Human-readable decision tree rules
 │   └── logs/                                      # Runtime logs & predictions
 └── build/                                         # P4 compiler output
+    └── basic.p4.p4info.txtpb                      # P4 program metadata (regenerated by `make`)
 ```
 
 ---

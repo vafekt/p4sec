@@ -87,8 +87,8 @@ parser.add_argument('--max-depth',        type=int,   default=None,
 parser.add_argument('--min-samples-leaf', type=int,   default=1)
 
 # Ensemble hyperparams (RF, XGB, GB)
-parser.add_argument('--n-estimators',     type=int,   default=8,
-                    help='Number of trees/rounds (default: 8)')
+parser.add_argument('--n-estimators',     type=int,   default=4,
+                    help='Number of trees/rounds (default: 4)')
 
 # Boosting hyperparams (XGB, GB)
 parser.add_argument('--learning-rate',    type=float, default=None,

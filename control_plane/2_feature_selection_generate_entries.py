@@ -32,7 +32,6 @@ import numpy as np
 import pandas as pd
 import json
 import os
-import glob
 import argparse
 import sys
 
@@ -43,7 +42,7 @@ from sklearn.tree import DecisionTreeClassifier
 from sklearn.metrics import accuracy_score, classification_report
 from sklearn.preprocessing import LabelEncoder
 
-from pipeline_utils import P4_FEATURE_MAX
+from pipeline_utils import P4_FEATURE_MAX, find_dataset_csv
 
 LOGO = """---------------------------------------------------------------------------
 ------PPPPPPPP------4444------SSSSSSSS------EEEEEEEE------CCCCCCCC---------
@@ -90,23 +89,10 @@ METHOD = args.method
 # ==========================================================
 # 1. Load dataset
 # ==========================================================
-ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 TABLES_DIR = os.path.join(os.path.dirname(__file__), "tables")
 os.makedirs(TABLES_DIR, exist_ok=True)
 
-def find_dataset_csv():
-    for d in [os.path.join(os.path.dirname(__file__), "dataset"),
-              os.path.join(ROOT_DIR, "dataset")]:
-        if not os.path.isdir(d):
-            continue
-        csvs = glob.glob(os.path.join(d, "*.csv"))
-        if not csvs:
-            continue
-        preferred = [p for p in csvs if os.path.basename(p).lower() == "dataset.csv"]
-        return preferred[0] if preferred else sorted(csvs, key=os.path.getmtime, reverse=True)[0]
-    raise FileNotFoundError("No CSV dataset found in any dataset/ directory")
-
-csv_path = find_dataset_csv()
+csv_path = find_dataset_csv(__file__)
 print("Using dataset:", csv_path)
 df = pd.read_csv(csv_path)
 label_col = df.columns[-1]

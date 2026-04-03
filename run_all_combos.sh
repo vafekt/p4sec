@@ -2,7 +2,7 @@
 # run_all_combos.sh
 #
 # Runs every combination of:
-#   reduction  : nopca (all 20 features) | pca k={3,5,8,10} bits={16,32}
+#   reduction  : pca k={3,5,8,10} bits={16,32}
 #   model      : dt | rf
 # for the full pipeline steps 2 → 3 → 4 → 5.
 #
@@ -11,7 +11,6 @@
 #     tables/          (all files from control_plane/tables/)
 #     model/           (trained model file from step 3)
 #     basic.p4
-#     basic.p4info     (if present)
 #     p4sec_tofino.p4
 #     pipeline.log     (stdout/stderr of this combo's run)
 #
@@ -33,20 +32,13 @@ log() {
 }
 
 # ── Single-combo runner ───────────────────────────────────────────────────────
-# run_combo <reduction_type> <components> <bits> <model>
+# run_combo <components> <bits> <model>
 run_combo() {
-    local reduction_type="$1"
-    local components="$2"
-    local bits="$3"
-    local model="$4"
+    local components="$1"
+    local bits="$2"
+    local model="$3"
 
-    local folder_name
-    if [ "$reduction_type" = "nopca" ]; then
-        folder_name="nopca_${model}"
-    else
-        folder_name="pca_k${components}_b${bits}_${model}"
-    fi
-
+    local folder_name="pca_k${components}_b${bits}_${model}"
     local result_dir="$RESULTS_DIR/$folder_name"
     local combo_log="$result_dir/pipeline.log"
     local t_start
@@ -60,19 +52,12 @@ run_combo() {
     rm -rf "$TABLES" && mkdir -p "$TABLES"
     mkdir -p "$MODEL"
 
-    # ── Step 2: Dimensionality reduction / feature preparation ────────────
-    if [ "$reduction_type" = "nopca" ]; then
-        log "  [2] Feature selection — all 20 raw features (no PCA)"
-        python "$CP_DIR/2_feature_selection_generate_entries.py" \
-            --components 20 \
-            >> "$combo_log" 2>&1
-    else
-        log "  [2] PCA — k=$components components, $bits-bit quantisation"
-        python "$CP_DIR/2_pca_generate_entries.py" \
-            --components "$components" \
-            --bits "$bits" \
-            >> "$combo_log" 2>&1
-    fi
+    # ── Step 2: PCA dimensionality reduction ──────────────────────────────
+    log "  [2] PCA — k=$components components, $bits-bit quantisation"
+    python "$CP_DIR/2_pca_generate_entries.py" \
+        --components "$components" \
+        --bits "$bits" \
+        >> "$combo_log" 2>&1
     if [ $? -ne 0 ]; then
         log "  FAILED at step 2 — see $result_dir/pipeline.log"; return 1
     fi
@@ -127,7 +112,7 @@ run_combo() {
     mkdir -p "$result_dir/model"
     [ -f "$MODEL/${model}.model" ] && cp "$MODEL/${model}.model" "$result_dir/model/"
 
-    for f in basic.p4 basic.p4info p4sec_tofino.p4; do
+    for f in basic.p4 p4sec_tofino.p4; do
         [ -f "$ROOT_DIR/$f" ] && cp "$ROOT_DIR/$f" "$result_dir/"
     done
 
@@ -155,21 +140,11 @@ log "Root:    $ROOT_DIR"
 log "Results: $RESULTS_DIR"
 log ""
 
-# ── 1) No-PCA (full 20 features) ──────────────────────────────────────────────
-for model in "${MODELS[@]}"; do
-    if run_combo "nopca" "" "" "$model"; then
-        PASS+=("nopca_${model}")
-    else
-        FAIL+=("nopca_${model}")
-    fi
-    echo ""
-done
-
-# ── 2) PCA combos ─────────────────────────────────────────────────────────────
+# ── PCA combos ────────────────────────────────────────────────────────────────
 for components in "${PCA_COMPONENTS[@]}"; do
     for bits in "${PCA_BITS[@]}"; do
         for model in "${MODELS[@]}"; do
-            if run_combo "pca" "$components" "$bits" "$model"; then
+            if run_combo "$components" "$bits" "$model"; then
                 PASS+=("pca_k${components}_b${bits}_${model}")
             else
                 FAIL+=("pca_k${components}_b${bits}_${model}")
