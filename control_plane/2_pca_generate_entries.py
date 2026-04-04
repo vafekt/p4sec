@@ -8,6 +8,7 @@ import sys
 
 from sklearn.decomposition import PCA
 from sklearn.tree import DecisionTreeRegressor, DecisionTreeClassifier
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
 from sklearn.metrics import r2_score, accuracy_score
 
 from pipeline_utils import P4_FEATURE_MAX, find_dataset_csv
@@ -63,6 +64,18 @@ def parse_args():
                             "Smaller values → fewer entries, faster load, lower accuracy.\n"
                             "Use None (unlimited) only for tiny datasets (<5k flows)."
                         ))
+    parser.add_argument("--surrogate", "-s", choices=["dt", "rf", "gbr"],
+                        default="dt",
+                        help=(
+                            "Surrogate regressor for mapping raw features → quantised PCA codes.\n"
+                            "  dt   DecisionTreeRegressor (baseline, fast)\n"
+                            "  rf   RandomForest teacher → distil to DT (better codes, ~2× slower)\n"
+                            "  gbr  GradientBoosting teacher → distil to DT (best accuracy, ~50× slower)\n"
+                            "All options produce the same P4 output format (DT range-match rules).\n"
+                            "RF and GBR train a stronger model first, then use its predictions as\n"
+                            "refined targets for the final DT that gets exported to P4.\n"
+                            "(default: dt)"
+                        ))
     return parser.parse_args()
 
 args = parse_args()
@@ -71,6 +84,7 @@ USER_N_COMPONENTS = args.components
 BITS = args.bits
 VAR_TARGET = args.var_target
 MAX_LEAF_NODES = args.max_leaf_nodes if args.max_leaf_nodes and args.max_leaf_nodes > 0 else None
+SURROGATE = args.surrogate
 
 # Validate BITS parameter
 if BITS not in [8, 16, 24, 32]:
@@ -217,21 +231,44 @@ for j, r2 in enumerate(r2_quant, 1):
     print(f"PC{j}: {r2}")
 
 # ==========================================================
-# 5. Surrogate DecisionTreeRegressor: RAW features -> quantized PCA codes.
-#    max_depth=None + min_samples_leaf=1 lets the tree grow until every unique
-#    feature tuple is isolated in its own leaf, so leaf averaging is over
-#    identical (or near-identical) feature vectors only — no cross-class mixing.
-#    This keeps tree-approx codes faithful to the true quantized PCA codes.
+# 5. Surrogate regressor: RAW features -> quantized PCA codes.
+#    --surrogate dt   : single DT (baseline)
+#    --surrogate rf   : RF teacher → refined targets → DT student
+#    --surrogate gbr  : GBR teacher → refined targets → DT student
+#    All options produce a final DT whose paths become P4 range-match rules.
 # ==========================================================
+print(f"\nSurrogate method: {SURROGATE}")
+
+if SURROGATE == 'rf':
+    # RF teacher: better generalisation → smoother code targets
+    teacher = RandomForestRegressor(
+        n_estimators=20, max_depth=None, min_samples_leaf=1,
+        max_features='sqrt', random_state=42, n_jobs=-1)
+    teacher.fit(X_train, PC_code_train)
+    refined_targets = np.clip(np.rint(teacher.predict(X_train)), 0, MAX_VAL).astype(int)
+    print(f"RF teacher trained (20 trees). Distilling to DT student...")
+elif SURROGATE == 'gbr':
+    # GBR teacher: sequentially corrects residuals → lowest MSE
+    refined_targets = np.zeros_like(PC_code_train)
+    for j in range(k):
+        gbr_j = GradientBoostingRegressor(
+            n_estimators=100, max_depth=5, learning_rate=0.1, random_state=42)
+        gbr_j.fit(X_train, PC_code_train[:, j])
+        refined_targets[:, j] = np.clip(
+            np.rint(gbr_j.predict(X_train)), 0, MAX_VAL).astype(int)
+    print(f"GBR teacher trained ({k} components × 100 trees). Distilling to DT student...")
+else:
+    refined_targets = PC_code_train
+
 tree = DecisionTreeRegressor(
     max_depth=None,
     min_samples_leaf=1,
-    max_leaf_nodes=MAX_LEAF_NODES,  # Limits rules to avoid over-memorisation; default 65536
+    max_leaf_nodes=MAX_LEAF_NODES,
     random_state=42
 )
 
-# Fit regressor on RAW features -> quantized PCA codes (multi-output)
-tree.fit(X_train, PC_code_train)
+# Fit DT on (possibly refined) targets
+tree.fit(X_train, refined_targets)
 
 print("\ntree.n_outputs_:", tree.n_outputs_)
 print("tree.tree_.value.shape:", tree.tree_.value.shape)  # (n_nodes, 1, k)
@@ -246,7 +283,7 @@ print("Number of leaf nodes:", unique_leaf_ids.shape[0])
 leaf_to_codes = {}
 for leaf_id in unique_leaf_ids:
     idx = np.where(leaf_ids_train == leaf_id)[0]
-    codes_in_leaf = PC_code_train[idx]        # (n_leaf_samples, k)
+    codes_in_leaf = refined_targets[idx]        # (n_leaf_samples, k)
     labels_in_leaf = y_train[idx]
     # Use majority-class centroid instead of overall mean to avoid
     # mixing codes from different classes into a "ghost" code value.

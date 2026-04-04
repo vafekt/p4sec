@@ -8,6 +8,7 @@ import sys
 import pickle
 
 from sklearn.tree import DecisionTreeRegressor, DecisionTreeClassifier
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
 from sklearn.metrics import accuracy_score, confusion_matrix, classification_report
 
 LOGO = """---------------------------------------------------------------------------
@@ -89,12 +90,25 @@ def parse_args():
                         help="UMAP metric (default: euclidean)")
     parser.add_argument("--random-state", type=int, default=42,
                         help="Random seed for UMAP (default: 42)")
+    parser.add_argument("--max-leaf-nodes", "-l", type=int, default=300000,
+                        help="Maximum leaf nodes in the surrogate tree (default: 300000)")
+    parser.add_argument("--surrogate", "-s", choices=["dt", "rf", "gbr"],
+                        default="dt",
+                        help=(
+                            "Surrogate regressor for mapping raw features → quantised UMAP codes.\n"
+                            "  dt   DecisionTreeRegressor (baseline, fast)\n"
+                            "  rf   RandomForest teacher → distil to DT (better codes, ~2× slower)\n"
+                            "  gbr  GradientBoosting teacher → distil to DT (best accuracy, ~50× slower)\n"
+                            "(default: dt)"
+                        ))
     return parser.parse_args()
 
 args = parse_args()
 
 USER_N_COMPONENTS = args.components
 BITS = args.bits
+SURROGATE = args.surrogate
+MAX_LEAF_NODES = args.max_leaf_nodes if args.max_leaf_nodes and args.max_leaf_nodes > 0 else None
 
 # Validate BITS parameter
 if BITS not in [8, 16, 24, 32]:
@@ -196,15 +210,39 @@ for j in range(k):
     print(f"UM{j+1}_code_train range: {UM_code_train[:, j].min()} -> {UM_code_train[:, j].max()}")
 
 # ==========================================================
-# 5. Train DecisionTreeRegressor for mapping RAW -> UMAP codes (multi-output)
+# 5. Surrogate regressor: RAW features -> quantized UMAP codes
+#    --surrogate dt   : single DT (baseline)
+#    --surrogate rf   : RF teacher → refined targets → DT student
+#    --surrogate gbr  : GBR teacher → refined targets → DT student
 # ==========================================================
+print(f"\nSurrogate method: {SURROGATE}")
+
+if SURROGATE == 'rf':
+    teacher = RandomForestRegressor(
+        n_estimators=20, max_depth=None, min_samples_leaf=1,
+        max_features='sqrt', random_state=42, n_jobs=-1)
+    teacher.fit(X_train, UM_code_train)
+    refined_targets = np.clip(np.rint(teacher.predict(X_train)), 0, MAX_VAL).astype(int)
+    print(f"RF teacher trained (20 trees). Distilling to DT student...")
+elif SURROGATE == 'gbr':
+    refined_targets = np.zeros_like(UM_code_train)
+    for j in range(k):
+        gbr_j = GradientBoostingRegressor(
+            n_estimators=100, max_depth=5, learning_rate=0.1, random_state=42)
+        gbr_j.fit(X_train, UM_code_train[:, j])
+        refined_targets[:, j] = np.clip(
+            np.rint(gbr_j.predict(X_train)), 0, MAX_VAL).astype(int)
+    print(f"GBR teacher trained ({k} components × 100 trees). Distilling to DT student...")
+else:
+    refined_targets = UM_code_train
+
 tree = DecisionTreeRegressor(
     max_depth=None,
     min_samples_leaf=1,
-    max_leaf_nodes=300000,
+    max_leaf_nodes=MAX_LEAF_NODES,
     random_state=42
 )
-tree.fit(X_train, UM_code_train)
+tree.fit(X_train, refined_targets)
 
 # ==========================================================
 # 6. Build leaf -> representative UM_code vector (size k)
@@ -216,9 +254,8 @@ print("Number of leaf nodes:", unique_leaf_ids.shape[0])
 leaf_to_codes = {}
 for leaf_id in unique_leaf_ids:
     idx = np.where(leaf_ids_train == leaf_id)[0]
-    codes_in_leaf = UM_code_train[idx]
+    codes_in_leaf = refined_targets[idx]
     labels_in_leaf = y_train[idx]
-    # Use majority-class centroid to avoid mixing codes from different classes
     values, counts = np.unique(labels_in_leaf, return_counts=True)
     majority_class = values[np.argmax(counts)]
     mask = labels_in_leaf == majority_class

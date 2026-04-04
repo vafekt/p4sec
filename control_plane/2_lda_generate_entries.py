@@ -34,6 +34,7 @@ import sys
 
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.tree import DecisionTreeRegressor, DecisionTreeClassifier
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
 from sklearn.metrics import (
     r2_score, accuracy_score, confusion_matrix, classification_report,
 )
@@ -79,11 +80,24 @@ parser.add_argument("--bits", "-b", type=int, default=16,
                     help="Quantization bits for LDA codes (default: 16)")
 parser.add_argument("--solver", choices=["svd", "lsqr", "eigen"],
                     default="svd", help="LDA solver (default: svd)")
+parser.add_argument("--max-leaf-nodes", "-l", type=int, default=300000,
+                    help="Maximum leaf nodes in the surrogate tree (default: 300000)")
+parser.add_argument("--surrogate", "-s", choices=["dt", "rf", "gbr"],
+                    default="dt",
+                    help=(
+                        "Surrogate regressor for mapping raw features → quantised LDA codes.\n"
+                        "  dt   DecisionTreeRegressor (baseline, fast)\n"
+                        "  rf   RandomForest teacher → distil to DT (better codes, ~2× slower)\n"
+                        "  gbr  GradientBoosting teacher → distil to DT (best accuracy, ~50× slower)\n"
+                        "(default: dt)"
+                    ))
 args = parser.parse_args()
 
 USER_K = args.components
 BITS = args.bits
 SOLVER = args.solver
+SURROGATE = args.surrogate
+MAX_LEAF_NODES = args.max_leaf_nodes if args.max_leaf_nodes and args.max_leaf_nodes > 0 else None
 
 if BITS not in [8, 16, 24, 32]:
     print(f"WARNING: BITS={BITS}. Recommended values are 8, 16, 24, 32.")
@@ -175,11 +189,35 @@ for j in range(k):
     print(f"LD{j+1} quantization R2: {r2:.6f}")
 
 # ==========================================================
-# 5. Surrogate DT: raw features -> quantized LDA codes
+# 5. Surrogate regressor: raw features -> quantized LDA codes
+#    --surrogate dt   : single DT (baseline)
+#    --surrogate rf   : RF teacher → refined targets → DT student
+#    --surrogate gbr  : GBR teacher → refined targets → DT student
 # ==========================================================
+print(f"\nSurrogate method: {SURROGATE}")
+
+if SURROGATE == 'rf':
+    teacher = RandomForestRegressor(
+        n_estimators=20, max_depth=None, min_samples_leaf=1,
+        max_features='sqrt', random_state=42, n_jobs=-1)
+    teacher.fit(X_train, LD_code_train)
+    refined_targets = np.clip(np.rint(teacher.predict(X_train)), 0, MAX_VAL).astype(int)
+    print(f"RF teacher trained (20 trees). Distilling to DT student...")
+elif SURROGATE == 'gbr':
+    refined_targets = np.zeros_like(LD_code_train)
+    for j in range(k):
+        gbr_j = GradientBoostingRegressor(
+            n_estimators=100, max_depth=5, learning_rate=0.1, random_state=42)
+        gbr_j.fit(X_train, LD_code_train[:, j])
+        refined_targets[:, j] = np.clip(
+            np.rint(gbr_j.predict(X_train)), 0, MAX_VAL).astype(int)
+    print(f"GBR teacher trained ({k} components × 100 trees). Distilling to DT student...")
+else:
+    refined_targets = LD_code_train
+
 tree = DecisionTreeRegressor(
-    max_depth=None, min_samples_leaf=1, max_leaf_nodes=300000, random_state=42)
-tree.fit(X_train, LD_code_train)
+    max_depth=None, min_samples_leaf=1, max_leaf_nodes=MAX_LEAF_NODES, random_state=42)
+tree.fit(X_train, refined_targets)
 
 leaf_ids = tree.apply(X_train)
 unique_leaves = np.unique(leaf_ids)
@@ -189,11 +227,10 @@ leaf_to_codes = {}
 for lid in unique_leaves:
     idx = np.where(leaf_ids == lid)[0]
     labels_in_leaf = y_train[idx]
-    # Use majority-class centroid to avoid mixing codes from different classes
     values, counts = np.unique(labels_in_leaf, return_counts=True)
     majority_class = values[np.argmax(counts)]
     mask = labels_in_leaf == majority_class
-    leaf_to_codes[lid] = np.rint(LD_code_train[idx][mask].mean(axis=0)).astype(int)
+    leaf_to_codes[lid] = np.rint(refined_targets[idx][mask].mean(axis=0)).astype(int)
 
 def get_tree_codes(dt, l2c, X, k):
     ids = dt.apply(X)

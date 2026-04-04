@@ -7,8 +7,8 @@ Supports seven classifier back-ends via --model-type:
   rf    RandomForest       → N rf_tree_i tables + rf_vote_classify
   xgb   XGBoost            → N*K xgb_tree_i tables + xgb_classify proxy DT
   gb    GradientBoosting   → same P4 layout as XGB (sklearn trees, no xgboost dep)
-  knn   K-Nearest Neighbors → DT proxy in P4 (ml_code)
-  svm   Support Vector Machine → DT proxy in P4 (ml_code)
+  knn   K-Nearest Neighbors → kd-tree range-match in P4 (ml_code)
+  svm   Support Vector Machine → kd-tree range-match in P4 (ml_code)
   cnn   1D CNN             → P4 neural lookup tables (no DT/RF surrogate)
 
 Works with any step-2 reduction method (PCA / LDA / Autoencoder / UMAP / Feature Selection).
@@ -59,7 +59,8 @@ parser = P4secArgumentParser(
         "Model-specific options:\n"
         "  xgb/gb : --csv (training CSV), --proxy-max-depth (proxy DT), --params (xgb/gb params)\n"
         "  rf     : --params (rf_params.json)\n"
-        "  knn/svm: --csv (training CSV), --proxy-max-depth (proxy DT)\n"
+        "  knn   : --csv (training CSV), --params (knn_params.json)\n"
+        "  svm   : --csv (training CSV), --params (svm_params.json)\n"
         "  cnn    : --params (cnn_params.json)\n"
     )
 )
@@ -100,7 +101,7 @@ FEAT_MAX = detect_feature_max_values(tables_dir)
 # load_base_lines() always strips ALL of these so that switching from one
 # model type to another never leaves stale entries in s1-commands.txt.
 ALL_MODEL_PREFIXES = (
-    "table_add MyIngress.ml_code",           # DT / KNN / SVM proxy
+    "table_add MyIngress.ml_code",           # DT / KNN / SVM
     "table_add MyIngress.rf_tree_",          # RF
     "table_add MyIngress.rf_vote_classify",  # RF
     "table_add MyIngress.xgb_tree_",         # XGB / GB
@@ -125,20 +126,23 @@ def generate_cnn_entries(cnn_params, output_path):
     classes = cnn_params.get("classes", [])
     hidden1_units = int(cnn_params.get("hidden1_units", 0))
     hidden2_units = int(cnn_params.get("hidden2_units", 0))
+    p4_layers = int(cnn_params.get("p4_layers", 2 if hidden2_units > 0 else 1))
     pool = int(cnn_params.get("pool", 2))
     input_bits = int(cnn_params.get("input_bits", 8))
     hidden_bits = int(cnn_params.get("hidden_bits", 8))
     w1_int = np.array(cnn_params.get("w1_int", []), dtype=np.int64)
-    w2_int = np.array(cnn_params.get("w2_int", []), dtype=np.int64)
     w3_int = np.array(cnn_params.get("w3_int", []), dtype=np.int64)
     use_quanti = bool(cnn_params.get("use_quanti", False))
-    q1_step = int(cnn_params.get("q1_step", 1))
-    q1_max = int(cnn_params.get("q1_max_pos", 0))
-    q2_step = int(cnn_params.get("q2_step", 1))
-    q2_max = int(cnn_params.get("q2_max_pos", 0))
+    # Per-unit quantization steps (fallback to legacy scalar for backward compat)
+    q1_steps = cnn_params.get("q1_steps", None)
+    q1_maxes = cnn_params.get("q1_maxes", None)
+    if q1_steps is None:
+        legacy_step = int(cnn_params.get("q1_step", 1))
+        legacy_max = int(cnn_params.get("q1_max_pos", 0))
+        q1_steps = [legacy_step] * hidden1_units
+        q1_maxes = [legacy_max] * hidden1_units
 
-    if (not feature_names or hidden1_units <= 0 or hidden2_units <= 0 or
-            w1_int.size == 0 or w2_int.size == 0 or w3_int.size == 0):
+    if not feature_names or hidden1_units <= 0 or w1_int.size == 0 or w3_int.size == 0:
         print("ERROR: cnn_params.json missing required fields.")
         sys.exit(1)
 
@@ -149,7 +153,7 @@ def generate_cnn_entries(cnn_params, output_path):
     with open(output_path, 'w') as f:
         f.writelines(base_lines)
 
-        # Hidden layer tables
+        # Hidden layer 1 weight tables
         for h in range(hidden1_units):
             for fi, _ in enumerate(feature_names):
                 table_name = f"cnn1_h{h}_f{fi}"
@@ -160,50 +164,71 @@ def generate_cnn_entries(cnn_params, output_path):
 
         if use_quanti:
             levels = 1 << hidden_bits
-            # Quantization tables for hidden1
             for h in range(hidden1_units):
                 table_name = f"cnn1_quant_h{h}"
                 action_name = f"set_cnn1_h{h}"
+                h_step = int(q1_steps[h])
+                h_max = int(q1_maxes[h])
                 for q in range(levels):
-                    lo = q * q1_step
-                    if lo > q1_max:
+                    lo = q * h_step
+                    if lo > h_max:
                         break
-                    hi = min(q1_max, (q + 1) * q1_step - 1)
+                    hi = min(h_max, (q + 1) * h_step - 1)
                     f.write(f"table_add MyIngress.{table_name} {action_name} {lo}->{hi} => {q}\n")
 
-        # Hidden layer 2 tables (after pooling)
-        pooled = hidden1_units // max(1, pool)
-        for h in range(hidden2_units):
-            for pi in range(pooled):
-                table_name = f"cnn2_h{h}_p{pi}"
-                action_name = f"cnn2_add_h{h}"
-                for a in range(0, (1 << hidden_bits)):
-                    delta = int(w2_int[h][pi] * a)
-                    f.write(f"table_add MyIngress.{table_name} {action_name} {a} => {to_u32(delta)}\n")
+        if p4_layers == 1:
+            # P4CNN1: output layer reads directly from quantized hidden1
+            for c in range(len(classes)):
+                for h in range(hidden1_units):
+                    table_name = f"cnn_out_c{c}_h{h}"
+                    action_name = f"cnn_out_add_c{c}"
+                    for a in range(0, (1 << hidden_bits)):
+                        delta = int(w3_int[c][h] * a)
+                        f.write(f"table_add MyIngress.{table_name} {action_name} {a} => {to_u32(delta)}\n")
+        else:
+            # P4CNN2: hidden layer 2 tables (after pooling)
+            w2_int = np.array(cnn_params.get("w2_int", []), dtype=np.int64)
+            q2_steps = cnn_params.get("q2_steps", None)
+            q2_maxes = cnn_params.get("q2_maxes", None)
+            if q2_steps is None:
+                legacy_step = int(cnn_params.get("q2_step", 1))
+                legacy_max = int(cnn_params.get("q2_max_pos", 0))
+                q2_steps = [legacy_step] * hidden2_units
+                q2_maxes = [legacy_max] * hidden2_units
 
-        if use_quanti:
-            levels = 1 << hidden_bits
-            # Quantization tables for hidden2
+            pooled = hidden1_units // max(1, pool)
             for h in range(hidden2_units):
-                table_name = f"cnn2_quant_h{h}"
-                action_name = f"set_cnn2_h{h}"
-                for q in range(levels):
-                    lo = q * q2_step
-                    if lo > q2_max:
-                        break
-                    hi = min(q2_max, (q + 1) * q2_step - 1)
-                    f.write(f"table_add MyIngress.{table_name} {action_name} {lo}->{hi} => {q}\n")
+                for pi in range(pooled):
+                    table_name = f"cnn2_h{h}_p{pi}"
+                    action_name = f"cnn2_add_h{h}"
+                    for a in range(0, (1 << hidden_bits)):
+                        delta = int(w2_int[h][pi] * a)
+                        f.write(f"table_add MyIngress.{table_name} {action_name} {a} => {to_u32(delta)}\n")
 
-        # Output layer tables
-        for c in range(len(classes)):
-            for h in range(hidden2_units):
-                table_name = f"cnn_out_c{c}_h{h}"
-                action_name = f"cnn_out_add_c{c}"
-                for a in range(0, (1 << hidden_bits)):
-                    delta = int(w3_int[c][h] * a)
-                    f.write(f"table_add MyIngress.{table_name} {action_name} {a} => {to_u32(delta)}\n")
+            if use_quanti:
+                levels = 1 << hidden_bits
+                for h in range(hidden2_units):
+                    table_name = f"cnn2_quant_h{h}"
+                    action_name = f"set_cnn2_h{h}"
+                    h_step = int(q2_steps[h])
+                    h_max_val = int(q2_maxes[h])
+                    for q in range(levels):
+                        lo = q * h_step
+                        if lo > h_max_val:
+                            break
+                        hi = min(h_max_val, (q + 1) * h_step - 1)
+                        f.write(f"table_add MyIngress.{table_name} {action_name} {lo}->{hi} => {q}\n")
 
-    print(f"Wrote CNN table entries to {output_path}")
+            # Output layer tables
+            for c in range(len(classes)):
+                for h in range(hidden2_units):
+                    table_name = f"cnn_out_c{c}_h{h}"
+                    action_name = f"cnn_out_add_c{c}"
+                    for a in range(0, (1 << hidden_bits)):
+                        delta = int(w3_int[c][h] * a)
+                        f.write(f"table_add MyIngress.{table_name} {action_name} {a} => {to_u32(delta)}\n")
+
+    print(f"Wrote CNN table entries (P4CNN{p4_layers}) to {output_path}")
 
 
 if model_type == 'cnn':
@@ -507,54 +532,190 @@ if model_type == 'dt':
 
 
 # ═════════════════════════════════════════════════════════════════════════
-# KNN / SVM  (DT proxy in P4)
+# KNN / SVM  (kd-tree space partitioning → P4 range-match rules)
 # ═════════════════════════════════════════════════════════════════════════
 elif model_type in ('knn', 'svm'):
-    from sklearn import tree as sklearn_tree
 
     RULE_PREFIXES = ("table_add MyIngress.ml_code",)
 
+    # Load params
+    params_path = args.params or os.path.join(tables_dir, f'{model_type}_params.json')
+    assert os.path.exists(params_path), f"{model_type.upper()} params not found: {params_path}"
+    with open(params_path) as f:
+        kdtree_params = json.load(f)
+
+    depth_key = 'knn_depth' if model_type == 'knn' else 'svm_depth'
+    max_depth = kdtree_params.get(depth_key, 16)
+
+    label_enc = {label: idx for idx, label in enumerate(model.classes_)}
+    print(f"Labels: {label_enc}")
+    print(f"KD-tree max depth: {max_depth}")
+
+    num_features = len(FNAMES)
+    rules = []
+    MAX_RULES = 50000  # safety cap
+
+    # Use training data to guide splitting
     assert os.path.exists(args.csv), f"CSV not found: {args.csv}"
     df_train = pd.read_csv(args.csv)
     df_train.columns = df_train.columns.str.lower()
     fnames_lower = [f.lower() for f in FNAMES]
-    X_raw = df_train[fnames_lower].values.astype(np.float64)
+    X_all = df_train[fnames_lower].values.astype(np.float64)
+    y_model_all = model.predict(X_all)
 
-    # Use the original model's predictions as surrogate targets
-    y_pred = model.predict(X_raw)
-    label_enc = {label: idx for idx, label in enumerate(model.classes_)}
+    # Per-feature bounds for P4 range matching
+    feat_max_arr = np.array([float(fmax.get(fn, 65535)) for fn in FNAMES])
 
-    proxy_dt = sklearn_tree.DecisionTreeClassifier(
-        max_depth=args.proxy_max_depth, random_state=42)
-    proxy_dt.fit(X_raw, y_pred)
-    proxy_acc = np.mean(proxy_dt.predict(X_raw) == y_pred)
-    print(f"Proxy DT accuracy (vs {model_type.upper()}): {proxy_acc:.4f}")
+    def kdtree_partition(lo, hi, depth, data_indices):
+        """Binary space partition: split one feature at a time.
+        Uses training data to determine the split point (median) and to check
+        if the cell is pure (all same class).
+        """
+        if len(rules) >= MAX_RULES:
+            return
 
-    rules = walk_sklearn_tree_rules(
-        proxy_dt, FNAMES, fmax, "ml_code", "set_result",
-        class_mapper=lambda lbl: label_enc.get(lbl, label_enc.get(str(lbl), 0)))
+        if len(data_indices) == 0:
+            center = ((lo + hi) / 2.0).reshape(1, -1)
+            cls = model.predict(center)[0]
+            cls_id = label_enc.get(cls, label_enc.get(str(cls), 0))
+            clause, tw = _make_clause(lo, hi)
+            rules.append(((num_features, -tw),
+                f"table_add MyIngress.ml_code set_result {' '.join(clause)} => {cls_id}"))
+            return
+
+        preds = y_model_all[data_indices]
+        unique_preds = np.unique(preds)
+
+        if len(unique_preds) == 1 or depth >= max_depth:
+            cls = Counter(preds).most_common(1)[0][0]
+            cls_id = label_enc.get(cls, label_enc.get(str(cls), 0))
+            clause, tw = _make_clause(lo, hi)
+            rules.append(((num_features, -tw),
+                f"table_add MyIngress.ml_code set_result {' '.join(clause)} => {cls_id}"))
+            return
+
+        X_cell = X_all[data_indices]
+        best_dim = None
+        best_impurity_reduction = -1
+
+        for attempt in range(num_features):
+            dim = (depth + attempt) % num_features
+            if hi[dim] - lo[dim] < 1:
+                continue
+            median_val = np.floor(np.median(X_cell[:, dim]))
+            median_val = max(lo[dim], min(median_val, hi[dim] - 1))
+
+            left_mask = X_cell[:, dim] <= median_val
+            right_mask = ~left_mask
+            n_left, n_right = left_mask.sum(), right_mask.sum()
+
+            if n_left == 0 or n_right == 0:
+                continue
+
+            def gini(indices):
+                if len(indices) == 0:
+                    return 0
+                counts = np.bincount([label_enc.get(p, 0) for p in y_model_all[indices]])
+                probs = counts / len(indices)
+                return 1.0 - np.sum(probs ** 2)
+
+            left_idx = data_indices[left_mask]
+            right_idx = data_indices[right_mask]
+            parent_gini = gini(data_indices)
+            child_gini = (n_left * gini(left_idx) + n_right * gini(right_idx)) / len(data_indices)
+            reduction = parent_gini - child_gini
+
+            if reduction > best_impurity_reduction:
+                best_impurity_reduction = reduction
+                best_dim = dim
+                best_median = median_val
+                best_left_idx = left_idx
+                best_right_idx = right_idx
+
+        if best_dim is None:
+            cls = Counter(preds).most_common(1)[0][0]
+            cls_id = label_enc.get(cls, label_enc.get(str(cls), 0))
+            clause, tw = _make_clause(lo, hi)
+            rules.append(((num_features, -tw),
+                f"table_add MyIngress.ml_code set_result {' '.join(clause)} => {cls_id}"))
+            return
+
+        lo_left, hi_left = lo.copy(), hi.copy()
+        hi_left[best_dim] = best_median
+
+        lo_right, hi_right = lo.copy(), hi.copy()
+        lo_right[best_dim] = best_median + 1
+
+        kdtree_partition(lo_left, hi_left, depth + 1, best_left_idx)
+        kdtree_partition(lo_right, hi_right, depth + 1, best_right_idx)
+
+    def _make_clause(lo, hi):
+        clause = []
+        total_width = 1
+        for f_idx, fn in enumerate(FNAMES):
+            r_lo = max(0, int(lo[f_idx]))
+            r_hi = min(int(hi[f_idx]), int(feat_max_arr[f_idx]))
+            clause.append(f"{r_lo}->{r_hi}")
+            total_width *= max(1, r_hi - r_lo + 1)
+        return clause, total_width
+
+    print(f"Building kd-tree partitioning ({num_features} features, depth {max_depth})...")
+    bounds_lo = np.zeros(num_features)
+    bounds_hi = feat_max_arr.copy()
+    all_indices = np.arange(len(X_all))
+    kdtree_partition(bounds_lo, bounds_hi, 0, all_indices)
     rules.sort(key=lambda x: x[0], reverse=True)
+    print(f"Generated {len(rules)} range-match rules")
+
+    # Verify accuracy on training data
+    n_rules = len(rules)
+    rule_lo = np.zeros((n_rules, num_features), dtype=np.int64)
+    rule_hi = np.zeros((n_rules, num_features), dtype=np.int64)
+    rule_cls = np.zeros(n_rules, dtype=np.int64)
+    for ri, (_, rule_str) in enumerate(rules):
+        parts = rule_str.split(' => ')
+        rule_cls[ri] = int(parts[1])
+        range_strs = parts[0].split('set_result ')[1].split()
+        for f_idx, rs in enumerate(range_strs):
+            lo_s, hi_s = rs.split('->')
+            rule_lo[ri, f_idx] = int(lo_s)
+            rule_hi[ri, f_idx] = int(hi_s)
+
+    y_model_enc = np.array([label_enc.get(y, 0) for y in y_model_all])
+    y_table = np.full(len(X_all), -1, dtype=np.int64)
+    for si in range(len(X_all)):
+        x = X_all[si]
+        match = np.all((x >= rule_lo) & (x <= rule_hi), axis=1)
+        matched = np.where(match)[0]
+        if len(matched) > 0:
+            y_table[si] = rule_cls[matched[0]]
+
+    table_acc = np.mean(y_table == y_model_enc)
+    mt_upper = model_type.upper()
+    print(f"KD-tree table accuracy (vs {mt_upper}): {table_acc:.4f}")
 
     base = load_base_lines(outputfile, RULE_PREFIXES)
-    # BMv2: higher priority number = matched first → most-specific rules get highest numbers
     with open(outputfile, "w") as f:
-        for line in base:
-            f.write(line)
         for prio, (_, rs) in zip(range(len(rules), 0, -1), rules):
             f.write(f"{rs} {prio}\n")
-    print(f"Wrote {len(rules)} {model_type.upper()} proxy DT entries to {outputfile}")
+        for line in base:
+            f.write(line)
+    print(f"Wrote {len(rules)} {mt_upper} entries to {outputfile} (classifier entries placed first)")
 
     with open(tree_output, "w") as fh:
-        fh.write(f"# Proxy DT for {model_type.upper()} (acc={proxy_acc:.4f})\n")
-        write_sklearn_tree_text(proxy_dt, FNAMES, f"ProxyDT({model_type.upper()})", fh)
+        fh.write(f"# {mt_upper} kd-tree partitioning (depth={max_depth}, acc={table_acc:.4f})\n")
+        fh.write(f"# {len(rules)} range-match rules, {num_features} features\n")
+        fh.write(f"# Labels: {label_enc}\n\n")
+        for _, rs in rules[:50]:
+            fh.write(f"{rs}\n")
+        if len(rules) > 50:
+            fh.write(f"\n# ... ({len(rules) - 50} more rules)\n")
     print(f"Tree structure: {tree_output}")
 
-    write_dt_params(
-        tables_dir,
-        model_type,
-        model.classes_,
-        proxy_info={"proxy_accuracy": float(proxy_acc), "proxy_max_depth": args.proxy_max_depth},
-    )
+    write_dt_params(tables_dir, model_type, model.classes_,
+                    proxy_info={"kdtree_depth": max_depth,
+                                "kdtree_rules": len(rules),
+                                "kdtree_accuracy": float(table_acc)})
 
 
 # ═════════════════════════════════════════════════════════════════════════

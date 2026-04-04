@@ -3,7 +3,7 @@
 P4 Runtime Controller for ML Traffic Classification (universal).
 
 Supports all reduction methods (PCA / LDA / Autoencoder / UMAP / Feature Selection)
-and all deployable classifier back-ends (DT / RF / XGB / GB / CNN, plus KNN/SVM via DT proxy).
+and all deployable classifier back-ends (DT / RF / XGB / GB / CNN / KNN / SVM).
 
 This controller:
 1. Loads P4 program rules into a BMv2 switch via simple_switch_CLI
@@ -390,7 +390,7 @@ def load_class_labels_from_xgb_params(params_path, model_path):
     return load_class_labels(model_path)
 
 def load_class_labels_from_dt_params(params_path, model_path):
-    """Load class labels for DT or DT-proxy models (KNN/SVM) from params JSON, fallback to model if needed."""
+    """Load class labels for DT/KNN/SVM models from params JSON, fallback to model if needed."""
     try:
         with open(params_path, 'r') as f:
             params = json.load(f)
@@ -1022,7 +1022,7 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
     # Classify each table as "transform" or "classifier" regardless of method.
     # Transform tables: pca_component* (PCA), lda_component* (LDA),
     #                   ae_component* (Autoencoder), umap_component* (UMAP)
-    # Classifier tables: ml_code (DT / KNN / SVM proxy),
+    # Classifier tables: ml_code (DT / KNN / SVM),
     #                    rf_tree_* / rf_vote_classify (RF),
     #                    xgb_tree_* / xgb_classify (XGB / GB),
     #                    cnn* (CNN)

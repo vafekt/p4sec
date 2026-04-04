@@ -7,17 +7,18 @@ Supports seven classifier back-ends via --model-type:
   rf    RandomForest           (sklearn)
   xgb   XGBoost                (requires xgboost)
   gb    GradientBoosting       (sklearn)  — deploys as XGB in P4
-  knn   K-Nearest Neighbors    (sklearn, software-only)
-  svm   Support Vector Machine (sklearn, software-only)
-  cnn   1D CNN                  (PyTorch, software-only)
+  knn   K-Nearest Neighbors    (sklearn)  — deploys via kd-tree range-match in P4
+  svm   Support Vector Machine (sklearn)  — deploys via kd-tree range-match in P4
+  cnn   1D CNN                  (PyTorch) — deploys via neural lookup tables (--p4-export)
+                                            or distill to DT/RF/XGB (--distill-to)
 
 Works with any step-2 reduction method (PCA / LDA / Autoencoder / UMAP / Feature Selection).
 Feature columns are auto-detected from tables/reduction_config.json.
 
 Input:   tables/transform_mapping.csv      (written by any step 2)
-Output:  model/<model_type>.model         (pickled sklearn/xgb model)
+Output:  model/<model_type>.model         (pickled sklearn/xgb/torch model)
          tables/<model_type>_metrics.json  (accuracy, confusion matrix)
-         tables/<model_type>_params.json   (P4 deployment parameters — RF/XGB/GB only)
+         tables/<model_type>_params.json   (P4 deployment parameters)
          Optional: when --model-type cnn --distill-to <type>,
                    writes model/<type>.model and matching metrics/params for P4 deployment.
 """
@@ -68,7 +69,8 @@ parser = P4secArgumentParser(
         "  cnn   : --epochs --batch-size --lr --cnn-* --dropout --p4-* --distill-to\n"
         "\n"
         "Notes:\n"
-        "  - KNN/SVM are software-only (skip step 4/5).\n"
+        "  - KNN deploys via quadtree space partitioning (range-match rules).\n"
+        "  - SVM deploys via kd-tree space partitioning (range-match rules).\n"
         "  - GB deploys with the XGB P4 architecture.\n"
     )
 )
@@ -112,6 +114,8 @@ parser.add_argument('--knn-metric', default='minkowski',
                     help='KNN distance metric (default: minkowski)')
 parser.add_argument('--knn-p', type=int, default=2,
                     help='KNN minkowski power (default: 2)')
+parser.add_argument('--knn-depth', type=int, default=16,
+                    help='KNN kd-tree depth for P4 deployment (default: 16)')
 
 # SVM-specific
 parser.add_argument('--svm-kernel', default='rbf',
@@ -126,6 +130,8 @@ parser.add_argument('--svm-degree', type=int, default=3,
 parser.add_argument('--svm-class-weight', default='none',
                     choices=['balanced', 'none'],
                     help='SVM class weighting (default: none)')
+parser.add_argument('--svm-depth', type=int, default=16,
+                    help='SVM kd-tree depth for P4 deployment (default: 16)')
 
 # DT / RF class weighting (separate from SVM)
 parser.add_argument('--class-weight', default='balanced',
@@ -158,12 +164,14 @@ parser.add_argument('--distill-to', type=str, default=None,
 parser.add_argument('--p4-export', action='store_true',
                     help='For --model-type cnn: export a P4-deployable neural model '
                          '(writes tables/cnn_params.json)')
+parser.add_argument('--p4-layers', type=int, default=2, choices=[1, 2],
+                    help='CNN P4 number of hidden layers (1=simpler/less quant loss, 2=default)')
 parser.add_argument('--p4-hidden', type=int, default=16,
                     help='CNN P4 hidden units (default: 16)')
 parser.add_argument('--p4-hidden2', type=int, default=None,
-                    help='CNN P4 second hidden units (default: p4_hidden//2)')
+                    help='CNN P4 second hidden units (default: p4_hidden//2, ignored if --p4-layers 1)')
 parser.add_argument('--p4-pool', type=int, default=2,
-                    help='CNN P4 maxpool size over hidden1 (default: 2, or 1 for no pooling)')
+                    help='CNN P4 maxpool size over hidden1 (default: 2, or 1 for no pooling; ignored if --p4-layers 1)')
 parser.add_argument('--p4-input-bits', type=int, default=None,
                     help='CNN P4 input quantization bits (default: auto)')
 parser.add_argument('--p4-hidden-bits', type=int, default=8,
@@ -174,6 +182,8 @@ parser.add_argument('--p4-w2-scale', type=float, default=64.0,
                     help='CNN P4 weight scale for second layer (default: 64.0)')
 parser.add_argument('--p4-w3-scale', type=float, default=64.0,
                     help='CNN P4 weight scale for output layer (default: 64.0)')
+parser.add_argument('--p4-qat', action='store_true',
+                    help='Enable quantization-aware training (QAT) for CNN P4 export')
 
 args = parser.parse_args()
 
@@ -350,15 +360,26 @@ def train_non_cnn(mt, X_train_in, y_train_in, X_test_in, y_test_in):
         return model_local, y_pred_local, local_classes, local_n_classes, local_max_depth
 
     if mt == 'svm':
-        from sklearn.svm import SVC
         class_weight = None if args.svm_class_weight == 'none' else 'balanced'
-        model_local = SVC(
-            kernel=args.svm_kernel,
-            C=args.svm_c,
-            gamma=args.svm_gamma,
-            degree=args.svm_degree,
-            class_weight=class_weight,
-        )
+        if args.svm_kernel == 'linear':
+            # LinearSVC is much faster than SVC(kernel='linear') on large datasets
+            from sklearn.svm import LinearSVC
+            from sklearn.calibration import CalibratedClassifierCV
+            model_local = LinearSVC(
+                C=args.svm_c,
+                class_weight=class_weight,
+                max_iter=5000,
+                random_state=args.random_state,
+            )
+        else:
+            from sklearn.svm import SVC
+            model_local = SVC(
+                kernel=args.svm_kernel,
+                C=args.svm_c,
+                gamma=args.svm_gamma,
+                degree=args.svm_degree,
+                class_weight=class_weight,
+            )
         model_local.fit(X_train_in, y_train_in)
         y_pred_local = model_local.predict(X_test_in)
         return model_local, y_pred_local, local_classes, local_n_classes, local_max_depth
@@ -375,15 +396,22 @@ def _feature_bit_width(feature_name, tables_dir):
 
 
 def quantize_inputs_for_p4(X_in, feature_names, tables_dir, input_bits):
+    """Quantize features to [0, 2^input_bits - 1] using min-max scaling.
+
+    Min-max preserves the data distribution much better than right-shifting,
+    especially when feature values are clustered in a narrow subrange of
+    the full bit width (common with PCA/LDA codes).
+    """
     max_q = (1 << input_bits) - 1
     X_q = np.zeros_like(X_in, dtype=np.int64)
     for idx, fname in enumerate(feature_names):
-        width = _feature_bit_width(fname, tables_dir)
-        shift = max(0, width - input_bits)
-        vals = X_in[:, idx].astype(np.int64)
-        q = vals >> shift if shift > 0 else vals
-        q = np.clip(q, 0, max_q)
-        X_q[:, idx] = q
+        vals = X_in[:, idx].astype(np.float64)
+        vmin, vmax = vals.min(), vals.max()
+        if vmax - vmin < 1e-9:
+            X_q[:, idx] = 0
+        else:
+            normed = (vals - vmin) / (vmax - vmin) * max_q
+            X_q[:, idx] = np.clip(np.round(normed).astype(np.int64), 0, max_q)
     return X_q
 
 
@@ -418,7 +446,7 @@ if model_type == 'cnn':
         if args.p4_input_bits is None:
             if all(str(c).endswith('_code') for c in feature_columns):
                 auto_bits = int(detect_bits(tables_dir) or 16)
-                p4_input_bits = min(10, auto_bits)
+                p4_input_bits = min(12, auto_bits)
             else:
                 p4_input_bits = 10
         else:
@@ -458,6 +486,30 @@ if model_type == 'cnn':
         drop_last=False,
     )
 
+    class FakeQuantize(nn.Module):
+        """Straight-through estimator for simulating P4 integer quantization during training.
+
+        During forward: floor-divides by step and clamps to [0, levels-1] (simulates P4 range-match bins).
+        During backward: gradients pass through unchanged (straight-through estimator).
+        """
+        def __init__(self, levels=256):
+            super().__init__()
+            self.levels = levels
+            self.step = nn.Parameter(torch.tensor(1.0), requires_grad=False)
+
+        def calibrate(self, x_positive):
+            """Set step size from observed data: step = max_positive / (levels - 1)."""
+            max_val = x_positive.detach().max().item()
+            self.step.fill_(max(1.0, max_val / (self.levels - 1)))
+
+        def forward(self, x):
+            # ReLU first
+            x = torch.relu(x)
+            # Quantize: floor(x / step), clamp to [0, levels-1]
+            q = torch.clamp(torch.floor(x / self.step), 0, self.levels - 1)
+            # Straight-through: forward uses quantized, backward uses pre-quantized gradients
+            return x + (q * self.step - x).detach()
+
     class SimpleCNN(nn.Module):
         def __init__(self, in_channels, channels, kernel_size, n_classes, dropout):
             super().__init__()
@@ -478,43 +530,92 @@ if model_type == 'cnn':
             x = self.dropout(x)
             return self.fc(x)
 
+    class P4CNN1(nn.Module):
+        """Single hidden layer MLP for P4 deployment. One less quantization stage."""
+        def __init__(self, n_features, hidden1, n_classes, qat=False, hidden_bits=8):
+            super().__init__()
+            self.hidden1 = hidden1
+            self.fc1 = nn.Linear(n_features, hidden1, bias=True)
+            self.fc_out = nn.Linear(hidden1, n_classes, bias=True)
+            self.qat = qat
+            if qat:
+                self.fq1 = FakeQuantize(levels=2**hidden_bits)
+            else:
+                self.relu1 = nn.ReLU()
+
+        def forward(self, x):
+            x = self.fc1(x)
+            if self.qat:
+                x = self.fq1(x)
+            else:
+                x = self.relu1(x)
+            return self.fc_out(x)
+
     class P4CNN2(nn.Module):
-        def __init__(self, n_features, hidden1, hidden2, pool, n_classes):
+        def __init__(self, n_features, hidden1, hidden2, pool, n_classes, qat=False, hidden_bits=8):
             super().__init__()
             self.hidden1 = hidden1
             self.hidden2 = hidden2
             self.pool = pool
             self.fc1 = nn.Linear(n_features, hidden1, bias=True)
-            self.relu1 = nn.ReLU()
             self.pool1 = nn.MaxPool1d(kernel_size=pool, stride=pool)
             self.fc2 = nn.Linear(hidden1 // pool, hidden2, bias=True)
-            self.relu2 = nn.ReLU()
             self.fc3 = nn.Linear(hidden2, n_classes, bias=True)
+            self.qat = qat
+            if qat:
+                self.fq1 = FakeQuantize(levels=2**hidden_bits)
+                self.fq2 = FakeQuantize(levels=2**hidden_bits)
+            else:
+                self.relu1 = nn.ReLU()
+                self.relu2 = nn.ReLU()
 
         def forward(self, x):
             x = self.fc1(x)
-            x = self.relu1(x)
+            if self.qat:
+                x = self.fq1(x)
+            else:
+                x = self.relu1(x)
             x = x.unsqueeze(1)  # (N, 1, H1)
             x = self.pool1(x).squeeze(1)
             x = self.fc2(x)
-            x = self.relu2(x)
+            if self.qat:
+                x = self.fq2(x)
+            else:
+                x = self.relu2(x)
             return self.fc3(x)
 
     if args.p4_export:
         hidden1 = max(1, int(args.p4_hidden))
-        pool = max(1, int(args.p4_pool))
-        if pool not in (1, 2):
-            raise ValueError("p4_pool currently supports only size=1 or 2 for P4 deployment.")
-        if hidden1 % pool != 0:
-            raise ValueError(f"p4_hidden ({hidden1}) must be divisible by p4_pool ({pool})")
-        hidden2 = int(args.p4_hidden2) if args.p4_hidden2 is not None else max(1, hidden1 // 2)
-        model = P4CNN2(
-            n_features=X_train_norm.shape[1],
-            hidden1=hidden1,
-            hidden2=hidden2,
-            pool=pool,
-            n_classes=n_classes,
-        )
+        p4_layers = int(args.p4_layers)
+        qat = bool(args.p4_qat)
+        hidden_bits = int(args.p4_hidden_bits)
+
+        if p4_layers == 1:
+            model = P4CNN1(
+                n_features=X_train_norm.shape[1],
+                hidden1=hidden1,
+                n_classes=n_classes,
+                qat=qat,
+                hidden_bits=hidden_bits,
+            )
+            print(f"Using P4CNN1 (single hidden layer, {hidden1} units, QAT={'on' if qat else 'off'})")
+        else:
+            pool = max(1, int(args.p4_pool))
+            if pool not in (1, 2):
+                raise ValueError("p4_pool currently supports only size=1 or 2 for P4 deployment.")
+            if hidden1 % pool != 0:
+                raise ValueError(f"p4_hidden ({hidden1}) must be divisible by p4_pool ({pool})")
+            hidden2 = int(args.p4_hidden2) if args.p4_hidden2 is not None else max(1, hidden1 // 2)
+            model = P4CNN2(
+                n_features=X_train_norm.shape[1],
+                hidden1=hidden1,
+                hidden2=hidden2,
+                pool=pool,
+                n_classes=n_classes,
+                qat=qat,
+                hidden_bits=hidden_bits,
+            )
+            print(f"Using P4CNN2 (2 hidden layers, {hidden1}/{hidden2} units, pool={pool}, QAT={'on' if qat else 'off'})")
     else:
         model = SimpleCNN(
             in_channels=1,
@@ -538,14 +639,44 @@ if model_type == 'cnn':
         criterion = nn.CrossEntropyLoss(weight=weights_t)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
+    # QAT calibration: run one forward pass to set FakeQuantize step sizes
+    if args.p4_export and args.p4_qat:
+        model.eval()
+        with torch.no_grad():
+            # Calibrate on training data
+            cal_x = X_train_t[:min(2048, len(X_train_t))]
+            if hasattr(model, 'fq1'):
+                h1_out = model.fc1(cal_x)
+                model.fq1.calibrate(torch.relu(h1_out))
+            if hasattr(model, 'fq2'):
+                h1_q = model.fq1(model.fc1(cal_x))
+                h1_p = model.pool1(h1_q.unsqueeze(1)).squeeze(1)
+                h2_out = model.fc2(h1_p)
+                model.fq2.calibrate(torch.relu(h2_out))
+        print(f"QAT calibrated: fq1.step={model.fq1.step.item():.2f}"
+              + (f", fq2.step={model.fq2.step.item():.2f}" if hasattr(model, 'fq2') else ""))
+
     model.train()
-    for _ in range(max(1, args.epochs)):
+    n_epochs = max(1, args.epochs)
+    for epoch in range(n_epochs):
         for xb, yb in train_loader:
             optimizer.zero_grad()
             logits = model(xb)
             loss = criterion(logits, yb)
             loss.backward()
             optimizer.step()
+        # Recalibrate QAT step sizes every 10 epochs
+        if args.p4_export and args.p4_qat and (epoch + 1) % 10 == 0:
+            model.eval()
+            with torch.no_grad():
+                cal_x = X_train_t[:min(2048, len(X_train_t))]
+                if hasattr(model, 'fq1'):
+                    model.fq1.calibrate(torch.relu(model.fc1(cal_x)))
+                if hasattr(model, 'fq2'):
+                    h1_q = model.fq1(model.fc1(cal_x))
+                    h1_p = model.pool1(h1_q.unsqueeze(1)).squeeze(1)
+                    model.fq2.calibrate(torch.relu(model.fc2(h1_p)))
+            model.train()
 
     model.eval()
     with torch.no_grad():
@@ -717,6 +848,48 @@ elif model_type in ('xgb', 'gb'):
             json.dump(params, f, indent=2)
     print(f"Saved P4 params to {model_type}_params.json + xgb_params.json")
 
+elif model_type == 'knn':
+    # KNN deploys via quadtree space partitioning → P4 range-match rules
+    # Compute per-feature min/max from training data for quadtree bounds
+    feat_min = {c: float(X[c].min()) for c in feature_columns}
+    feat_max = {c: float(X[c].max()) for c in feature_columns}
+
+    params = {
+        "model_type":     "knn",
+        "n_classes":      n_classes,
+        "classes":        labels,
+        "feature_names":  feature_columns,
+        "knn_k":          int(args.knn_k),
+        "knn_weights":    args.knn_weights,
+        "knn_depth":      int(args.knn_depth),
+        "feature_min":    feat_min,
+        "feature_max":    feat_max,
+    }
+    ppath = os.path.join(tables_dir, 'knn_params.json')
+    with open(ppath, 'w') as f:
+        json.dump(params, f, indent=2)
+    print(f"Saved KNN P4 params to {ppath}")
+
+elif model_type == 'svm':
+    # SVM deploys via kd-tree space partitioning → P4 range-match rules
+    feat_min = {c: float(X[c].min()) for c in feature_columns}
+    feat_max = {c: float(X[c].max()) for c in feature_columns}
+
+    params = {
+        "model_type":     "svm",
+        "n_classes":      n_classes,
+        "classes":        labels,
+        "feature_names":  feature_columns,
+        "svm_kernel":     args.svm_kernel,
+        "svm_depth":      int(args.svm_depth),
+        "feature_min":    feat_min,
+        "feature_max":    feat_max,
+    }
+    ppath = os.path.join(tables_dir, 'svm_params.json')
+    with open(ppath, 'w') as f:
+        json.dump(params, f, indent=2)
+    print(f"Saved SVM P4 params to {ppath}")
+
 
 # ─── Save model ──────────────────────────────────────────────────────────
 if model_type == 'cnn':
@@ -746,9 +919,84 @@ if model_type == 'cnn' and args.p4_export:
     except ImportError:
         torch = None
 
-    if torch is None or not hasattr(model, 'fc1') or not hasattr(model, 'fc3'):
-        print("WARNING: CNN P4 export skipped (model is not P4CNN2).")
-    else:
+    is_p4cnn1 = isinstance(model, P4CNN1)
+    is_p4cnn2 = isinstance(model, P4CNN2)
+
+    if torch is None or not hasattr(model, 'fc1'):
+        print("WARNING: CNN P4 export skipped (model is not P4CNN1/P4CNN2).")
+    elif is_p4cnn1:
+        # ── P4CNN1: single hidden layer ──
+        w1 = model.fc1.weight.detach().cpu().numpy()
+        b1 = model.fc1.bias.detach().cpu().numpy()
+        w_out = model.fc_out.weight.detach().cpu().numpy()
+        b_out = model.fc_out.bias.detach().cpu().numpy()
+
+        w1_scale = float(args.p4_w1_scale)
+        w_out_scale = float(args.p4_w3_scale)
+        w1_int = np.rint(w1 * w1_scale).astype(int)
+        b1_int = np.rint(b1 * w1_scale).astype(int)
+        w_out_int = np.rint(w_out * w_out_scale).astype(int)
+        b_out_int = np.rint(b_out * w_out_scale).astype(int)
+
+        input_bits = int(p4_input_bits)
+        hidden_bits = int(args.p4_hidden_bits)
+        h_max = (1 << hidden_bits) - 1
+        input_max = (1 << input_bits) - 1
+
+        levels = int(2 ** hidden_bits)
+        Xq = X_train_q.astype(np.int64)
+        S1 = Xq @ w1_int.T + b1_int.reshape(1, -1)
+
+        # Per-unit quantization: each hidden unit gets its own step size
+        hidden1 = int(args.p4_hidden)
+        q1_steps = []
+        q1_maxes = []
+        Q1 = np.zeros_like(S1, dtype=np.int64)
+        for h in range(hidden1):
+            s1h = np.maximum(S1[:, h], 0)
+            mp = int(s1h.max()) if np.any(s1h > 0) else 0
+            st = max(1, int(math.ceil(mp / float(levels - 1)))) if levels > 1 else 1
+            Q1[:, h] = np.clip(s1h // st, 0, levels - 1)
+            q1_steps.append(st)
+            q1_maxes.append(mp)
+        print(f"Per-unit Q1 steps: {q1_steps}")
+        print(f"Per-unit Q1 unique: {[len(np.unique(Q1[:,h])) for h in range(hidden1)]}")
+
+        # Verify P4 accuracy for single-layer
+        S_out = Q1 @ w_out_int.T + b_out_int.reshape(1, -1)
+        p4_pred = np.argmax(S_out, axis=1)
+        y_train_enc_np = np.array([label_to_int[y] for y in y_train], dtype=np.int64)
+        p4_acc = np.mean(p4_pred == y_train_enc_np)
+        print(f"P4CNN1 quantized train accuracy: {p4_acc:.4f}")
+
+        cnn_params = {
+            "model_type": "cnn",
+            "p4_layers": 1,
+            "classes": labels,
+            "feature_names": feature_columns,
+            "input_bits": input_bits,
+            "hidden_bits": hidden_bits,
+            "hidden1_units": hidden1,
+            "hidden2_units": 0,
+            "pool": 1,
+            "use_quanti": True,
+            "q1_steps": q1_steps,
+            "q1_maxes": q1_maxes,
+            "w1_scale": w1_scale,
+            "w3_scale": w_out_scale,
+            "w1_int": w1_int.tolist(),
+            "b1_int": b1_int.tolist(),
+            "w3_int": w_out_int.tolist(),
+            "b3_int": b_out_int.tolist(),
+            "qat": bool(args.p4_qat),
+        }
+        cnn_params_path = os.path.join(tables_dir, "cnn_params.json")
+        with open(cnn_params_path, 'w') as f:
+            json.dump(cnn_params, f, indent=2)
+        print(f"Saved CNN P4 params (P4CNN1) to {cnn_params_path}")
+
+    elif is_p4cnn2:
+        # ── P4CNN2: two hidden layers ──
         w1 = model.fc1.weight.detach().cpu().numpy()
         b1 = model.fc1.bias.detach().cpu().numpy()
         w2 = model.fc2.weight.detach().cpu().numpy()
@@ -789,38 +1037,63 @@ if model_type == 'cnn' and args.p4_export:
             print("WARNING: CNN score range may exceed int32. "
                   "Consider lowering --p4-w3-scale or --p4-hidden.")
 
-        # Quantization tables (Tofino-style): learn uniform bins on sums
+        # Per-unit quantization tables
         levels = int(2 ** hidden_bits)
         Xq = X_train_q.astype(np.int64)
         S1 = Xq @ w1_int.T + b1_int.reshape(1, -1)
-        max_pos1 = int(np.max(S1[S1 > 0])) if np.any(S1 > 0) else 0
-        step1 = max(1, int(math.ceil(max_pos1 / float(levels - 1)))) if levels > 1 else 1
-        Q1 = np.clip((np.maximum(S1, 0) // step1), 0, levels - 1).astype(np.int64)
+
+        hidden1 = int(args.p4_hidden)
+        hidden2 = int(args.p4_hidden2) if args.p4_hidden2 is not None else max(1, hidden1 // 2)
+        q1_steps = []
+        q1_maxes = []
+        Q1 = np.zeros_like(S1, dtype=np.int64)
+        for h in range(hidden1):
+            s1h = np.maximum(S1[:, h], 0)
+            mp = int(s1h.max()) if np.any(s1h > 0) else 0
+            st = max(1, int(math.ceil(mp / float(levels - 1)))) if levels > 1 else 1
+            Q1[:, h] = np.clip(s1h // st, 0, levels - 1)
+            q1_steps.append(st)
+            q1_maxes.append(mp)
 
         if int(args.p4_pool) == 1:
             P1 = Q1
         else:
-            # pool=2 only
             P1 = np.maximum(Q1[:, 0::2], Q1[:, 1::2])
 
         S2 = P1 @ w2_int.T + b2_int.reshape(1, -1)
-        max_pos2 = int(np.max(S2[S2 > 0])) if np.any(S2 > 0) else 0
-        step2 = max(1, int(math.ceil(max_pos2 / float(levels - 1)))) if levels > 1 else 1
+        q2_steps = []
+        q2_maxes = []
+        Q2 = np.zeros((S2.shape[0], hidden2), dtype=np.int64)
+        for h in range(hidden2):
+            s2h = np.maximum(S2[:, h], 0)
+            mp = int(s2h.max()) if np.any(s2h > 0) else 0
+            st = max(1, int(math.ceil(mp / float(levels - 1)))) if levels > 1 else 1
+            Q2[:, h] = np.clip(s2h // st, 0, levels - 1)
+            q2_steps.append(st)
+            q2_maxes.append(mp)
+
+        # Verify P4CNN2 accuracy
+        S_out = Q2 @ w3_int.T + b3_int.reshape(1, -1)
+        p4_pred = np.argmax(S_out, axis=1)
+        y_train_enc_np = np.array([label_to_int[y] for y in y_train], dtype=np.int64)
+        p4_acc = np.mean(p4_pred == y_train_enc_np)
+        print(f"P4CNN2 quantized train accuracy: {p4_acc:.4f}")
 
         cnn_params = {
             "model_type": "cnn",
+            "p4_layers": 2,
             "classes": labels,
             "feature_names": feature_columns,
             "input_bits": input_bits,
             "hidden_bits": hidden_bits,
-            "hidden1_units": int(args.p4_hidden),
-            "hidden2_units": int(args.p4_hidden2) if args.p4_hidden2 is not None else max(1, int(args.p4_hidden) // 2),
+            "hidden1_units": hidden1,
+            "hidden2_units": hidden2,
             "pool": int(args.p4_pool),
             "use_quanti": True,
-            "q1_step": step1,
-            "q1_max_pos": max_pos1,
-            "q2_step": step2,
-            "q2_max_pos": max_pos2,
+            "q1_steps": q1_steps,
+            "q1_maxes": q1_maxes,
+            "q2_steps": q2_steps,
+            "q2_maxes": q2_maxes,
             "h1_shift": h1_shift,
             "h2_shift": h2_shift,
             "w1_scale": w1_scale,
@@ -832,11 +1105,12 @@ if model_type == 'cnn' and args.p4_export:
             "b2_int": b2_int.tolist(),
             "w3_int": w3_int.tolist(),
             "b3_int": b3_int.tolist(),
+            "qat": bool(args.p4_qat),
         }
         cnn_params_path = os.path.join(tables_dir, "cnn_params.json")
         with open(cnn_params_path, 'w') as f:
             json.dump(cnn_params, f, indent=2)
-        print(f"Saved CNN P4 params to {cnn_params_path}")
+        print(f"Saved CNN P4 params (P4CNN2) to {cnn_params_path}")
 
 
 # ─── Optional CNN distillation ───────────────────────────────────────────

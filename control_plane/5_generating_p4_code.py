@@ -14,8 +14,8 @@ Supports six classifier back-ends:
   --model-type rf   RandomForest    N rf_tree_i tables + rf_vote_classify
   --model-type xgb  XGBoost         N*K xgb_tree_i tables + xgb_classify
   --model-type gb   GradientBoost   (same P4 architecture as XGB)
-  --model-type knn  KNN             (deploys as DT proxy in P4)
-  --model-type svm  SVM             (deploys as DT proxy in P4)
+  --model-type knn  KNN             (deploys via kd-tree range-match, same P4 as DT)
+  --model-type svm  SVM             (deploys via kd-tree range-match, same P4 as DT)
   --model-type cnn  1D CNN          neural lookup tables (P4 deployable)
 
 Reads configuration from:
@@ -228,12 +228,7 @@ const bit<8>  TYPE_ARP_PSEUDO = 253;  // pseudo proto used in flow key for ARP
 const bit<32> NB_ENTRIES = ''' + str(self.n_registers) + ''';
 const bit<32> MAX_REGISTER_ENTRIES = ''' + str(self.n_registers) + ''';
 
-#define BLOOM_FILTER_BIT_WIDTH 32
 #define FLOW_TIMEOUT ''' + str(self.flow_timeout_ns) + '''  // ''' + str(self.flow_timeout_ns // 1_000_000_000) + '''s in nanoseconds
-
-#define FIRST_INDEX ((bit<32>)0)
-#define WRITE_REG(r, v) r.write(FIRST_INDEX, v)
-#define READ_REG(r,  v) r.read(v, FIRST_INDEX)
 
 /*************************************************************************
 *********************** H E A D E R S  ***********************************
@@ -394,23 +389,25 @@ struct metadata {
             hidden_bits = int(self.cnn_params.get('hidden_bits', 8))
             hidden1_units = int(self.cnn_params.get('hidden1_units', 0))
             hidden2_units = int(self.cnn_params.get('hidden2_units', 0))
+            p4_layers = int(self.cnn_params.get('p4_layers', 2 if hidden2_units > 0 else 1))
             pool = int(self.cnn_params.get('pool', 2))
             n_cls = len(self.cnn_params.get('classes', []))
-            code += f'\n    // CNN quantized inputs\n'
+            code += f'\n    // CNN quantized inputs (P4CNN{p4_layers})\n'
             for i in range(len(self.classifier_features)):
                 code += f'    bit<{input_bits}> cnn_in{i};\n'
             code += f'\n    // CNN hidden accumulators + activations\n'
             for h in range(hidden1_units):
                 code += f'    bit<32>  cnn1_h{h}_sum;\n'
                 code += f'    bit<{hidden_bits}> cnn1_h{h};\n'
-            pooled = hidden1_units // max(1, pool)
-            code += f'\n    // CNN pooled activations\n'
-            for p in range(pooled):
-                code += f'    bit<{hidden_bits}> cnn_p{p};\n'
-            code += f'\n    // CNN hidden2 accumulators + activations\n'
-            for h in range(hidden2_units):
-                code += f'    bit<32>  cnn2_h{h}_sum;\n'
-                code += f'    bit<{hidden_bits}> cnn2_h{h};\n'
+            if p4_layers >= 2:
+                pooled = hidden1_units // max(1, pool)
+                code += f'\n    // CNN pooled activations\n'
+                for p in range(pooled):
+                    code += f'    bit<{hidden_bits}> cnn_p{p};\n'
+                code += f'\n    // CNN hidden2 accumulators + activations\n'
+                for h in range(hidden2_units):
+                    code += f'    bit<32>  cnn2_h{h}_sum;\n'
+                    code += f'    bit<{hidden_bits}> cnn2_h{h};\n'
             code += f'\n    // CNN class scores\n'
             for c in range(n_cls):
                 code += f'    bit<32> cnn_score_c{c};\n'
@@ -1102,6 +1099,7 @@ control MyIngress(inout headers hdr,
             hidden_bits = int(self.cnn_params.get('hidden_bits', 8))
             hidden1_units = int(self.cnn_params.get('hidden1_units', 0))
             hidden2_units = int(self.cnn_params.get('hidden2_units', 0))
+            p4_layers = int(self.cnn_params.get('p4_layers', 2 if hidden2_units > 0 else 1))
             pool = int(self.cnn_params.get('pool', 2))
             n_cls = len(self.cnn_params.get('classes', []))
             use_quanti = bool(self.cnn_params.get('use_quanti', False))
@@ -1119,15 +1117,16 @@ control MyIngress(inout headers hdr,
         meta.cnn1_h{h} = val;
     }}
 '''
-            for h in range(hidden2_units):
-                code += f'''
+            if p4_layers >= 2:
+                for h in range(hidden2_units):
+                    code += f'''
     action cnn2_add_h{h}(bit<32> delta) {{
         meta.cnn2_h{h}_sum = meta.cnn2_h{h}_sum + delta;
     }}
 '''
-            if use_quanti:
-                for h in range(hidden2_units):
-                    code += f'''
+                if use_quanti:
+                    for h in range(hidden2_units):
+                        code += f'''
     action set_cnn2_h{h}(bit<{hidden_bits}> val) {{
         meta.cnn2_h{h} = val;
     }}
@@ -1166,10 +1165,27 @@ control MyIngress(inout headers hdr,
         size = 65535;
     }}
 '''
-            pooled = hidden1_units // max(1, pool)
-            for h in range(hidden2_units):
-                for pi in range(pooled):
-                    code += f'''
+            if p4_layers == 1:
+                # P4CNN1: output reads directly from quantized hidden1
+                for c in range(n_cls):
+                    for h in range(hidden1_units):
+                        code += f'''
+    table cnn_out_c{c}_h{h} {{
+        key = {{
+            meta.cnn1_h{h} : exact;
+        }}
+        actions = {{
+            cnn_out_add_c{c};
+            NoAction;
+        }}
+        size = {2**hidden_bits};
+    }}
+'''
+            else:
+                pooled = hidden1_units // max(1, pool)
+                for h in range(hidden2_units):
+                    for pi in range(pooled):
+                        code += f'''
     table cnn2_h{h}_p{pi} {{
         key = {{
             meta.cnn_p{pi} : exact;
@@ -1181,9 +1197,9 @@ control MyIngress(inout headers hdr,
         size = {2**hidden_bits};
     }}
 '''
-            if use_quanti:
-                for h in range(hidden2_units):
-                    code += f'''
+                if use_quanti:
+                    for h in range(hidden2_units):
+                        code += f'''
     table cnn2_quant_h{h} {{
         key = {{
             meta.cnn2_h{h}_sum : range;
@@ -1195,9 +1211,9 @@ control MyIngress(inout headers hdr,
         size = 65535;
     }}
 '''
-            for c in range(n_cls):
-                for h in range(hidden2_units):
-                    code += f'''
+                for c in range(n_cls):
+                    for h in range(hidden2_units):
+                        code += f'''
     table cnn_out_c{c}_h{h} {{
         key = {{
             meta.cnn2_h{h} : exact;
@@ -1253,6 +1269,7 @@ control MyIngress(inout headers hdr,
         elif self.model_type == 'cnn':
             hidden1_units = int(self.cnn_params.get('hidden1_units', 0))
             hidden2_units = int(self.cnn_params.get('hidden2_units', 0))
+            p4_layers = int(self.cnn_params.get('p4_layers', 2 if hidden2_units > 0 else 1))
             hidden_bits = int(self.cnn_params.get('hidden_bits', 8))
             pool = int(self.cnn_params.get('pool', 2))
             h1_shift = int(self.cnn_params.get('h1_shift', 0))
@@ -1261,7 +1278,6 @@ control MyIngress(inout headers hdr,
             h_max = (1 << hidden_bits) - 1
             n_cls = len(self.cnn_params.get('classes', []))
             b1_int = self.cnn_params.get('b1_int', [0] * hidden1_units)
-            b2_int = self.cnn_params.get('b2_int', [0] * hidden2_units)
             b3_int = self.cnn_params.get('b3_int', [0] * n_cls)
 
             classify_snippet += '                // CNN hidden accumulators init\n'
@@ -1297,49 +1313,58 @@ control MyIngress(inout headers hdr,
                     classify_snippet += (f'                else {{ meta.cnn1_h{h} = '
                                          f'(bit<{hidden_bits}>)(meta.cnn1_h{h}_sum >> {h1_shift}); }}\n')
 
-            pooled = hidden1_units // max(1, pool)
-            classify_snippet += '                // CNN maxpool\n'
-            for p in range(pooled):
-                idx0 = p * pool
-                if pool == 1:
-                    classify_snippet += f'                meta.cnn_p{p} = meta.cnn1_h{idx0};\n'
-                else:
-                    idx1 = idx0 + 1
-                    classify_snippet += (f'                if (meta.cnn1_h{idx0} >= meta.cnn1_h{idx1}) '
-                                         f'{{ meta.cnn_p{p} = meta.cnn1_h{idx0}; }} '
-                                         f'else {{ meta.cnn_p{p} = meta.cnn1_h{idx1}; }}\n')
-
-            classify_snippet += '                // CNN hidden2 accumulators init\n'
-            for h in range(hidden2_units):
-                bias = int(b2_int[h]) if h < len(b2_int) else 0
-                bias_u = (bias + (1 << 32)) % (1 << 32)
-                classify_snippet += f'                meta.cnn2_h{h}_sum = 32w{bias_u};\n'
-
-            classify_snippet += '                // CNN hidden2 layer lookups\n'
-            for h in range(hidden2_units):
-                for p in range(pooled):
-                    classify_snippet += f'                cnn2_h{h}_p{p}.apply();\n'
-
-            if use_quanti:
-                classify_snippet += '                // CNN quantize hidden2 (table)\n'
-                for h in range(hidden2_units):
-                    classify_snippet += (f'                if (meta.cnn2_h{h}_sum[31:31] == 1w1) '
-                                         f'{{ meta.cnn2_h{h} = {hidden_bits}w0; }}\n')
-                    classify_snippet += (f'                else {{ cnn2_quant_h{h}.apply(); }}\n')
+            if p4_layers == 1:
+                # P4CNN1: output reads directly from quantized hidden1
+                classify_snippet += '                // CNN output layer lookups (P4CNN1)\n'
+                for c in range(n_cls):
+                    for h in range(hidden1_units):
+                        classify_snippet += f'                cnn_out_c{c}_h{h}.apply();\n'
             else:
-                classify_snippet += '                // CNN ReLU + quantize hidden2\n'
-                for h in range(hidden2_units):
-                    classify_snippet += (f'                if (meta.cnn2_h{h}_sum[31:31] == 1w1) '
-                                         f'{{ meta.cnn2_h{h} = {hidden_bits}w0; }}\n')
-                    classify_snippet += (f'                else if ((meta.cnn2_h{h}_sum >> {h2_shift}) > {h_max}) '
-                                         f'{{ meta.cnn2_h{h} = {hidden_bits}w{h_max}; }}\n')
-                    classify_snippet += (f'                else {{ meta.cnn2_h{h} = '
-                                         f'(bit<{hidden_bits}>)(meta.cnn2_h{h}_sum >> {h2_shift}); }}\n')
+                # P4CNN2: pooling + hidden2 + output
+                b2_int = self.cnn_params.get('b2_int', [0] * hidden2_units)
+                pooled = hidden1_units // max(1, pool)
+                classify_snippet += '                // CNN maxpool\n'
+                for p in range(pooled):
+                    idx0 = p * pool
+                    if pool == 1:
+                        classify_snippet += f'                meta.cnn_p{p} = meta.cnn1_h{idx0};\n'
+                    else:
+                        idx1 = idx0 + 1
+                        classify_snippet += (f'                if (meta.cnn1_h{idx0} >= meta.cnn1_h{idx1}) '
+                                             f'{{ meta.cnn_p{p} = meta.cnn1_h{idx0}; }} '
+                                             f'else {{ meta.cnn_p{p} = meta.cnn1_h{idx1}; }}\n')
 
-            classify_snippet += '                // CNN output layer lookups\n'
-            for c in range(n_cls):
+                classify_snippet += '                // CNN hidden2 accumulators init\n'
                 for h in range(hidden2_units):
-                    classify_snippet += f'                cnn_out_c{c}_h{h}.apply();\n'
+                    bias = int(b2_int[h]) if h < len(b2_int) else 0
+                    bias_u = (bias + (1 << 32)) % (1 << 32)
+                    classify_snippet += f'                meta.cnn2_h{h}_sum = 32w{bias_u};\n'
+
+                classify_snippet += '                // CNN hidden2 layer lookups\n'
+                for h in range(hidden2_units):
+                    for p in range(pooled):
+                        classify_snippet += f'                cnn2_h{h}_p{p}.apply();\n'
+
+                if use_quanti:
+                    classify_snippet += '                // CNN quantize hidden2 (table)\n'
+                    for h in range(hidden2_units):
+                        classify_snippet += (f'                if (meta.cnn2_h{h}_sum[31:31] == 1w1) '
+                                             f'{{ meta.cnn2_h{h} = {hidden_bits}w0; }}\n')
+                        classify_snippet += (f'                else {{ cnn2_quant_h{h}.apply(); }}\n')
+                else:
+                    classify_snippet += '                // CNN ReLU + quantize hidden2\n'
+                    for h in range(hidden2_units):
+                        classify_snippet += (f'                if (meta.cnn2_h{h}_sum[31:31] == 1w1) '
+                                             f'{{ meta.cnn2_h{h} = {hidden_bits}w0; }}\n')
+                        classify_snippet += (f'                else if ((meta.cnn2_h{h}_sum >> {h2_shift}) > {h_max}) '
+                                             f'{{ meta.cnn2_h{h} = {hidden_bits}w{h_max}; }}\n')
+                        classify_snippet += (f'                else {{ meta.cnn2_h{h} = '
+                                             f'(bit<{hidden_bits}>)(meta.cnn2_h{h}_sum >> {h2_shift}); }}\n')
+
+                classify_snippet += '                // CNN output layer lookups\n'
+                for c in range(n_cls):
+                    for h in range(hidden2_units):
+                        classify_snippet += f'                cnn_out_c{c}_h{h}.apply();\n'
 
             classify_snippet += '                // CNN argmax (signed compare)\n'
             if n_cls > 0:
@@ -1521,7 +1546,6 @@ const bit<8>  TYPE_ARP_PSEUDO = 253;  // pseudo proto used in flow key for ARP
 const bit<32> NB_ENTRIES = ''' + str(self.n_registers) + ''';
 const bit<32> MAX_REGISTER_ENTRIES = ''' + str(self.n_registers) + ''';
 
-#define BLOOM_FILTER_BIT_WIDTH 32
 #define FLOW_TIMEOUT ''' + str(self.flow_timeout_ns) + '''  // ''' + str(self.flow_timeout_ns // 1_000_000_000) + '''s in nanoseconds
 
 /*************************************************************************
@@ -1686,23 +1710,25 @@ struct metadata {
             hidden_bits = int(self.cnn_params.get('hidden_bits', 8))
             hidden1_units = int(self.cnn_params.get('hidden1_units', 0))
             hidden2_units = int(self.cnn_params.get('hidden2_units', 0))
+            p4_layers = int(self.cnn_params.get('p4_layers', 2 if hidden2_units > 0 else 1))
             pool = int(self.cnn_params.get('pool', 2))
             n_cls = len(self.cnn_params.get('classes', []))
-            code += f'\n    // CNN quantized inputs\n'
+            code += f'\n    // CNN quantized inputs (P4CNN{p4_layers})\n'
             for i in range(len(self.classifier_features)):
                 code += f'    bit<{input_bits}> cnn_in{i};\n'
             code += f'\n    // CNN hidden accumulators + activations\n'
             for h in range(hidden1_units):
                 code += f'    bit<32>  cnn1_h{h}_sum;\n'
                 code += f'    bit<{hidden_bits}> cnn1_h{h};\n'
-            pooled = hidden1_units // max(1, pool)
-            code += f'\n    // CNN pooled activations\n'
-            for p in range(pooled):
-                code += f'    bit<{hidden_bits}> cnn_p{p};\n'
-            code += f'\n    // CNN hidden2 accumulators + activations\n'
-            for h in range(hidden2_units):
-                code += f'    bit<32>  cnn2_h{h}_sum;\n'
-                code += f'    bit<{hidden_bits}> cnn2_h{h};\n'
+            if p4_layers >= 2:
+                pooled = hidden1_units // max(1, pool)
+                code += f'\n    // CNN pooled activations\n'
+                for p in range(pooled):
+                    code += f'    bit<{hidden_bits}> cnn_p{p};\n'
+                code += f'\n    // CNN hidden2 accumulators + activations\n'
+                for h in range(hidden2_units):
+                    code += f'    bit<32>  cnn2_h{h}_sum;\n'
+                    code += f'    bit<{hidden_bits}> cnn2_h{h};\n'
             code += f'\n    // CNN class scores\n'
             for c in range(n_cls):
                 code += f'    bit<32> cnn_score_c{c};\n'
@@ -2467,6 +2493,7 @@ control SwitchIngress(
             hidden_bits = int(self.cnn_params.get('hidden_bits', 8))
             hidden1_units = int(self.cnn_params.get('hidden1_units', 0))
             hidden2_units = int(self.cnn_params.get('hidden2_units', 0))
+            p4_layers = int(self.cnn_params.get('p4_layers', 2 if hidden2_units > 0 else 1))
             pool = int(self.cnn_params.get('pool', 2))
             n_cls = len(self.cnn_params.get('classes', []))
             use_quanti = bool(self.cnn_params.get('use_quanti', False))
@@ -2484,15 +2511,16 @@ control SwitchIngress(
         meta.cnn1_h{h} = val;
     }}
 '''
-            for h in range(hidden2_units):
-                code += f'''
+            if p4_layers >= 2:
+                for h in range(hidden2_units):
+                    code += f'''
     action cnn2_add_h{h}(bit<32> delta) {{
         meta.cnn2_h{h}_sum = meta.cnn2_h{h}_sum + delta;
     }}
 '''
-            if use_quanti:
-                for h in range(hidden2_units):
-                    code += f'''
+                if use_quanti:
+                    for h in range(hidden2_units):
+                        code += f'''
     action set_cnn2_h{h}(bit<{hidden_bits}> val) {{
         meta.cnn2_h{h} = val;
     }}
@@ -2531,10 +2559,27 @@ control SwitchIngress(
         size = 65535;
     }}
 '''
-            pooled = hidden1_units // max(1, pool)
-            for h in range(hidden2_units):
-                for pi in range(pooled):
-                    code += f'''
+            if p4_layers == 1:
+                # P4CNN1: output reads directly from quantized hidden1
+                for c in range(n_cls):
+                    for h in range(hidden1_units):
+                        code += f'''
+    table cnn_out_c{c}_h{h} {{
+        key = {{
+            meta.cnn1_h{h} : exact;
+        }}
+        actions = {{
+            cnn_out_add_c{c};
+            NoAction;
+        }}
+        size = {2**hidden_bits};
+    }}
+'''
+            else:
+                pooled = hidden1_units // max(1, pool)
+                for h in range(hidden2_units):
+                    for pi in range(pooled):
+                        code += f'''
     table cnn2_h{h}_p{pi} {{
         key = {{
             meta.cnn_p{pi} : exact;
@@ -2546,9 +2591,9 @@ control SwitchIngress(
         size = {2**hidden_bits};
     }}
 '''
-            if use_quanti:
-                for h in range(hidden2_units):
-                    code += f'''
+                if use_quanti:
+                    for h in range(hidden2_units):
+                        code += f'''
     table cnn2_quant_h{h} {{
         key = {{
             meta.cnn2_h{h}_sum : range;
@@ -2560,9 +2605,9 @@ control SwitchIngress(
         size = 65535;
     }}
 '''
-            for c in range(n_cls):
-                for h in range(hidden2_units):
-                    code += f'''
+                for c in range(n_cls):
+                    for h in range(hidden2_units):
+                        code += f'''
     table cnn_out_c{c}_h{h} {{
         key = {{
             meta.cnn2_h{h} : exact;
@@ -2618,6 +2663,7 @@ control SwitchIngress(
         elif self.model_type == 'cnn':
             hidden1_units = int(self.cnn_params.get('hidden1_units', 0))
             hidden2_units = int(self.cnn_params.get('hidden2_units', 0))
+            p4_layers = int(self.cnn_params.get('p4_layers', 2 if hidden2_units > 0 else 1))
             hidden_bits = int(self.cnn_params.get('hidden_bits', 8))
             pool = int(self.cnn_params.get('pool', 2))
             h1_shift = int(self.cnn_params.get('h1_shift', 0))
@@ -2626,7 +2672,6 @@ control SwitchIngress(
             h_max = (1 << hidden_bits) - 1
             n_cls = len(self.cnn_params.get('classes', []))
             b1_int = self.cnn_params.get('b1_int', [0] * hidden1_units)
-            b2_int = self.cnn_params.get('b2_int', [0] * hidden2_units)
             b3_int = self.cnn_params.get('b3_int', [0] * n_cls)
 
             classify_snippet += '                // CNN hidden accumulators init\n'
@@ -2662,49 +2707,58 @@ control SwitchIngress(
                     classify_snippet += (f'                else {{ meta.cnn1_h{h} = '
                                          f'(bit<{hidden_bits}>)(meta.cnn1_h{h}_sum >> {h1_shift}); }}\n')
 
-            pooled = hidden1_units // max(1, pool)
-            classify_snippet += '                // CNN maxpool\n'
-            for p in range(pooled):
-                idx0 = p * pool
-                if pool == 1:
-                    classify_snippet += f'                meta.cnn_p{p} = meta.cnn1_h{idx0};\n'
-                else:
-                    idx1 = idx0 + 1
-                    classify_snippet += (f'                if (meta.cnn1_h{idx0} >= meta.cnn1_h{idx1}) '
-                                         f'{{ meta.cnn_p{p} = meta.cnn1_h{idx0}; }} '
-                                         f'else {{ meta.cnn_p{p} = meta.cnn1_h{idx1}; }}\n')
-
-            classify_snippet += '                // CNN hidden2 accumulators init\n'
-            for h in range(hidden2_units):
-                bias = int(b2_int[h]) if h < len(b2_int) else 0
-                bias_u = (bias + (1 << 32)) % (1 << 32)
-                classify_snippet += f'                meta.cnn2_h{h}_sum = 32w{bias_u};\n'
-
-            classify_snippet += '                // CNN hidden2 layer lookups\n'
-            for h in range(hidden2_units):
-                for p in range(pooled):
-                    classify_snippet += f'                cnn2_h{h}_p{p}.apply();\n'
-
-            if use_quanti:
-                classify_snippet += '                // CNN quantize hidden2 (table)\n'
-                for h in range(hidden2_units):
-                    classify_snippet += (f'                if (meta.cnn2_h{h}_sum[31:31] == 1w1) '
-                                         f'{{ meta.cnn2_h{h} = {hidden_bits}w0; }}\n')
-                    classify_snippet += (f'                else {{ cnn2_quant_h{h}.apply(); }}\n')
+            if p4_layers == 1:
+                # P4CNN1: output reads directly from quantized hidden1
+                classify_snippet += '                // CNN output layer lookups (P4CNN1)\n'
+                for c in range(n_cls):
+                    for h in range(hidden1_units):
+                        classify_snippet += f'                cnn_out_c{c}_h{h}.apply();\n'
             else:
-                classify_snippet += '                // CNN ReLU + quantize hidden2\n'
-                for h in range(hidden2_units):
-                    classify_snippet += (f'                if (meta.cnn2_h{h}_sum[31:31] == 1w1) '
-                                         f'{{ meta.cnn2_h{h} = {hidden_bits}w0; }}\n')
-                    classify_snippet += (f'                else if ((meta.cnn2_h{h}_sum >> {h2_shift}) > {h_max}) '
-                                         f'{{ meta.cnn2_h{h} = {hidden_bits}w{h_max}; }}\n')
-                    classify_snippet += (f'                else {{ meta.cnn2_h{h} = '
-                                         f'(bit<{hidden_bits}>)(meta.cnn2_h{h}_sum >> {h2_shift}); }}\n')
+                # P4CNN2: pooling + hidden2 + output
+                b2_int = self.cnn_params.get('b2_int', [0] * hidden2_units)
+                pooled = hidden1_units // max(1, pool)
+                classify_snippet += '                // CNN maxpool\n'
+                for p in range(pooled):
+                    idx0 = p * pool
+                    if pool == 1:
+                        classify_snippet += f'                meta.cnn_p{p} = meta.cnn1_h{idx0};\n'
+                    else:
+                        idx1 = idx0 + 1
+                        classify_snippet += (f'                if (meta.cnn1_h{idx0} >= meta.cnn1_h{idx1}) '
+                                             f'{{ meta.cnn_p{p} = meta.cnn1_h{idx0}; }} '
+                                             f'else {{ meta.cnn_p{p} = meta.cnn1_h{idx1}; }}\n')
 
-            classify_snippet += '                // CNN output layer lookups\n'
-            for c in range(n_cls):
+                classify_snippet += '                // CNN hidden2 accumulators init\n'
                 for h in range(hidden2_units):
-                    classify_snippet += f'                cnn_out_c{c}_h{h}.apply();\n'
+                    bias = int(b2_int[h]) if h < len(b2_int) else 0
+                    bias_u = (bias + (1 << 32)) % (1 << 32)
+                    classify_snippet += f'                meta.cnn2_h{h}_sum = 32w{bias_u};\n'
+
+                classify_snippet += '                // CNN hidden2 layer lookups\n'
+                for h in range(hidden2_units):
+                    for p in range(pooled):
+                        classify_snippet += f'                cnn2_h{h}_p{p}.apply();\n'
+
+                if use_quanti:
+                    classify_snippet += '                // CNN quantize hidden2 (table)\n'
+                    for h in range(hidden2_units):
+                        classify_snippet += (f'                if (meta.cnn2_h{h}_sum[31:31] == 1w1) '
+                                             f'{{ meta.cnn2_h{h} = {hidden_bits}w0; }}\n')
+                        classify_snippet += (f'                else {{ cnn2_quant_h{h}.apply(); }}\n')
+                else:
+                    classify_snippet += '                // CNN ReLU + quantize hidden2\n'
+                    for h in range(hidden2_units):
+                        classify_snippet += (f'                if (meta.cnn2_h{h}_sum[31:31] == 1w1) '
+                                             f'{{ meta.cnn2_h{h} = {hidden_bits}w0; }}\n')
+                        classify_snippet += (f'                else if ((meta.cnn2_h{h}_sum >> {h2_shift}) > {h_max}) '
+                                             f'{{ meta.cnn2_h{h} = {hidden_bits}w{h_max}; }}\n')
+                        classify_snippet += (f'                else {{ meta.cnn2_h{h} = '
+                                             f'(bit<{hidden_bits}>)(meta.cnn2_h{h}_sum >> {h2_shift}); }}\n')
+
+                classify_snippet += '                // CNN output layer lookups\n'
+                for c in range(n_cls):
+                    for h in range(hidden2_units):
+                        classify_snippet += f'                cnn_out_c{c}_h{h}.apply();\n'
 
             classify_snippet += '                // CNN argmax (signed compare)\n'
             if n_cls > 0:
@@ -2971,7 +3025,7 @@ def load_cnn_params(path='tables/cnn_params.json'):
         try:
             with open(path) as f:
                 p = json.load(f)
-            logger.info(f"CNN params: hidden_units={p.get('hidden_units')}, "
+            logger.info(f"CNN params: hidden1={p.get('hidden1_units')}, hidden2={p.get('hidden2_units')}, "
                         f"input_bits={p.get('input_bits')}, hidden_bits={p.get('hidden_bits')}")
             return p
         except Exception as e:
@@ -3013,9 +3067,9 @@ def main():
     if args.model_type == 'gb':
         args.model_type = 'xgb'
     if args.model_type in ('knn', 'svm'):
-        # Deploy as DT proxy in P4
+        # KNN/SVM use the same ml_code range-match table as DT in P4
         args.model_type = 'dt'
-        logger.info("GB uses XGB P4 architecture — generating XGB tables.")
+        logger.info(f"{user_model_type.upper()} uses DT P4 architecture — generating ml_code table.")
 
     # Load universal reduction config (may be None for old PCA pipeline)
     red_cfg = load_reduction_config(args.reduction_config)

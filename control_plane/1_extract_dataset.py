@@ -58,13 +58,35 @@ import argparse
 import sys
 import logging
 import time
-from collections import defaultdict
+import struct
+import crcmod.predefined
 from decimal import Decimal
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 FLOW_TIMEOUT_NS = 20 * 1_000_000_000  # 20 seconds in nanoseconds (matches P4 FLOW_TIMEOUT)
+MAX_REGISTER_ENTRIES = 65536            # matches P4 MAX_REGISTER_ENTRIES (CRC16 → 65536 slots)
+
+# CRC functions matching BMv2's HashAlgorithm.crc16 / crc32
+_crc16_fn = crcmod.predefined.mkCrcFun('crc-16')
+_crc32_fn = crcmod.predefined.mkCrcFun('crc-32')
+
+
+def _compute_flow_hashes(c_src_ip, c_dst_ip, c_src_port, c_dst_port, proto):
+    """Compute CRC16 and CRC32 hashes matching P4's compute_flow_hash() exactly.
+
+    P4 concatenates {canon_src_ip(32), canon_dst_ip(32), canon_src_port(16),
+    canon_dst_port(16), protocol(8)} in big-endian order (13 bytes), then:
+      h16 = crc16(data) % MAX_REGISTER_ENTRIES
+      h32 = crc32(data) % MAX_REGISTER_ENTRIES
+    """
+    src_int = int(ipaddress.ip_address(c_src_ip))
+    dst_int = int(ipaddress.ip_address(c_dst_ip))
+    data = struct.pack('!IIHHB', src_int, dst_int, c_src_port, c_dst_port, proto)
+    h16 = _crc16_fn(data) % MAX_REGISTER_ENTRIES
+    h32 = _crc32_fn(data) % MAX_REGISTER_ENTRIES
+    return h16, h32
 
 LOGO = """---------------------------------------------------------------------------
 ------PPPPPPPP------4444------SSSSSSSS------EEEEEEEE------CCCCCCCC---------
@@ -343,10 +365,18 @@ def extract_features_from_pcap(pcap_path, label=None):
     except RuntimeError:
         asyncio.set_event_loop(asyncio.new_event_loop())
     cap = pyshark.FileCapture(pcap_path, keep_packets=False)
-    flows = defaultdict(lambda: None)
-    total_packets = 0      # every packet seen by pyshark
-    processed_count = 0    # packets successfully parsed into a flow
-    skipped_proto = 0      # unsupported / non-IP protocols
+
+    # P4-style hash-based flow table (65536 slots, indexed by CRC16)
+    flow_states = [None] * MAX_REGISTER_ENTRIES
+    flow_keys   = [None] * MAX_REGISTER_ENTRIES   # stored 5-tuple per slot
+    bf1         = bytearray(MAX_REGISTER_ENTRIES)  # bloom filter 1 (indexed by h16)
+    bf2         = bytearray(MAX_REGISTER_ENTRIES)  # bloom filter 2 (indexed by h32)
+    reg_h2      = [0] * MAX_REGISTER_ENTRIES       # stored h32 per slot
+
+    total_packets   = 0
+    processed_count = 0
+    skipped_proto   = 0
+    collision_count = 0
 
     try:
         for packet in cap:
@@ -361,39 +391,62 @@ def extract_features_from_pcap(pcap_path, label=None):
                     make_canonical_key(fields['src_ip'], fields['src_port'],
                                        fields['dst_ip'], fields['dst_port'],
                                        fields['protocol'])
-                flow_key = (c_src_ip, c_src_port, c_dst_ip, c_dst_port, proto)
 
-                state = flows[flow_key]
+                h16, h32 = _compute_flow_hashes(c_src_ip, c_dst_ip,
+                                                 c_src_port, c_dst_port, proto)
+
+                # Bloom filter collision detection (matches P4 exactly):
+                # bf1 slot occupied but bf2 fingerprint absent → different flow
+                if bf1[h16] == 1 and bf2[h32] == 0:
+                    collision_count += 1
+                    continue
+
+                state = flow_states[h16]
 
                 # Timeout: finalize the previous flow, then reset
                 if state is not None and state['timestamps'] and \
                         (fields['timestamp_ns'] - state['timestamps'][-1]) > FLOW_TIMEOUT_NS:
-                    feat = _finalize_flow(flow_key, state, label)
+                    feat = _finalize_flow(flow_keys[h16], state, label)
                     if feat:
                         features_list.append(feat)
-                    flows[flow_key] = _empty_flow_state()
+                    # Reset for new flow (P4 does NOT clear bf2[old_h32] on timeout)
+                    flow_states[h16] = _empty_flow_state()
+                    flow_keys[h16] = (c_src_ip, c_src_port, c_dst_ip, c_dst_port, proto)
+                    bf1[h16] = 1
+                    bf2[h32] = 1
+                    reg_h2[h16] = h32
                 elif state is None:
-                    flows[flow_key] = _empty_flow_state()
+                    # Empty slot — start new flow
+                    flow_states[h16] = _empty_flow_state()
+                    flow_keys[h16] = (c_src_ip, c_src_port, c_dst_ip, c_dst_port, proto)
+                    bf1[h16] = 1
+                    bf2[h32] = 1
+                    reg_h2[h16] = h32
 
                 # Accumulate packet; check if flow ends (FIN/RST)
                 flow_ended = _update_flow_state(
-                    flows[flow_key],
+                    flow_states[h16],
                     fields['timestamp_ns'], fields['pkt_len'], is_reverse,
                     fields['flags_syn'], fields['flags_ack'],
                     fields['flags_fin'], fields['flags_rst'],
                     fields['flags_urg'], fields['flags_psh'], fields['win_size'])
 
                 if flow_ended:
-                    feat = _finalize_flow(flow_key, flows[flow_key], label)
+                    feat = _finalize_flow(flow_keys[h16], flow_states[h16], label)
                     if feat:
                         features_list.append(feat)
-                    flows[flow_key] = None   # reset slot for next flow on same 5-tuple
+                    # Clear slot (matches P4 FIN/RST register reset + bloom clear)
+                    flow_states[h16] = None
+                    flow_keys[h16] = None
+                    bf1[h16] = 0
+                    bf2[reg_h2[h16]] = 0
+                    reg_h2[h16] = 0
 
                 processed_count += 1
                 if processed_count % 1000 == 0:
-                    active = sum(1 for v in flows.values() if v is not None)
+                    active = sum(1 for s in flow_states if s is not None)
                     logger.info(f"Processed {processed_count}/{total_packets} packets, "
-                                f"{active} active flows, "
+                                f"{active} active flows, {collision_count} collisions, "
                                 f"{len(features_list)} completed from {os.path.basename(pcap_path)}")
             except Exception as e:
                 logger.warning(f"Error processing packet #{total_packets}: {e}")
@@ -404,12 +457,15 @@ def extract_features_from_pcap(pcap_path, label=None):
     if skipped_proto > 0:
         logger.info(f"Skipped {skipped_proto}/{total_packets} packets "
                     f"(unsupported protocol / non-IPv4)")
+    if collision_count > 0:
+        logger.info(f"Hash collisions: {collision_count} packets skipped "
+                    f"(matches P4 bloom filter behavior)")
 
     # Finalize all open flows at end of file (mirrors controller reading
     # registers at capture end, or flow aging in production)
-    for flow_key, state in flows.items():
-        if state is not None:
-            feat = _finalize_flow(flow_key, state, label)
+    for h16 in range(MAX_REGISTER_ENTRIES):
+        if flow_states[h16] is not None:
+            feat = _finalize_flow(flow_keys[h16], flow_states[h16], label)
             if feat:
                 features_list.append(feat)
 
@@ -470,12 +526,19 @@ def process_pcap_folder(folder_path, output_csv):
 def extract_features_from_interface(interface, output_csv, label=None,
                                      packet_count=1000, duration=None):
     logger.info(f"Starting live capture on interface: {interface}")
-    flows         = defaultdict(lambda: None)
     features_list = []
     cap           = pyshark.LiveCapture(interface=interface)
     total_seen    = 0
     captured      = 0
+    collision_count = 0
     start_time    = time.time()
+
+    # P4-style hash-based flow table (65536 slots)
+    flow_states = [None] * MAX_REGISTER_ENTRIES
+    flow_keys   = [None] * MAX_REGISTER_ENTRIES
+    bf1         = bytearray(MAX_REGISTER_ENTRIES)
+    bf2         = bytearray(MAX_REGISTER_ENTRIES)
+    reg_h2      = [0] * MAX_REGISTER_ENTRIES
 
     try:
         for packet in cap.sniff_continuously():
@@ -493,38 +556,58 @@ def extract_features_from_interface(interface, output_csv, label=None,
                     make_canonical_key(fields['src_ip'], fields['src_port'],
                                        fields['dst_ip'], fields['dst_port'],
                                        fields['protocol'])
-                flow_key = (c_src_ip, c_src_port, c_dst_ip, c_dst_port, proto)
 
-                state = flows[flow_key]
+                h16, h32 = _compute_flow_hashes(c_src_ip, c_dst_ip,
+                                                 c_src_port, c_dst_port, proto)
+
+                # Bloom filter collision detection (matches P4)
+                if bf1[h16] == 1 and bf2[h32] == 0:
+                    collision_count += 1
+                    continue
+
+                state = flow_states[h16]
 
                 # Timeout: finalize the previous flow, then reset
                 if state is not None and state['timestamps'] and \
                         (fields['timestamp_ns'] - state['timestamps'][-1]) > FLOW_TIMEOUT_NS:
-                    feat = _finalize_flow(flow_key, state, label)
+                    feat = _finalize_flow(flow_keys[h16], state, label)
                     if feat:
                         features_list.append(feat)
-                    flows[flow_key] = _empty_flow_state()
+                    flow_states[h16] = _empty_flow_state()
+                    flow_keys[h16] = (c_src_ip, c_src_port, c_dst_ip, c_dst_port, proto)
+                    bf1[h16] = 1
+                    bf2[h32] = 1
+                    reg_h2[h16] = h32
                 elif state is None:
-                    flows[flow_key] = _empty_flow_state()
+                    flow_states[h16] = _empty_flow_state()
+                    flow_keys[h16] = (c_src_ip, c_src_port, c_dst_ip, c_dst_port, proto)
+                    bf1[h16] = 1
+                    bf2[h32] = 1
+                    reg_h2[h16] = h32
 
                 # Accumulate packet; check if flow ends (FIN/RST)
                 flow_ended = _update_flow_state(
-                    flows[flow_key],
+                    flow_states[h16],
                     fields['timestamp_ns'], fields['pkt_len'], is_reverse,
                     fields['flags_syn'], fields['flags_ack'],
                     fields['flags_fin'], fields['flags_rst'],
                     fields['flags_urg'], fields['flags_psh'], fields['win_size'])
 
                 if flow_ended:
-                    feat = _finalize_flow(flow_key, flows[flow_key], label)
+                    feat = _finalize_flow(flow_keys[h16], flow_states[h16], label)
                     if feat:
                         features_list.append(feat)
-                    flows[flow_key] = None
+                    flow_states[h16] = None
+                    flow_keys[h16] = None
+                    bf1[h16] = 0
+                    bf2[reg_h2[h16]] = 0
+                    reg_h2[h16] = 0
 
                 captured += 1
                 if captured % 100 == 0:
+                    active = sum(1 for s in flow_states if s is not None)
                     logger.info(f"Captured {captured}/{total_seen} packets, "
-                                f"{len(flows)} active flows…")
+                                f"{active} active flows, {collision_count} collisions")
             except Exception as e:
                 logger.warning(f"Error processing packet #{total_seen}: {e}")
                 continue
@@ -534,13 +617,14 @@ def extract_features_from_interface(interface, output_csv, label=None,
         cap.close()
 
     # Finalize all open flows at end of capture
-    for flow_key, state in flows.items():
-        if state is not None:
-            feat = _finalize_flow(flow_key, state, label)
+    for h16 in range(MAX_REGISTER_ENTRIES):
+        if flow_states[h16] is not None:
+            feat = _finalize_flow(flow_keys[h16], flow_states[h16], label)
             if feat:
                 features_list.append(feat)
 
-    logger.info(f"Extracted {len(features_list)} flows from {captured} packets")
+    logger.info(f"Extracted {len(features_list)} flows from {captured} packets"
+                f" ({collision_count} collision-skipped)")
     if features_list:
         write_to_csv(features_list, output_csv, mode='w', write_header=True)
     else:
