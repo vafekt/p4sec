@@ -1,4 +1,4 @@
-# p4sec: In-Network IoT Attack Detection on a P4 Programmable Data Plane
+# In-Network IoT Attack Detection Using Principal Component Analysis and Machine Learning Models on P4 Programmable Data Planes
 
 Reference implementation for the paper
 *"In-Network IoT Attack Detection Using Principal Component Analysis and
