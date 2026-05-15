@@ -38,3 +38,21 @@ pcaps/
 
 # Mininet / runtime
 *.swp
+
+# Build artefact directories (created by p4lang/tutorials Make)
+build/
+logs/
+model/
+tables/
+
+# Control-plane runtime artefacts
+control_plane/build/
+control_plane/dataset/
+control_plane/logs/
+control_plane/model/
+control_plane/pcaps/
+control_plane/tables/
+control_plane/combos/
+
+# Paper PDF (local reference only)
+*.pdf

@@ -6,9 +6,6 @@ Provides universal feature/config detection that works with any step 2 method:
     - PCA         (2_pca_generate_entries.py)         → PC*_code columns
     - LDA         (2_lda_generate_entries.py)         → LD*_code columns
     - Autoencoder (2_autoencoder_generate_entries.py) → AE*_code columns
-    - UMAP        (2_umap_generate_entries.py)        → UM*_code columns
-    - Feature Selection (2_feature_selection_generate_entries.py)
-                                                                                                     → raw feature columns
 
 The contract between step 2 and steps 3/4/5 is the file:
     tables/reduction_config.json
@@ -24,12 +21,13 @@ import pandas as pd
 # P4 field widths for raw flow features (used when classifying directly
 # on raw features without PCA/LDA transformation).
 P4_FEATURE_MAX = {
+    "SrcIP":           (2**32 - 1),   # bit<32> (IPv4 as integer)
+    "DstIP":           (2**32 - 1),   # bit<32> (IPv4 as integer)
     "Protocol":        (2**8  - 1),   # bit<8>
     "SrcPort":         (2**16 - 1),   # port_t / bit<16>
     "DstPort":         (2**16 - 1),   # port_t / bit<16>
     "Duration":        (2**48 - 1),   # bit<48>
     "MaxIAT":          (2**48 - 1),   # bit<48>
-    "UrgCount":        (2**32 - 1),   # bit<32>
     "FwdPktCount":     (2**32 - 1),   # bit<32>
     "BwdPktCount":     (2**32 - 1),   # bit<32>
     "FwdBytes":        (2**32 - 1),   # bit<32>
@@ -39,24 +37,71 @@ P4_FEATURE_MAX = {
     "FlagsAck":        (2**32 - 1),   # bit<32>
     "FlagsFin":        (2**32 - 1),   # bit<32>
     "FlagsRst":        (2**32 - 1),   # bit<32>
-    "MinIAT":          (2**48 - 1),   # bit<48>
     "FwdMaxPktLen":    (2**16 - 1),   # bit<16>
     "BwdMaxPktLen":    (2**16 - 1),   # bit<16>
     "FlagsPsh":        (2**32 - 1),   # bit<32>
     "InitFwdWinBytes": (2**16 - 1),   # bit<16>
 }
 
-# All 20 P4 raw flow feature names, in canonical order
+# All 20 P4 raw flow feature names (ML classifier input), in canonical order
 ALL_RAW_FEATURES = list(P4_FEATURE_MAX.keys())
 
 # Columns that are never ML features
-NON_FEATURE_COLS = {'Label', 'SrcIP', 'DstIP'}
+NON_FEATURE_COLS = {'Label'}
+
+# ─── Feature quantization for Tofino range-match ────────────────────────
+# Tofino limits range match to fields ≤ 20 bits (5 PHV nibbles).
+# We pre-quantize features >20 bits via right-shift so the PCA surrogate DT
+# trains on the same reduced-precision values that the data plane sees.
+# Both BMv2 and Tofino use the same quantized values for consistency.
+#
+# Format: { feature_name: (shift_amount, quantized_bits) }
+# The quantized value = raw_value >> shift_amount, clamped to quantized_bits.
+# Features not listed here are already ≤ 16 bits and need no quantization.
+FEATURE_QUANTIZE = {
+    "Duration":    (20, 16),  # 48b ns → 16b (~1ms granularity, max ~65s)
+    "MaxIAT":      (20, 16),  # 48b ns → 16b (~1ms granularity)
+    "FwdPktCount": (0,  16),  # 32b → 16b (truncate lower 16 bits; max 65535)
+    "BwdPktCount": (0,  16),  # 32b → 16b
+    "FwdBytes":    (4,  16),  # 32b → 16b (16-byte granularity; max ~1MB)
+    "BwdBytes":    (4,  16),  # 32b → 16b
+    "FlagsSyn":    (0,   8),  # 32b → 8b (SYN count rarely > 255)
+    "FlagsAck":    (0,  16),  # 32b → 16b
+    "FlagsFin":    (0,   8),  # 32b → 8b
+    "FlagsRst":    (0,   8),  # 32b → 8b
+    "FlagsPsh":    (0,  16),  # 32b → 16b
+}
+
+# P4 field widths AFTER quantization (for range-match key sizing)
+P4_FEATURE_MAX_QUANTIZED = {}
+for _feat, _max in P4_FEATURE_MAX.items():
+    if _feat in FEATURE_QUANTIZE:
+        _shift, _qbits = FEATURE_QUANTIZE[_feat]
+        P4_FEATURE_MAX_QUANTIZED[_feat] = (2**_qbits - 1)
+    else:
+        P4_FEATURE_MAX_QUANTIZED[_feat] = _max
+
+
+def quantize_features(X_df):
+    """
+    Apply the same quantization that the P4 data plane does (right-shift + truncate).
+    Input: DataFrame with raw feature columns.
+    Returns: DataFrame with quantized columns (same column names).
+    """
+    X_q = X_df.copy()
+    for feat, (shift, qbits) in FEATURE_QUANTIZE.items():
+        if feat in X_q.columns:
+            max_val = 2**qbits - 1
+            if shift > 0:
+                X_q[feat] = (X_q[feat] // (2**shift)).clip(upper=max_val).astype(int)
+            else:
+                X_q[feat] = X_q[feat].clip(upper=max_val).astype(int)
+    return X_q
 
 TRANSFORM_METHOD_TO_PREFIX = {
     'pca': 'PC',
     'lda': 'LD',
     'autoencoder': 'AE',
-    'umap': 'UM',
 }
 
 
@@ -165,7 +210,7 @@ def detect_needs_transform(tables_dir):
 
 
 def detect_bits(tables_dir):
-    """Return the quantisation bit width (for transform methods), or None for FS."""
+    """Return the quantisation bit width for the active transform method."""
     config = load_reduction_config(tables_dir)
     if config is not None:
         return config.get('bits', None)

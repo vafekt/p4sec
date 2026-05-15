@@ -104,11 +104,12 @@ TABLES_DIR = os.path.join(os.path.dirname(__file__), "tables")
 os.makedirs(TABLES_DIR, exist_ok=True)
 
 P4_FEATURE_COLS = [
+    "SrcIP", "DstIP",
     "Protocol", "SrcPort", "DstPort",
-    "Duration", "MaxIAT", "UrgCount",
+    "Duration", "MaxIAT",
     "FwdPktCount", "BwdPktCount", "FwdBytes", "BwdBytes",
     "MaxWinSize", "FlagsSyn", "FlagsAck", "FlagsFin", "FlagsRst",
-    "MinIAT", "FwdMaxPktLen", "BwdMaxPktLen", "FlagsPsh", "InitFwdWinBytes",
+    "FwdMaxPktLen", "BwdMaxPktLen", "FlagsPsh", "InitFwdWinBytes",
 ]
 
 
@@ -145,6 +146,13 @@ print("Using dataset:", csv_path)
 df = pd.read_csv(csv_path)
 label_col = df.columns[-1]
 df_clean = df.replace([np.inf, -np.inf], np.nan).dropna()
+
+for _col in P4_FEATURE_COLS:
+    _bad = pd.to_numeric(df_clean[_col], errors='coerce').isna()
+    if _bad.any():
+        print(f"WARNING: dropping {_bad.sum()} row(s) with non-numeric '{_col}': "
+              f"{df_clean.loc[_bad, _col].values[:3]}")
+        df_clean = df_clean[~_bad]
 
 X_df = df_clean[P4_FEATURE_COLS].astype(int)
 feature_cols = X_df.columns.tolist()
@@ -459,9 +467,4 @@ print("\n" + "=" * 60)
 print("Autoencoder complete. Run any step 3/4 classifier next:")
 print("  python3 3_train_model.py --model-type dt")
 print("  python3 3_train_model.py --model-type rf")
-print("  python3 3_train_model.py --model-type xgb")
-print("  python3 3_train_model.py --model-type gb")
-print("  python3 3_train_model.py --model-type knn")
-print("  python3 3_train_model.py --model-type svm")
-print("  python3 3_train_model.py --model-type cnn")
 print("=" * 60)

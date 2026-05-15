@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-P4 Runtime Controller for ML Traffic Classification (universal).
+P4 Runtime Controller for ML Traffic Classification.
 
-Supports all reduction methods (PCA / LDA / Autoencoder / UMAP / Feature Selection)
-and all deployable classifier back-ends (DT / RF / XGB / GB / CNN / KNN / SVM).
+Supports the three reduction methods (PCA / LDA / Autoencoder) and the two
+deployable classifier back-ends (DT / RF).
 
 This controller:
 1. Loads P4 program rules into a BMv2 switch via simple_switch_CLI
@@ -22,6 +22,7 @@ import pandas as pd
 import numpy as np
 import math
 import re
+import ipaddress
 import warnings
 from time import sleep
 from queue import Queue, Empty
@@ -73,7 +74,6 @@ def make_canonical_key(src_ip, src_port, dst_ip, dst_port, proto):
     String comparison (e.g. '192.168.1.100' < '192.168.1.52') disagrees with
     integer comparison and would split a bidirectional flow into two entries.
     """
-    import ipaddress
     src_int = int(ipaddress.ip_address(src_ip))
     dst_int = int(ipaddress.ip_address(dst_ip))
     if src_int < dst_int:
@@ -88,57 +88,20 @@ def make_canonical_key(src_ip, src_port, dst_ip, dst_port, proto):
 
 
 class FlowAggregator:
-    """Aggregate per-packet digests into flow-level outputs."""
-    def __init__(self, timeout_s=5.0):
-        self.timeout_s = timeout_s
-        self.flows = {}
+    """Pass-through: every digest from the P4 switch is a complete,
+    already-classified flow (timeout / FIN-RST / scan-drain handled in
+    the data plane).  No controller-side aggregation or timeout needed."""
 
-    def update(self, key, features, pca_codes, class_id, class_label, flags, xgb_scores=None, rf_votes=None):
-        now = time.time()
-        entry = self.flows.get(key)
-        if entry is None:
-            entry = {
-                "last_seen": now,
-                "features": features,
-                "pca_codes": pca_codes,
-                "class_id": class_id,
-                "class_label": class_label,
-                "flags": flags,
-                "xgb_scores": xgb_scores or {},
-                "rf_votes": rf_votes or [],
-            }
-            self.flows[key] = entry
-        else:
-            entry["last_seen"] = now
-            entry["features"] = features
-            entry["pca_codes"] = pca_codes
-            entry["class_id"] = class_id
-            entry["class_label"] = class_label
-            entry["flags"] = flags
-            entry["xgb_scores"] = xgb_scores or {}
-            entry["rf_votes"] = rf_votes or []
-
-        # If FIN/RST seen, flush immediately
-        if flags.get("fin", 0) > 0 or flags.get("rst", 0) > 0:
-            self.flows.pop(key, None)
-            return [entry]
-
-        return []
-
-    def flush_expired(self):
-        now = time.time()
-        expired = []
-        for key, entry in list(self.flows.items()):
-            if (now - entry["last_seen"]) >= self.timeout_s:
-                expired.append(entry)
-                del self.flows[key]
-        return expired
-
-    def flush_all(self):
-        """Flush every remaining flow regardless of timeout — call at shutdown."""
-        remaining = list(self.flows.values())
-        self.flows.clear()
-        return remaining
+    @staticmethod
+    def update(key, features, pca_codes, class_id, class_label, flags, rf_votes=None):
+        return [{
+            "features": features,
+            "pca_codes": pca_codes,
+            "class_id": class_id,
+            "class_label": class_label,
+            "flags": flags,
+            "rf_votes": rf_votes or [],
+        }]
 
 def _run_cli_chunk(lines, thrift_port, log_fh):
     """Run simple_switch_CLI with the given lines written to a temp file.
@@ -200,9 +163,9 @@ def load_switch_cli(sw, runtime_cli, thrift_port=9090, chunk_size=50000):
     os.makedirs('logs', exist_ok=True)
 
     # Partition lines: everything that is NOT a large-table entry goes into
-    # base_lines; large exact-match tables (rf_vote_classify, xgb_classify,
-    # cnn_* etc.) are separated and loaded in chunks.
-    LARGE_TABLE_KEYWORDS = ('rf_vote_classify', 'xgb_classify', 'cnn_')
+    # base_lines; the large exact-match RF vote table is separated and loaded
+    # in chunks.
+    LARGE_TABLE_KEYWORDS = ('rf_vote_classify',)
     base_lines = []
     large_lines = []
     for line in all_lines:
@@ -217,26 +180,20 @@ def load_switch_cli(sw, runtime_cli, thrift_port=9090, chunk_size=50000):
         with open('logs/cli_output.log', 'w') as fout:
             t_start = time.time()
 
-            # --- Pass 1: base rules (pca, rf_tree, etc.) ---
-            rc, dt = _run_cli_chunk(base_lines, thrift_port, fout)
-            load_time += dt
-            if rc not in (0, 1):
-                print(f"WARNING: CLI pass 1 exited with code {rc} — some base entries may not have been loaded.")
-            else:
-                print(f"  Pass 1 (base rules, {len(base_lines):,} lines): {dt:.1f}s")
-
-            # --- Pass 2+: large table in chunks ---
-            if large_lines:
-                n_chunks = math.ceil(len(large_lines) / chunk_size)
-                print(f"  Loading {len(large_lines):,} large-table entries in {n_chunks} chunk(s) of {chunk_size:,}...")
-                for chunk_idx in range(n_chunks):
-                    chunk = large_lines[chunk_idx * chunk_size:(chunk_idx + 1) * chunk_size]
-                    rc, dt = _run_cli_chunk(chunk, thrift_port, fout)
-                    load_time += dt
-                    if rc not in (0, 1):
-                        print(f"  WARNING: chunk {chunk_idx+1}/{n_chunks} exited with code {rc}")
-                    else:
-                        print(f"  Chunk {chunk_idx+1}/{n_chunks} ({len(chunk):,} entries): {dt:.1f}s")
+            # --- Pass 1: base rules (pca, ml_code, rf_tree, etc.) in chunks ---
+            # BMv2's Thrift connection drops when too many commands are sent
+            # in a single session, silently losing entries.  Chunk all rules.
+            all_to_load = base_lines + large_lines
+            n_chunks = math.ceil(len(all_to_load) / chunk_size)
+            print(f"  Loading {len(all_to_load):,} lines in {n_chunks} chunk(s) of {chunk_size:,}...")
+            for chunk_idx in range(n_chunks):
+                chunk = all_to_load[chunk_idx * chunk_size:(chunk_idx + 1) * chunk_size]
+                rc, dt = _run_cli_chunk(chunk, thrift_port, fout)
+                load_time += dt
+                if rc not in (0, 1):
+                    print(f"  WARNING: chunk {chunk_idx+1}/{n_chunks} exited with code {rc}")
+                else:
+                    print(f"  Chunk {chunk_idx+1}/{n_chunks} ({len(chunk):,} entries): {dt:.1f}s")
 
             load_time = time.time() - t_start  # use wall-clock total
 
@@ -254,6 +211,18 @@ def load_switch_cli(sw, runtime_cli, thrift_port=9090, chunk_size=50000):
             print(f"WARNING: {errors} CLI errors during rule loading (check logs/cli_output.log)")
         if not errors and not table_full:
             print(f"Rules loaded successfully in {load_time:.2f}s. CLI output logged to logs/cli_output.log")
+
+        # Verify actual entry counts match expected counts
+        added = 0
+        with open('logs/cli_output.log', 'r') as log:
+            for line in log:
+                if 'Entry has been added' in line:
+                    added += 1
+        if added < n_entries:
+            print(f"WARNING: only {added:,}/{n_entries:,} entries confirmed added — "
+                  f"{n_entries - added:,} may have been silently dropped!")
+        else:
+            print(f"  Verified: all {added:,} entries confirmed in switch.")
     except FileNotFoundError as e:
         print(f"ERROR: Runtime CLI file not found: {e}")
         raise
@@ -321,6 +290,14 @@ def bytes_to_ip(bb):
         v = (v << 8) + int(b)
     return f"{(v>>24)&0xff}.{(v>>16)&0xff}.{(v>>8)&0xff}.{v&0xff}"
 
+def bytes_to_mac(bb):
+    """Convert byte array to MAC address integer (48-bit big-endian).
+    Returns the integer representation, same as bytes_to_int."""
+    v = 0
+    for b in bb:
+        v = (v << 8) + int(b)
+    return v
+
 def load_class_labels(model_path):
     """Load class labels from a trained sklearn model.
 
@@ -347,15 +324,16 @@ def load_class_labels(model_path):
         print("Using empty label mapping - will default to 'unknown' for all classes")
         return {}
 
-def load_class_labels_from_rf_params(params_path, model_path):
-    """Load class labels for RF from params JSON, fallback to model if needed."""
+def load_class_labels_from_model_params(params_path, model_path):
+    """Load class labels from universal model_params.json, fallback to model if needed."""
     try:
         with open(params_path, 'r') as f:
             params = json.load(f)
         classes = params.get("classes")
         if classes:
             label_mapping = {idx: label for idx, label in enumerate(classes)}
-            print("=== Class Label Mapping (from rf_params.json) ===")
+            mt = params.get("model_type", "unknown")
+            print(f"=== Class Label Mapping (from model_params.json, type={mt}) ===")
             for class_id, label in sorted(label_mapping.items()):
                 print(f"  {class_id}: {label}")
             print()
@@ -363,49 +341,7 @@ def load_class_labels_from_rf_params(params_path, model_path):
     except FileNotFoundError:
         pass
     except Exception as e:
-        print(f"WARNING: Error reading RF params from {params_path}: {e}")
-
-    # Fallback to model if params are missing or invalid
-    return load_class_labels(model_path)
-
-def load_class_labels_from_xgb_params(params_path, model_path):
-    """Load class labels for XGB from params JSON, fallback to model if needed."""
-    try:
-        with open(params_path, 'r') as f:
-            params = json.load(f)
-        classes = params.get("classes")
-        if classes:
-            label_mapping = {idx: label for idx, label in enumerate(classes)}
-            print("=== Class Label Mapping (from xgb_params.json) ===")
-            for class_id, label in sorted(label_mapping.items()):
-                print(f"  {class_id}: {label}")
-            print()
-            return label_mapping
-    except FileNotFoundError:
-        pass
-    except Exception as e:
-        print(f"WARNING: Error reading XGB params from {params_path}: {e}")
-
-    # Fallback to model if params are missing or invalid
-    return load_class_labels(model_path)
-
-def load_class_labels_from_dt_params(params_path, model_path):
-    """Load class labels for DT/KNN/SVM models from params JSON, fallback to model if needed."""
-    try:
-        with open(params_path, 'r') as f:
-            params = json.load(f)
-        classes = params.get("classes")
-        if classes:
-            label_mapping = {idx: label for idx, label in enumerate(classes)}
-            print("=== Class Label Mapping (from dt_params.json) ===")
-            for class_id, label in sorted(label_mapping.items()):
-                print(f"  {class_id}: {label}")
-            print()
-            return label_mapping
-    except FileNotFoundError:
-        pass
-    except Exception as e:
-        print(f"WARNING: Error reading DT params from {params_path}: {e}")
+        print(f"WARNING: Error reading model params from {params_path}: {e}")
 
     # Fallback to model if params are missing or invalid
     return load_class_labels(model_path)
@@ -445,7 +381,7 @@ def load_digest_schema(p4info_path, digest_name):
 def detect_model_type_from_p4info(p4info_path):
     """Detect model type by inspecting compiled P4 table names in the p4info.
 
-    Returns 'rf', 'xgb', or None (meaning DT/unknown).
+    Returns 'rf' or None (meaning DT/unknown).
     This is the authoritative check because rf_votes is INTERNAL metadata
     that is never placed in digest_t, so digest-field inspection alone cannot
     distinguish RF from DT.
@@ -459,8 +395,6 @@ def detect_model_type_from_p4info(p4info_path):
         all_names = table_aliases | table_names
         if any('rf_vote' in n for n in all_names):
             return 'rf'
-        if any('xgb_score' in n or 'gb_score' in n for n in all_names):
-            return 'xgb'
         return None
     except Exception:
         return None
@@ -478,13 +412,11 @@ def parse_transform_field_names(digest_fields):
     """Return code field names sorted by numeric suffix.
 
     Detects PCA (pc1_code, pc2_code, ...), LDA (ld1_code, ld2_code, ...),
-    Autoencoder (ae1_code, ae2_code, ...), and UMAP (um1_code, um2_code, ...).
-    When Feature Selection is used
-    there are no code fields in the digest.
+    and Autoencoder (ae1_code, ae2_code, ...).
     """
     codes = []
     for name in digest_fields:
-        m = re.match(r"^(pc|ld|ae|um)(\d+)_code$", name, re.IGNORECASE)
+        m = re.match(r"^(pc|ld|ae)(\d+)_code$", name, re.IGNORECASE)
         if m:
             codes.append((int(m.group(2)), name))
     if not codes:
@@ -542,12 +474,15 @@ def format_codes_csv(codes):
 
 # Map canonical feature names (from reduction_config) to entry["features"] / entry["flags"] keys
 _FEATURE_TO_ENTRY_KEY = {
+    "SrcIP":           ("features", "src_ip"),
+    "DstIP":           ("features", "dst_ip"),
+    "SrcMAC":          ("features", "src_mac"),
+    "DstMAC":          ("features", "dst_mac"),
     "Protocol":        ("features", "proto"),
     "SrcPort":         ("features", "src_port"),
     "DstPort":         ("features", "dst_port"),
     "Duration":        ("features", "duration"),
     "MaxIAT":          ("features", "max_iat"),
-    "UrgCount":        ("features", "urg_count"),
     "FwdPktCount":     ("features", "fwd_pkt_count"),
     "BwdPktCount":     ("features", "bwd_pkt_count"),
     "FwdBytes":        ("features", "fwd_bytes"),
@@ -557,7 +492,6 @@ _FEATURE_TO_ENTRY_KEY = {
     "FlagsAck":        ("flags", "ack"),
     "FlagsFin":        ("flags", "fin"),
     "FlagsRst":        ("flags", "rst"),
-    "MinIAT":          ("features", "min_iat"),
     "FwdMaxPktLen":    ("features", "fwd_max_pkt_len"),
     "BwdMaxPktLen":    ("features", "bwd_max_pkt_len"),
     "FlagsPsh":        ("features", "flags_psh"),
@@ -695,7 +629,7 @@ class DigestClient:
         except Exception:
             pass
 
-def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
+def main(p4info_file_path, bmv2_file_path, runtime_cli_path):
     """Main controller logic: load rules, listen for digests, record predictions."""
     p4info_helper = p4runtime_lib.helper.P4InfoHelper(p4info_file_path)
     digest_name = "digest_t"
@@ -709,7 +643,7 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
     script_dir = os.path.dirname(os.path.abspath(__file__))
     pca_config_path = os.path.join(script_dir, 'tables/encoding_params.json')
     reduction_config_path = os.path.join(script_dir, 'tables/reduction_config.json')
-    flow_aggregator = FlowAggregator(timeout_s=flow_timeout_s)
+    flow_aggregator = FlowAggregator()
 
     # Load universal reduction config (determines method: pca/lda/autoencoder/umap/feature_selection)
     reduction_method = 'pca'   # default fallback
@@ -812,126 +746,86 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
 
     # Load class labels dynamically from trained model
     global CLASS_LABELS
-    dt_params_path = os.path.join(script_dir, 'tables/dt_params.json')
-    rf_params_path = os.path.join(script_dir, 'tables/rf_params.json')
-    xgb_params_path = os.path.join(script_dir, 'tables/xgb_params.json')
-    gb_params_path = os.path.join(script_dir, 'tables/gb_params.json')
-    dt_model_path = os.path.join(script_dir, 'model/dt.model')
-    rf_model_path = os.path.join(script_dir, 'model/rf.model')
-    xgb_model_path = os.path.join(script_dir, 'model/xgb.model')
-    gb_model_path = os.path.join(script_dir, 'model/gb.model')
+    model_params_path = os.path.join(script_dir, 'tables/model_params.json')
 
     # Infer model type from the compiled P4 program (p4info tables) — authoritative.
-    # NOTE: rf_votes is INTERNAL metadata in P4 and is never placed in digest_t,
-    # so checking digest fields for "rf_votes" is always False for RF models.
-    # Instead we inspect the registered table names: rf_vote_classify → RF,
-    # xgb_score_* → XGB, otherwise fall back to params files or DT.
+    # rf_votes is INTERNAL metadata in P4 and is never placed in digest_t,
+    # so we inspect table names: rf_vote_classify → RF, xgb_score_* → XGB.
     model_type = None
     declared_dt_type = None
-    digest_based_detection = False
     p4info_model_type = detect_model_type_from_p4info(p4info_file_path)
 
+    # Read universal model_params.json to get model_type field
+    _mp = {}
+    if os.path.exists(model_params_path):
+        try:
+            with open(model_params_path, 'r') as f:
+                _mp = json.load(f)
+        except Exception as e:
+            print(f"WARNING: Could not read {model_params_path}: {e}")
+
     if digest_fields:
-        digest_based_detection = True
         if any(re.match(r"^xgb_score_c\d+$", f) for f in digest_fields):
             model_type = "xgb"
+        elif p4info_model_type == "rf":
+            model_type = "rf"
+        elif p4info_model_type == "xgb":
+            model_type = "xgb"
         else:
-            # rf_votes never appears in digest_t; use p4info table inspection instead.
-            if p4info_model_type == "rf":
-                model_type = "rf"
-            elif p4info_model_type == "xgb":
-                model_type = "xgb"
-            else:
-                model_type = "dt"
-                try:
-                    with open(dt_params_path, 'r') as f:
-                        _dtp = json.load(f)
-                    declared_dt_type = _dtp.get("model_type")
-                except Exception:
-                    declared_dt_type = None
+            model_type = "dt"
+            declared_dt_type = _mp.get("model_type")
 
-    # Fallback: check params files only when digest info was unavailable
-    # (prioritize rf > xgb/gb > dt/knn/svm)
+    # Fallback: use model_params.json model_type field
     if model_type is None:
-        for params_path, mtype in [
-            (rf_params_path, "rf"),
-            (xgb_params_path, "xgb"),
-            (gb_params_path, "xgb"),   # GB deploys as XGB
-            (dt_params_path, "dt"),
-        ]:
-            if os.path.exists(params_path):
-                try:
-                    with open(params_path, 'r') as f:
-                        params = json.load(f)
-                    pmt = params.get("model_type", "")
-                    if mtype == "dt" and pmt in ("dt", "knn", "svm"):
-                        model_type = "dt"
-                        declared_dt_type = pmt
-                        break
-                    if pmt in (mtype, os.path.basename(params_path).split('_')[0]):
-                        model_type = mtype
-                        break
-                except Exception:
-                    pass
-
-    # Final default
-    if model_type is None:
-        model_type = "dt"
+        pmt = _mp.get("model_type", "")
+        if pmt in ("rf",):
+            model_type = "rf"
+        elif pmt in ("xgb", "gb"):
+            model_type = "xgb"
+        elif pmt in ("dt", "knn", "svm", "ada", "cnn"):
+            model_type = "dt"
+            declared_dt_type = pmt
+        else:
+            model_type = "dt"
 
     rf_model = None
     rf_params = None
     rf_vote_bits = None
     xgb_model = None
     xgb_params = None
-    xgb_class_mapping = None  # Maps encoded int to class name for XGB
-    
+    xgb_class_mapping = None
+
+    # Determine model path from model_type in params
+    _actual_type = _mp.get("model_type", model_type)
+    _model_path = os.path.join(script_dir, f'model/{_actual_type}.model')
+    if not os.path.exists(_model_path):
+        _model_path = os.path.join(script_dir, f'model/{model_type}.model')
+
+    # Load class labels from universal params
+    CLASS_LABELS = load_class_labels_from_model_params(model_params_path, _model_path)
+
     if model_type == "rf":
-        CLASS_LABELS = load_class_labels_from_rf_params(rf_params_path, rf_model_path)
         try:
-            rf_model = pd.read_pickle(rf_model_path)
+            rf_model = pd.read_pickle(_model_path)
             print("RF model loaded for runtime verification.")
         except Exception as e:
             print(f"WARNING: Unable to load RF model for verification: {e}")
             rf_model = None
-        try:
-            with open(rf_params_path, 'r') as f:
-                rf_params = json.load(f)
-            rf_vote_bits = rf_params.get('vote_bits')
-        except Exception:
-            rf_params = None
-            rf_vote_bits = None
+        rf_params = _mp if _mp.get("model_type") == "rf" else None
+        rf_vote_bits = rf_params.get('vote_bits') if rf_params else None
     elif model_type == "xgb":
-        CLASS_LABELS = load_class_labels_from_xgb_params(xgb_params_path, xgb_model_path)
-        if not CLASS_LABELS:
-            CLASS_LABELS = load_class_labels_from_xgb_params(gb_params_path, gb_model_path)
         try:
-            xgb_model = pd.read_pickle(xgb_model_path)
-            print("XGB model loaded for runtime verification.")
-        except Exception:
-            try:
-                xgb_model = pd.read_pickle(gb_model_path)
-                print("GB model loaded for runtime verification (XGB-compatible).")
-            except Exception as e:
-                print(f"WARNING: Unable to load XGB/GB model for verification: {e}")
-                xgb_model = None
-        try:
-            with open(xgb_params_path, 'r') as f:
-                xgb_params = json.load(f)
-            # Build class mapping: encoded_int -> class_name
+            xgb_model = pd.read_pickle(_model_path)
+            print(f"{_actual_type.upper()} model loaded for runtime verification.")
+        except Exception as e:
+            print(f"WARNING: Unable to load XGB/GB model for verification: {e}")
+            xgb_model = None
+        xgb_params = _mp if _mp.get("model_type") in ("xgb", "gb") else None
+        if xgb_params:
             classes = xgb_params.get("classes", [])
             xgb_class_mapping = {idx: cls for idx, cls in enumerate(classes)}
-        except Exception:
-            xgb_params = None
+        else:
             xgb_class_mapping = None
-    else:
-        # DT-like (includes KNN/SVM proxies). Prefer dt_params.json classes or
-        # the declared model file if present.
-        dt_model_for_labels = dt_model_path
-        if declared_dt_type in ("knn", "svm"):
-            candidate = os.path.join(script_dir, f"model/{declared_dt_type}.model")
-            if os.path.exists(candidate):
-                dt_model_for_labels = candidate
-        CLASS_LABELS = load_class_labels_from_dt_params(dt_params_path, dt_model_for_labels)
 
     # -----------------------------------------------------------------------
     # Stale-model check: verify that the loaded model's feature count matches
@@ -985,16 +879,18 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
     print("Resetting switch flow-state registers...")
     reset_registers = [
         "reg_time_first_pkt", "reg_time_last_pkt", "reg_max_iat",
-        "reg_urg_count", "reg_fwd_pkt_count", "reg_bwd_pkt_count",
+        "reg_fwd_pkt_count", "reg_bwd_pkt_count",
         "reg_fwd_bytes", "reg_bwd_bytes", "reg_max_win_size",
         "reg_flags_syn", "reg_flags_ack", "reg_flags_fin", "reg_flags_rst",
-        "reg_min_iat", "reg_fwd_max_pkt_len", "reg_bwd_max_pkt_len",
+        "reg_fwd_max_pkt_len", "reg_bwd_max_pkt_len",
         "reg_flags_psh", "reg_init_fwd_win",
         "reg_flow_hash_2",
         "reg_canon_src_port",
         "reg_canon_dst_port",
         "reg_canon_src_ip",
         "reg_canon_dst_ip",
+        "reg_canon_src_mac",
+        "reg_canon_dst_mac",
         "reg_protocol",
         "bloom_filter_1",
         "bloom_filter_2",
@@ -1025,9 +921,10 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
     # Classifier tables: ml_code (DT / KNN / SVM),
     #                    rf_tree_* / rf_vote_classify (RF),
     #                    xgb_tree_* / xgb_classify (XGB / GB),
+    #                    ada_tree_* (AdaBoost),
     #                    cnn* (CNN)
     _TRANSFORM_RE  = re.compile(r'(pca|lda|ae|umap)_component\d+$')
-    _CLASSIFIER_RE = re.compile(r'ml_code|rf_tree_|rf_vote_classify|xgb_tree_|xgb_classify|cnn')
+    _CLASSIFIER_RE = re.compile(r'ml_code|rf_tree_|rf_vote_classify|xgb_tree_|xgb_classify|ada_tree_|cnn')
 
     _transform_per_component = {}  # table_name -> count (one entry per component table)
     _n_model_entries = 0
@@ -1044,14 +941,7 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
     _pca_total_entries = sum(_transform_per_component.values())
 
     # Determine active model file path and its on-disk size
-    _model_file_map = {
-        'rf': rf_model_path, 'xgb': xgb_model_path, 'dt': dt_model_path,
-    }
-    _active_model_path = _model_file_map.get(model_type, dt_model_path)
-    if declared_dt_type in ('knn', 'svm'):
-        _cand = os.path.join(script_dir, f'model/{declared_dt_type}.model')
-        if os.path.exists(_cand):
-            _active_model_path = _cand
+    _active_model_path = _model_path
     try:
         _model_size_bytes = os.path.getsize(_active_model_path)
     except OSError:
@@ -1110,8 +1000,11 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
                 extra_headers = ','.join(code_csv_headers) + ','
             else:
                 extra_headers = ''   # Feature Selection: no code columns
-            out.write(f"src_ip,src_port,dst_ip,dst_port,proto,duration,max_iat,urg_count,fwd_pkt_count,bwd_pkt_count,fwd_bytes,bwd_bytes,max_win_size,flags_syn,flags_ack,flags_fin,flags_rst,min_iat,fwd_max_pkt_len,bwd_max_pkt_len,flags_psh,init_fwd_win,{extra_headers}class_id,class_label\n")
+            out.write(f"src_ip,dst_ip,src_mac,dst_mac,src_port,dst_port,proto,duration,max_iat,fwd_pkt_count,bwd_pkt_count,fwd_bytes,bwd_bytes,max_win_size,flags_syn,flags_ack,flags_fin,flags_rst,fwd_max_pkt_len,bwd_max_pkt_len,flags_psh,init_fwd_win,{extra_headers}class_id,class_label\n")
             packet_id = 0
+            # IPs used by run_demo.sh drain-trigger probes — filter them out
+            _DRAIN_IPS = {int(ipaddress.ip_address("10.255.255.254")),
+                          int(ipaddress.ip_address("10.255.255.253"))}
             warn_once = {
                 "missing_fields": False,
                 "missing_class": False,
@@ -1121,92 +1014,6 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
                 msg = dclient.get_digest(timeout=0.5)
 
                 if msg is None:
-                    # Periodically flush expired flows
-                    for entry in flow_aggregator.flush_expired():
-                        # Skip flows with < 2 packets (matches training data filter)
-                        if (entry["features"]["fwd_pkt_count"] + entry["features"]["bwd_pkt_count"]) < 2:
-                            _filtered_count += 1
-                            continue
-                        
-                        packet_id += 1
-                        pca_display = format_codes_display(entry['pca_codes'], code_display_names, pca_bits)
-                        f = entry["features"]
-                        flags = entry["flags"]
-                        class_id = entry["class_id"]
-                        class_label = entry["class_label"]
-
-                        verify_note = ""
-                        votes_or_scores_debug = ""
-                        if model_type == "rf" and rf_model is not None and not model_pca_mismatch:
-                            try:
-                                x_np = np.array([build_model_input(entry, needs_transform, reduction_feature_columns)[:rf_model.n_features_in_]], dtype=np.float64)
-                                if x_np.shape[1] != rf_model.n_features_in_:
-                                    raise ValueError(f"X has {x_np.shape[1]} features, model expects {rf_model.n_features_in_}")
-                                pred_label = rf_model.predict(x_np)[0]
-                                pred_id = list(rf_model.classes_).index(pred_label)
-
-                                # Per-tree votes and packed value
-                                class_to_index = {label: idx for idx, label in enumerate(rf_model.classes_)}
-                                votes = []
-                                for est in rf_model.estimators_:
-                                    v = est.predict(x_np)[0]
-                                    if v in class_to_index:
-                                        v_id = class_to_index[v]
-                                    else:
-                                        v_id = int(v)
-                                    votes.append(v_id)
-
-                                # Display per-tree votes
-                                votes_or_scores_debug = format_votes_debug(votes, CLASS_LABELS)
-
-                                vote_bits = rf_vote_bits
-                                if vote_bits is None:
-                                    n_cls = len(rf_model.classes_)
-                                    vote_bits = max(1, math.ceil(math.log2(n_cls))) if n_cls > 1 else 1
-                                packed = 0
-                                for i, v in enumerate(votes):
-                                    packed |= (v << (i * vote_bits))
-
-                                if pred_id != class_id:
-                                    verify_note = (
-                                        f" | RF-VERIFY={pred_label}({pred_id})"
-                                        f" PACK={packed} VOTES={votes}"
-                                    )
-                            except Exception as _ve:
-                                verify_note = f" | RF-VERIFY=error({type(_ve).__name__}: {_ve})"
-                        elif model_type == "xgb" and xgb_model is not None and not model_pca_mismatch:
-                            try:
-                                x_np = np.array([build_model_input(entry, needs_transform, reduction_feature_columns)[:xgb_model.n_features_in_]], dtype=np.float64)
-                                pred_id = int(xgb_model.predict(x_np)[0])
-                                # XGBoost returns encoded int; decode to class name using mapping
-                                pred_label = xgb_class_mapping.get(pred_id, f"unknown({pred_id})")
-
-                                if pred_id != class_id:
-                                    verify_note = f" | XGB-VERIFY={pred_label}({pred_id})"
-                            except Exception as _ve:
-                                verify_note = f" | XGB-VERIFY=error({type(_ve).__name__}: {_ve})"
-
-                            # Debug: show accumulated scores from dataplane (any class count)
-                            votes_or_scores_debug = format_score_debug(entry.get("xgb_scores", {}))
-
-                        _code_sfx = (pca_display + " | ") if pca_display else ""
-                        print(f"[{packet_id:<4}] {f['src_ip']:>15}:{f['src_port']:<5} -> {f['dst_ip']:>15}:{f['dst_port']:<5} | "
-                              f"Dur={f['duration']:<12} MaxIAT={f['max_iat']:<12} Urg={f['urg_count']:<4} "
-                              f"FwdPkts={f['fwd_pkt_count']:<4} BwdPkts={f['bwd_pkt_count']:<4} "
-                              f"FwdBytes={f['fwd_bytes']:<8} BwdBytes={f['bwd_bytes']:<8} Win={f['max_win_size']:<6} | "
-                              f"Flags(S/A/F/R)={flags['syn']}/{flags['ack']}/{flags['fin']}/{flags['rst']} | "
-                            f"{_code_sfx}"
-                              f"Class={class_label}({class_id}){verify_note}")
-                        if votes_or_scores_debug:
-                            print(votes_or_scores_debug)
-
-                        out.write(f"{f['src_ip']},{f['src_port']},{f['dst_ip']},{f['dst_port']},{f['proto']},"
-                                  f"{f['duration']},{f['max_iat']},{f['urg_count']},{f['fwd_pkt_count']},{f['bwd_pkt_count']},"
-                                  f"{f['fwd_bytes']},{f['bwd_bytes']},{f['max_win_size']},{flags['syn']},{flags['ack']},{flags['fin']},{flags['rst']},"
-                                  f"{f.get('min_iat',0)},{f.get('fwd_max_pkt_len',0)},{f.get('bwd_max_pkt_len',0)},{f.get('flags_psh',0)},{f.get('init_fwd_win',0)},"
-                                  f"{format_codes_csv(entry['pca_codes'])}{class_id},{class_label}\n")
-                        out.flush()
-
                     continue
 
                 _digest_count_raw += 1
@@ -1230,6 +1037,8 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
 
                         src_ip_field = get_idx(["srcAddr", "src_ip", "src"])
                         dst_ip_field = get_idx(["dstAddr", "dst_ip", "dst"])
+                        src_mac_field = get_idx(["srcMAC", "canon_src_mac", "src_mac"])
+                        dst_mac_field = get_idx(["dstMAC", "canon_dst_mac", "dst_mac"])
                         src_port_field = get_idx(["srcPort", "src_port"])
                         dst_port_field = get_idx(["dstPort", "dst_port"])
                         proto_field = get_idx(["protocol", "proto"])
@@ -1242,15 +1051,18 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
                                 return default
                             return bytes_to_ip(st[idx].bitstring) if is_ip else bytes_to_int(st[idx].bitstring)
 
-                        src_ip = get_val(src_ip_field, default="0.0.0.0", is_ip=True)
-                        dst_ip = get_val(dst_ip_field, default="0.0.0.0", is_ip=True)
+                        src_ip_str = get_val(src_ip_field, default="0.0.0.0", is_ip=True)
+                        dst_ip_str = get_val(dst_ip_field, default="0.0.0.0", is_ip=True)
+                        src_ip = int(ipaddress.ip_address(src_ip_str))
+                        dst_ip = int(ipaddress.ip_address(dst_ip_str))
+                        src_mac = get_val(src_mac_field, default=0)
+                        dst_mac = get_val(dst_mac_field, default=0)
                         src_port = get_val(src_port_field, default=0)
                         dst_port = get_val(dst_port_field, default=0)
                         proto = get_val(proto_field, default=0)
 
                         duration     = get_val(get_idx(["duration"]))
                         max_iat      = get_val(get_idx(["max_iat"]))
-                        urg_count    = get_val(get_idx(["urg_count"]))
                         fwd_pkt_count= get_val(get_idx(["fwd_pkt_count"]))
                         bwd_pkt_count= get_val(get_idx(["bwd_pkt_count"]))
                         fwd_bytes    = get_val(get_idx(["fwd_bytes"]))
@@ -1260,7 +1072,6 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
                         flags_ack = get_val(get_idx(["flags_ack", "ack"]))
                         flags_fin = get_val(get_idx(["flags_fin", "fin"]))
                         flags_rst = get_val(get_idx(["flags_rst", "rst"]))
-                        min_iat        = get_val(get_idx(["min_iat"]))
                         fwd_max_pkt_len= get_val(get_idx(["fwd_max_pkt_len"]))
                         bwd_max_pkt_len= get_val(get_idx(["bwd_max_pkt_len"]))
                         flags_psh      = get_val(get_idx(["flags_psh"]))
@@ -1291,32 +1102,32 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
                             warn_once["missing_class"] = True
                             print("WARNING: Class field not found in digest schema; defaulting class_id=0")
                     else:
-                        if len(st) < 22:
+                        if len(st) < 24:
                             if not warn_once["missing_fields"]:
                                 warn_once["missing_fields"] = True
                                 print(f"WARNING: Digest has insufficient fields ({len(st)}); skipping")
                             continue
 
-                        src_ip = bytes_to_ip(st[0].bitstring)
-                        dst_ip = bytes_to_ip(st[1].bitstring)
-                        src_port = bytes_to_int(st[2].bitstring)
-                        dst_port = bytes_to_int(st[3].bitstring)
-                        proto = bytes_to_int(st[4].bitstring)
+                        src_ip = bytes_to_int(st[0].bitstring)
+                        dst_ip = bytes_to_int(st[1].bitstring)
+                        src_mac = bytes_to_int(st[2].bitstring)        # Src MAC
+                        dst_mac = bytes_to_int(st[3].bitstring)        # Dst MAC
+                        src_port = bytes_to_int(st[4].bitstring)
+                        dst_port = bytes_to_int(st[5].bitstring)
+                        proto = bytes_to_int(st[6].bitstring)
 
-                        # Extract flow-based features
-                        duration      = bytes_to_int(st[5].bitstring)   # Flow duration
-                        max_iat       = bytes_to_int(st[6].bitstring)   # Max inter-arrival time
-                        urg_count     = bytes_to_int(st[7].bitstring)   # URG count
-                        fwd_pkt_count = bytes_to_int(st[8].bitstring)   # Forward packet count
-                        bwd_pkt_count = bytes_to_int(st[9].bitstring)   # Backward packet count
-                        fwd_bytes     = bytes_to_int(st[10].bitstring)  # Forward bytes
-                        bwd_bytes     = bytes_to_int(st[11].bitstring)  # Backward bytes
-                        max_win_size  = bytes_to_int(st[12].bitstring)  # Max window size
-                        flags_syn = bytes_to_int(st[13].bitstring)      # SYN flag
-                        flags_ack = bytes_to_int(st[14].bitstring)      # ACK flag
-                        flags_fin = bytes_to_int(st[15].bitstring)      # FIN flag
-                        flags_rst = bytes_to_int(st[16].bitstring)      # RST flag
-                        min_iat         = bytes_to_int(st[17].bitstring) # Min IAT
+                        # Extract flow-based features (order matches P4 digest_t struct)
+                        duration      = bytes_to_int(st[7].bitstring)   # Flow duration
+                        max_iat       = bytes_to_int(st[8].bitstring)   # Max inter-arrival time
+                        fwd_pkt_count = bytes_to_int(st[9].bitstring)   # Forward packet count
+                        bwd_pkt_count = bytes_to_int(st[10].bitstring)  # Backward packet count
+                        fwd_bytes     = bytes_to_int(st[11].bitstring)  # Forward bytes
+                        bwd_bytes     = bytes_to_int(st[12].bitstring)  # Backward bytes
+                        max_win_size  = bytes_to_int(st[13].bitstring)  # Max window size
+                        flags_syn = bytes_to_int(st[14].bitstring)      # SYN flag
+                        flags_ack = bytes_to_int(st[15].bitstring)      # ACK flag
+                        flags_fin = bytes_to_int(st[16].bitstring)      # FIN flag
+                        flags_rst = bytes_to_int(st[17].bitstring)      # RST flag
                         fwd_max_pkt_len = bytes_to_int(st[18].bitstring) # Fwd max pkt len
                         bwd_max_pkt_len = bytes_to_int(st[19].bitstring) # Bwd max pkt len
                         flags_psh       = bytes_to_int(st[20].bitstring) # PSH flag count
@@ -1375,21 +1186,28 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
 
                     class_label = CLASS_LABELS.get(class_id, "unknown")
 
+                    # Skip drain-trigger probe flows (run_demo.sh sends UDP
+                    # probes from 10.255.255.254 → 10.255.255.253 to force
+                    # scan_and_drain; these create fake flows that corrupt
+                    # per-pcap accuracy metrics).
+                    if src_ip in _DRAIN_IPS and dst_ip in _DRAIN_IPS:
+                        continue
+
                     features = {
                         "src_ip": src_ip,
                         "dst_ip": dst_ip,
+                        "src_mac": src_mac,
+                        "dst_mac": dst_mac,
                         "src_port": src_port,
                         "dst_port": dst_port,
                         "proto": proto,
                         "duration": duration,
                         "max_iat": max_iat,
-                        "urg_count": urg_count,
                         "fwd_pkt_count": fwd_pkt_count,
                         "bwd_pkt_count": bwd_pkt_count,
                         "fwd_bytes": fwd_bytes,
                         "bwd_bytes": bwd_bytes,
                         "max_win_size": max_win_size,
-                        "min_iat": min_iat,
                         "fwd_max_pkt_len": fwd_max_pkt_len,
                         "bwd_max_pkt_len": bwd_max_pkt_len,
                         "flags_psh": flags_psh,
@@ -1411,8 +1229,8 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
                         flags,
                         xgb_scores,
                     ):
-                        # Skip flows with < 2 packets (matches training data filter)
-                        if (entry["features"]["fwd_pkt_count"] + entry["features"]["bwd_pkt_count"]) < 2:
+                        # Skip flows with < 1 packet (matches training data filter)
+                        if (entry["features"]["fwd_pkt_count"] + entry["features"]["bwd_pkt_count"]) < 1:
                             _filtered_count += 1
                             continue
                         packet_id += 1
@@ -1477,8 +1295,9 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
                             votes_or_scores_debug = format_score_debug(entry.get("xgb_scores", {}))
 
                         _code_sfx = (pca_display + " | ") if pca_display else ""
-                        print(f"[{packet_id:<4}] {f['src_ip']:>15}:{f['src_port']:<5} -> {f['dst_ip']:>15}:{f['dst_port']:<5} | "
-                              f"Dur={f['duration']:<12} MaxIAT={f['max_iat']:<12} Urg={f['urg_count']:<4} "
+                        print(f"[{packet_id:<4}] {str(ipaddress.ip_address(f['src_ip'])):>15}:{f['src_port']:<5} -> {str(ipaddress.ip_address(f['dst_ip'])):>15}:{f['dst_port']:<5} | "
+                              f"SrcMAC={f['src_mac']:#014x} DstMAC={f['dst_mac']:#014x} | "
+                              f"Dur={f['duration']:<12} MaxIAT={f['max_iat']:<12} "
                               f"FwdPkts={f['fwd_pkt_count']:<4} BwdPkts={f['bwd_pkt_count']:<4} "
                               f"FwdBytes={f['fwd_bytes']:<8} BwdBytes={f['bwd_bytes']:<8} Win={f['max_win_size']:<6} | "
                               f"Flags(S/A/F/R)={flags['syn']}/{flags['ack']}/{flags['fin']}/{flags['rst']} | "
@@ -1487,10 +1306,10 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
                         if votes_or_scores_debug:
                             print(votes_or_scores_debug, flush=True)
 
-                        out.write(f"{f['src_ip']},{f['src_port']},{f['dst_ip']},{f['dst_port']},{f['proto']},"
-                                  f"{f['duration']},{f['max_iat']},{f['urg_count']},{f['fwd_pkt_count']},{f['bwd_pkt_count']},"
+                        out.write(f"{f['src_ip']},{f['dst_ip']},{f['src_mac']},{f['dst_mac']},{f['src_port']},{f['dst_port']},{f['proto']},"
+                                  f"{f['duration']},{f['max_iat']},{f['fwd_pkt_count']},{f['bwd_pkt_count']},"
                                   f"{f['fwd_bytes']},{f['bwd_bytes']},{f['max_win_size']},{flags['syn']},{flags['ack']},{flags['fin']},{flags['rst']},"
-                                  f"{f.get('min_iat',0)},{f.get('fwd_max_pkt_len',0)},{f.get('bwd_max_pkt_len',0)},{f.get('flags_psh',0)},{f.get('init_fwd_win',0)},"
+                                  f"{f.get('fwd_max_pkt_len',0)},{f.get('bwd_max_pkt_len',0)},{f.get('flags_psh',0)},{f.get('init_fwd_win',0)},"
                                   f"{format_codes_csv(entry['pca_codes'])}{class_id},{class_label}\n")
                         out.flush()
 
@@ -1499,41 +1318,7 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path, flow_timeout_s):
         print(f"ERROR: {e}")
         raise
     finally:
-        # Flush any flows still in memory that never got a FIN/RST or timed out.
-        # Reopen in append mode — the `with open()` above has already closed the file.
-        remaining = flow_aggregator.flush_all()
-        with open("logs/predictions.csv", "a") as final_out:
-            if remaining:
-                print(f"Flushing {len(remaining)} remaining in-memory flows...")
-                for entry in remaining:
-                    if (entry["features"]["fwd_pkt_count"] + entry["features"]["bwd_pkt_count"]) < 2:
-                        continue
-                    packet_id += 1
-                    f = entry["features"]
-                    flags = entry["flags"]
-                    class_id = entry["class_id"]
-                    class_label = entry["class_label"]
-                    pca_display = format_codes_display(entry['pca_codes'], code_display_names, pca_bits)
-                    _code_sfx = (pca_display + " | ") if pca_display else ""
-                    print(f"[{packet_id:<4}] {f['src_ip']:>15}:{f['src_port']:<5} -> "
-                          f"{f['dst_ip']:>15}:{f['dst_port']:<5} | "
-                          f"Dur={f['duration']:<12} MaxIAT={f['max_iat']:<12} Urg={f['urg_count']:<4} "
-                          f"FwdPkts={f['fwd_pkt_count']:<4} BwdPkts={f['bwd_pkt_count']:<4} "
-                          f"FwdBytes={f['fwd_bytes']:<8} BwdBytes={f['bwd_bytes']:<8} Win={f['max_win_size']:<6} | "
-                          f"Flags(S/A/F/R)={flags['syn']}/{flags['ack']}/{flags['fin']}/{flags['rst']} | "
-                          f"{_code_sfx}Class={class_label}({class_id}) [FINAL-FLUSH]")
-                    final_out.write(
-                        f"{f['src_ip']},{f['src_port']},{f['dst_ip']},{f['dst_port']},{f['proto']},"
-                        f"{f['duration']},{f['max_iat']},{f['urg_count']},{f['fwd_pkt_count']},{f['bwd_pkt_count']},"
-                        f"{f['fwd_bytes']},{f['bwd_bytes']},{f['max_win_size']},"
-                        f"{flags['syn']},{flags['ack']},{flags['fin']},{flags['rst']},"
-                        f"{f.get('min_iat',0)},{f.get('fwd_max_pkt_len',0)},{f.get('bwd_max_pkt_len',0)},{f.get('flags_psh',0)},{f.get('init_fwd_win',0)},"
-                        f"{format_codes_csv(entry['pca_codes'])}"
-                        f"{class_id},{class_label}\n"
-                    )
-                print(f"In-memory flush complete. Total flows so far: {packet_id}")
-
-            print("P4 switch handles all flow timeouts — no controller drain needed.")
+        print(f"Total digests received: {_digest_count_raw}, flows written: {_digest_count_flow}, filtered (<2 pkts): {_filtered_count}")
         dclient.stop()
         ShutdownAllSwitchConnections()
 
@@ -1563,8 +1348,6 @@ if __name__ == '__main__':
                         help=f'Path to BMv2 JSON file (default: {default_bmv2_json})')
     parser.add_argument('--runtime-cli', type=str, default=default_runtime_cli,
                         help=f'Path to P4 table_add commands file (default: {default_runtime_cli})')
-    parser.add_argument('--flow-timeout', type=float, default=5.0,
-                        help='Flow inactivity timeout in seconds before printing a flow summary (default: 5.0)')
     args = parser.parse_args()
 
     # Validate input files
@@ -1576,7 +1359,7 @@ if __name__ == '__main__':
             sys.exit(1)
 
     try:
-        main(args.p4info, args.bmv2_json, args.runtime_cli, args.flow_timeout)
+        main(args.p4info, args.bmv2_json, args.runtime_cli)
     except Exception as e:
         print(f"FATAL ERROR: {e}")
         sys.exit(1)

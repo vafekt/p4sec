@@ -117,11 +117,12 @@ label_col = df.columns[-1]
 df_clean = df.replace([np.inf, -np.inf], np.nan).dropna()
 
 P4_FEATURE_COLS = [
+    "SrcIP", "DstIP",
     "Protocol", "SrcPort", "DstPort",
-    "Duration", "MaxIAT", "UrgCount",
+    "Duration", "MaxIAT",
     "FwdPktCount", "BwdPktCount", "FwdBytes", "BwdBytes",
     "MaxWinSize", "FlagsSyn", "FlagsAck", "FlagsFin", "FlagsRst",
-    "MinIAT", "FwdMaxPktLen", "BwdMaxPktLen", "FlagsPsh", "InitFwdWinBytes",
+    "FwdMaxPktLen", "BwdMaxPktLen", "FlagsPsh", "InitFwdWinBytes",
 ]
 X_df = df_clean[P4_FEATURE_COLS].astype(int)
 feature_cols = X_df.columns.tolist()
@@ -423,9 +424,4 @@ print("\n" + "=" * 60)
 print("LDA complete.  Run any step 3/4 classifier next:")
 print("  python3 3_train_model.py --model-type dt")
 print("  python3 3_train_model.py --model-type rf")
-print("  python3 3_train_model.py --model-type xgb")
-print("  python3 3_train_model.py --model-type gb")
-print("  python3 3_train_model.py --model-type knn")
-print("  python3 3_train_model.py --model-type svm")
-print("  python3 3_train_model.py --model-type cnn")
 print("=" * 60)

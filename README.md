@@ -1,617 +1,259 @@
-# ML Traffic Classifier in P4 Switch
+# p4sec — In-Network IoT Attack Detection on P4 Programmable Data Planes
 
-A complete pipeline for extracting **flow-based** network traffic features from PCAP files or live capture, training ML classifiers using dimensionality-reduced features, and deploying classification rules in P4 behavioral model switches for real-time in-network inference.
+Reference implementation accompanying the paper
+**"In-Network IoT Attack Detection Using Principal Component Analysis and Machine Learning Models on P4 Programmable Data Planes."**
 
-**Flow-Based Architecture:** Tracks per-flow statistics (5-tuple: src_ip, dst_ip, src_port, dst_port, protocol) using P4 registers to aggregate packets into flows and extract flow-level features for ML classification.
+The pipeline trains a Decision Tree (DT) or Random Forest (RF) classifier on
+bidirectional flow features and compiles it into range-match P4 tables that run
+end-to-end on the data plane. Dimensionality reduction is applied as a single
+range-match preprocessing stage; PCA is the primary reduction method evaluated
+in the paper, with LDA and Autoencoder also supported as alternatives.
 
-**Four Dimensionality Reduction Methods (Step 2):**
-- **PCA** (`2_pca_generate_entries.py`): Principal Component Analysis — maximises variance
-- **LDA** (`2_lda_generate_entries.py`): Linear Discriminant Analysis — maximises class separation
-- **UMAP** (`2_umap_generate_entries.py`): Non-linear manifold learning with a stable transform
-- **Feature Selection** (`2_feature_selection_generate_entries.py`): Direct classification on top-k raw features with no transform
+The system classifies four CIC-IoT 2023 categories: **Benign**, **DoS**,
+**Brute Force**, and **Reconnaissance**.
 
-**Seven Classification Backends (Steps 3 & 4 — unified scripts):**
-- **Decision Tree (DT)**: Single table lookup
-- **Random Forest (RF)**: Multiple tree voting with packed results
-- **XGBoost (XGB)**: Gradient boosted trees with per-class score accumulation
-- **Gradient Boosting (GB)**: sklearn boosting; deploys with the same XGB P4 layout
-- **K-Nearest Neighbors (KNN)**: Non-parametric baseline (deploys via DT proxy)
-- **Support Vector Machine (SVM)**: Margin-based classifier (deploys via DT proxy)
-- **1D CNN (CNN)**: PyTorch model with optional P4 neural lookup-table export
+---
 
 ## Pipeline Overview
 
 ```
-Raw PCAP Files (control_plane/pcaps/) or Live Capture
-    ↓
-[1] Feature Extraction (1_extract_dataset.py)
-    ↓
-Feature Dataset (dataset/dataset.csv)
-    ↓
-[2] Dimensionality Reduction — choose ONE:
-      PCA              →  2_pca_generate_entries.py
-      LDA              →  2_lda_generate_entries.py
-      UMAP             →  2_umap_generate_entries.py
-      Feature Selection→  2_feature_selection_generate_entries.py
-    ↓
-Reduction Rules + tables/reduction_config.json
-    ↓
-[3] Model Training (3_train_model.py --model-type {dt|rf|xgb|gb|knn|svm|cnn})
-    ↓
-Trained Model (model/<model_type>.model)
-    ↓
-[4] Model Table Generation (4_generate_model_entries.py --model-type {dt|rf|xgb|gb|cnn})
-    ↓
-Model Rules (appended to tables/s1-commands.txt)
-    ↓
-[5] P4 Code Generation (5_generating_p4_code.py --model-type {dt|rf|xgb|gb|cnn})
-    ↓
-P4 Program (basic.p4)
-    ↓
-[6] Compile and Deploy (make clean && make run)
-    ↓
-[7] Runtime Controller (6_controller.py)
-    ↓
-Live Classification & Monitoring
+Raw PCAP files (control_plane/pcaps/)
+    │
+    ▼
+[1] Feature Extraction        →  1_extract_dataset.py
+    │   (canonical 5-tuple, register-based per-flow accumulation,
+    │    20 bidirectional flow features)
+    ▼
+dataset/dataset.csv
+    │
+    ▼
+[2] Dimensionality Reduction  →  2_pca_generate_entries.py   (primary)
+    │                            2_lda_generate_entries.py
+    │                            2_autoencoder_generate_entries.py
+    │   (K-component projection, B-bit quantization, range-match
+    │    surrogate DTR per component)
+    ▼
+tables/reduction_config.json + tables/s1-commands.txt (transform entries)
+tables/transform_mapping.csv  (K quantized codes + Label)
+    │
+    ▼
+[3] Classifier Training       →  3_train_model.py  -m {dt|rf}
+    │
+    ▼
+model/{dt|rf}.model + tables/model_metrics.json
+    │
+    ▼
+[4] Classifier Table Generation → 4_generate_model_entries.py  -m {dt|rf}
+    │   (range-match entries: ml_code for DT, rf_tree_i + rf_vote_classify for RF)
+    ▼
+tables/s1-commands.txt (appended with classifier entries)
+    │
+    ▼
+[5] P4 Code Generation        →  5_generating_p4_code.py  -m {dt|rf}
+    │   (emits both BMv2 basic.p4 and Tofino p4sec_tofino.p4)
+    ▼
+../basic.p4   +   ../p4sec_tofino.p4
+    │
+    ▼
+[6] Compile & deploy on BMv2  →  make clean && make run
+    │
+    ▼
+[7] Runtime controller         →  6_controller.py
+        (loads s1-commands.txt, listens for digests, logs predictions)
 ```
 
 ---
 
 ## Prerequisites
 
-### Repository Location
-
-**IMPORTANT**: This project must be placed in the `/tutorials/exercises/` directory.
+The project expects the standard `p4lang/tutorials` layout:
 
 ```bash
 cd /tutorials/exercises/
-git clone git@github.com:vafekt/p4sec.git
+git clone https://github.com/vafekt/p4sec.git
 cd p4sec
-pwd  # Should output: /tutorials/exercises/p4sec
 ```
 
-### Required Installation
+Install requirements:
 
-1. **P4 Tools** (BMv2, P4C Compiler, Mininet)
-   ```bash
-   # Follow official P4 installation guide:
-   # https://github.com/p4lang/behavioral-model
-   # https://github.com/p4lang/p4c
-   # https://github.com/p4lang/tutorials
-   ```
+```bash
+pip install -r requirements.txt
+sudo apt-get install tshark wireshark tcpdump
+```
 
-2. **Python Dependencies**
-   ```bash
-   # Install Python packages
-   pip install -r requirements.txt
-   
-   # Install system dependencies
-   sudo apt-get install tshark wireshark tcpdump
-   ```
-
-3. **PCAP Files**
-   - Place `.pcap` files in `control_plane/pcaps/`
-   - Filename format: `<label>.v<version>.pcap` (e.g., `skype.v1.pcap`)
-   - Labels are auto-extracted from filenames
+P4 toolchain (BMv2, p4c, Mininet) — follow https://github.com/p4lang/tutorials.
 
 ---
 
-## Step-by-Step Execution
-
-### Step 1: Extract Features
+## Step 1 — Feature Extraction
 
 ```bash
-cd /tutorials/exercises/p4sec/control_plane
-
-# From PCAP/PCAPNG files
+cd control_plane
 python3 1_extract_dataset.py --mode pcap --pcap-dir pcaps --output dataset/dataset.csv
-
-# From live capture (requires sudo)
-sudo python3 1_extract_dataset.py --mode live --interface eth0 --count 1000 --label skype --output dataset/live.csv
 ```
 
-**Extracts 20 Flow-Based Features** (all present in the P4 digest; SrcIP and DstIP are written to the CSV as flow identifiers but are not used as ML match keys):
+The 20 bidirectional flow features extracted (paper Table 2):
 
-| Feature | P4 Type | Description |
+| Category | Feature | Bits |
 |---|---|---|
-| **Protocol** | bit<8> | IP protocol number (6=TCP, 17=UDP, 1=ICMP, 253=ARP) |
-| **SrcPort** | bit<16> | Canonical source port |
-| **DstPort** | bit<16> | Canonical destination port — strong classification signal |
-| **Duration** | bit<48> | Flow duration in nanoseconds (first → last packet) |
-| **MaxIAT** | bit<48> | Maximum inter-arrival time between consecutive packets |
-| **MinIAT** | bit<48> | Minimum inter-arrival time between consecutive packets |
-| **UrgCount** | bit<32> | Count of packets with TCP URG flag |
-| **FwdPktCount** | bit<32> | Packet count in the forward (canonical) direction |
-| **BwdPktCount** | bit<32> | Packet count in the backward direction |
-| **FwdBytes** | bit<32> | Total payload bytes in the forward direction |
-| **BwdBytes** | bit<32> | Total payload bytes in the backward direction |
-| **FwdMaxPktLen** | bit<16> | Maximum packet length in the forward direction |
-| **BwdMaxPktLen** | bit<16> | Maximum packet length in the backward direction |
-| **MaxWinSize** | bit<16> | Maximum TCP window size observed across the flow |
-| **InitFwdWinBytes** | bit<16> | TCP window size of the first forward-direction packet |
-| **FlagsSyn** | bit<32> | Count of packets with TCP SYN flag |
-| **FlagsAck** | bit<32> | Count of packets with TCP ACK flag |
-| **FlagsFin** | bit<32> | Count of packets with TCP FIN flag |
-| **FlagsRst** | bit<32> | Count of packets with TCP RST flag |
-| **FlagsPsh** | bit<32> | Count of packets with TCP PSH flag |
+| Protocol | Protocol | 8 |
+| Ports | SrcPort, DstPort | 16, 16 |
+| Timing | Duration, MaxIAT, MinIAT | 48, 48, 48 |
+| Volume | FwdPktCount, BwdPktCount, FwdBytes, BwdBytes, FwdMaxPktLen, BwdMaxPktLen | 32×4, 16×2 |
+| TCP Flags | FlagsSyn, FlagsAck, FlagsFin, FlagsRst, FlagsPsh, UrgCount | 32×6 |
+| Window | MaxWinSize, InitFwdWinBytes | 16, 16 |
 
-**Which features are used by each step-2 method:**
-- **PCA / LDA / UMAP**: operate on the 17 traffic-statistic features (Duration through FlagsPsh — excludes Protocol/SrcPort/DstPort for the transform, though they are available)
-- **Feature Selection**: all 20 are scored and ranked; the top-k selected features (including Protocol/DstPort if discriminative) become direct P4 match keys
-
-**Flow Aggregation:** Packets are grouped by 5-tuple (src_ip, dst_ip, src_port, dst_port, protocol) to create per-flow statistics. The flow direction is canonicalized so that A→B and B→A map to the same flow entry.
+Per-flow state is held in CRC16-indexed register arrays; a CRC32-indexed Bloom
+filter detects index collisions. A flow is finalized on TCP FIN/RST or after a
+20-second idle timeout, after which it proceeds to classification.
 
 ---
 
-### Step 2: Dimensionality Reduction & Generate Base Entries
+## Step 2 — Dimensionality Reduction
 
-**IMPORTANT:** Always re-run this step when switching reduction methods or model types so that `s1-commands.txt` is regenerated cleanly.
+Choose one of the three methods. The paper's headline results use **PCA**.
 
-Choose **one** of the four methods:
-
-#### Option A: PCA (maximises variance)
 ```bash
-cd /tutorials/exercises/p4sec/control_plane
+# PCA (primary — paper Section 4)
+python3 2_pca_generate_entries.py --components 7 --bits 32
 
-# Auto-detect number of components (95% variance)
-python3 2_pca_generate_entries.py
+# LDA
+python3 2_lda_generate_entries.py --components 3 --bits 16
 
-# Or specify number of components and bit width
-python3 2_pca_generate_entries.py --components 9 --bits 16
+# Autoencoder
+python3 2_autoencoder_generate_entries.py --components 7 --bits 16
 ```
 
-#### Option B: LDA (maximises class separation — recommended for better accuracy)
-```bash
-cd /tutorials/exercises/p4sec/control_plane
+Each method:
+- Fits the projection on the raw integer features.
+- Quantises every component score to B bits.
+- Trains a Decision Tree Regressor (DTR) per component to approximate the
+  projection. Each leaf stores the mean quantized code over its training
+  samples.
+- Emits the DTR as range-match P4 entries (one entry per leaf per component).
+- Writes `tables/reduction_config.json` so steps 3 / 4 / 5 detect the method
+  automatically.
 
-# Default: n_classes-1 components
-python3 2_lda_generate_entries.py
-
-# Or specify components, bits, and solver
-python3 2_lda_generate_entries.py --components 3 --bits 16 --solver svd
-```
-
-#### Option C: UMAP (non-linear manifold learning)
-```bash
-cd /tutorials/exercises/p4sec/control_plane
-
-# Default: 2 components
-python3 2_umap_generate_entries.py
-
-# Or specify components, bits, and UMAP hyperparams
-python3 2_umap_generate_entries.py --components 3 --bits 16 --n-neighbors 15 --min-dist 0.1
-```
-
-#### Option D: Feature Selection (no transform — classify on raw features directly)
-```bash
-cd /tutorials/exercises/p4sec/control_plane
-
-# Auto-select features using Mutual Information (default)
-python3 2_feature_selection_generate_entries.py
-
-# Or specify k features and selection method (mi | chi2 | anova)
-python3 2_feature_selection_generate_entries.py --components 8 --method mi
-```
-
-**Output (all methods write to the same locations):**
-- Reduction parameters and encoding → `tables/encoding_params.json`
-- Integer code mapping → `tables/transform_mapping.csv`
-- Human-readable transform rules → `tables/transform_rules.txt`
-- Transform metrics → `tables/transform_metrics.json`
-- P4 table commands → `tables/s1-commands.txt` (empty for Feature Selection)
-- **Universal config** → `tables/reduction_config.json` (read by all subsequent steps)
+The paper evaluates **24 PCA configurations**: k ∈ {5,6,7,8,9,10} components,
+b ∈ {16, 32} bits, classifier ∈ {DT, RF}.
 
 ---
 
-### Step 3: Train Classification Model
-
-A **single unified script** handles all seven classifier backends via `--model-type`:
+## Step 3 — Classifier Training
 
 ```bash
-cd /tutorials/exercises/p4sec/control_plane
-
-# Decision Tree — fast, interpretable
-python3 3_train_model.py --model-type dt
-
-# Random Forest — higher accuracy, ensemble voting
-python3 3_train_model.py --model-type rf
-
-# XGBoost — strong performance (requires xgboost package)
-python3 3_train_model.py --model-type xgb
-
-# Gradient Boosting — sklearn boosting, no extra dependency
-python3 3_train_model.py --model-type gb
-
-# KNN — simple non-parametric baseline (deploys via DT proxy)
-python3 3_train_model.py --model-type knn
-
-# SVM — margin-based classifier (deploys via DT proxy)
-python3 3_train_model.py --model-type svm
-
-# CNN — PyTorch (P4 export available)
-python3 3_train_model.py --model-type cnn
-
-# CNN P4 export (neural lookup tables; no DT/RF surrogate)
-python3 3_train_model.py --model-type cnn --p4-export --p4-hidden 8
+python3 3_train_model.py -m dt          # Decision Tree
+python3 3_train_model.py -m rf -n 4     # Random Forest, 4 trees
 ```
 
-Common optional hyperparameters:
-```bash
-python3 3_train_model.py --model-type rf \
-    --n-estimators 8 \
-    --max-depth 6 \
-    --random-state 42
-```
+Trains on the K quantized codes produced in step 2. Reports 80/20 holdout
+metrics, then retrains on 100 % of data for deployment.
 
-> **Default ensemble size:** `--n-estimators` defaults to **4** trees for RF / XGB / GB. Increase for higher accuracy at the cost of more P4 table entries and a larger `rf_vote_classify` table (`n_classes^n_estimators` entries).
-
-**Output:** Trained model (`model/<model_type>.model`) and metrics (`tables/<model_type>_metrics.json`)
-**Note:** KNN and SVM deploy in P4 via a DecisionTree proxy; run Steps 4–5 as usual.
+Output:
+- `model/{dt|rf}.model`
+- `tables/model_metrics.json`
+- `tables/model_params.json` (RF only — vote-packing parameters)
 
 ---
 
-### Step 4: Generate Model-Specific P4 Entries
-
-A **single unified script** handles all deployable backends. Match `--model-type` to what was used in Step 3:
+## Step 4 — Classifier Table Generation
 
 ```bash
-cd /tutorials/exercises/p4sec/control_plane
-
-python3 4_generate_model_entries.py --model-type dt   # Decision Tree
-python3 4_generate_model_entries.py --model-type rf   # Random Forest
-python3 4_generate_model_entries.py --model-type xgb  # XGBoost
-python3 4_generate_model_entries.py --model-type gb   # Gradient Boosting
-python3 4_generate_model_entries.py --model-type cnn  # CNN (neural lookup tables)
+python3 4_generate_model_entries.py -m dt
+python3 4_generate_model_entries.py -m rf
 ```
 
-**Note:** For CNN P4 deployment, train with `--p4-export` first to generate `tables/cnn_params.json`.
+DT: the tree is encoded as a single `ml_code` range-match table; one entry per
+leaf, each covering the per-feature ranges along the root-to-leaf path.
 
-**Output:** Model-specific P4 table entries appended to `tables/s1-commands.txt`, human-readable rules in `tables/<model_type>_tree(s).txt`
+RF: each tree becomes its own range-match table `rf_tree_i` writing
+⌈log₂C⌉ vote bits, and the final `rf_vote_classify` exact-match table resolves
+the majority class from the concatenated vote register.
 
 ---
 
-### Step 5: Generate P4 Program
-
-**IMPORTANT:** Use `--model-type` matching your trained model. The generator automatically reads `tables/reduction_config.json` to detect the reduction method (PCA / LDA / Autoencoder / UMAP / Feature Selection) and adapts the P4 code accordingly.
+## Step 5 — P4 Code Generation
 
 ```bash
-cd /tutorials/exercises/p4sec/control_plane
-
-python3 5_generating_p4_code.py --model-type dt
-python3 5_generating_p4_code.py --model-type rf
-python3 5_generating_p4_code.py --model-type xgb
-python3 5_generating_p4_code.py --model-type gb
-python3 5_generating_p4_code.py --model-type cnn
+python3 5_generating_p4_code.py -m dt   # or -m rf
 ```
 
-**Note:** For CNN P4 deployment, train with `--p4-export` first to generate `tables/cnn_params.json`.
+Emits two P4 programs:
+- `../basic.p4` — BMv2 v1model (the primary evaluation target).
+- `../p4sec_tofino.p4` — Intel Tofino (TNA architecture; discussion in paper
+  Section 5, end-to-end compilation still under development).
 
-**Output:** `../basic.p4` (auto-generated with reduction-method- and model-specific logic)
-
-> **Important:** Step 5 must be re-run whenever you change `--n-estimators` (or any RF/XGB parameter). The `rf_vote_classify` table `size` in `basic.p4` is computed as `n_classes^n_estimators` — if `basic.p4` is stale, the table may be over- or under-sized for the actual entry count.
-
-**P4 Architecture (reduction method determines transform stage):**
-- **PCA / LDA / Autoencoder / UMAP:** `pca_component*` / `lda_component*` range-match tables map raw features → quantised codes; classifier tables match on codes
-- **Feature Selection:** No transform tables; classifier tables match directly on selected raw features
-- **Flow Tracking:** P4 registers maintain per-flow state indexed by CRC16/CRC32 hash of the 5-tuple
-- **Model-Specific Classification:**
-  - **DT:** Single `ml_code` table lookup
-  - **RF:** Multiple `rf_tree_i` tables + `rf_vote_classify` for majority voting
-  - **XGB / GB:** Multiple `xgb_tree_<c>_<t>` tables + `xgb_classify` with score accumulation
-- **Digest Output:** Sends flow features + reduction codes + classification + model outputs to controller
+Both files include: parser (Ethernet / ARP / IPv4 / TCP / UDP / ICMP),
+canonical 5-tuple normalisation, CRC16/CRC32 hashes, register-based feature
+accumulation, the trained reduction tables, the trained classifier tables,
+and the digest of finalised flows to the controller.
 
 ---
 
-### Step 6: Compile and Deploy
+## Step 6 — Compile & Run on BMv2
 
 ```bash
 cd /tutorials/exercises/p4sec
-
-# Compile P4 program
 make clean
-make
-
-# Terminal 1: Start Mininet (FIRST)
-sudo make run
-
-# Terminal 2: Start controller (AFTER Mininet is running)
-cd /tutorials/exercises/p4sec/control_plane
-./6_controller.py
+make run
 ```
 
-**Replaying a PCAP for testing/demo:**
-```bash
-# In Mininet terminal — raise MTU first so jumbo frames don't abort tcpreplay
-mininet> sh ip link set s1-eth1 mtu 65535
-
-# Replay twice back-to-back: loop 1 fills flow state, loop 2 triggers idle-timeout flush
-mininet> sh tcpreplay -i s1-eth1 --timer=gtod --loop=2 /path/to/traffic.pcap
-```
-
-> **Why `--loop=2`?** P4 flow timeouts are *lazy* — they only fire when the next packet arrives at that register slot. `FLOW_TIMEOUT = 20 s`. With a 52-second pcap, the second pass arrives > 32 s after each flow's last packet, which exceeds the 20 s threshold and flushes all flows automatically.
-
-**Controller Features:**
-- Automatically detects reduction method (PCA / LDA / Autoencoder / UMAP / Feature Selection) and model type from P4Info digest structure (reads `build/basic.p4.p4info.txtpb` — always fresh after `make`)
-- Dynamically loads class labels from model parameters
-- **Startup mismatch detection:** compares `model.n_features_in_` against the digest's component count; prints a clear one-time warning with remediation steps if they differ and suppresses per-flow error spam
-- For **RF**: Shows per-tree vote labels (e.g., `[Tree Votes: T0=Benign T1=DDoS T2=Benign...]`)
-- For **XGB / GB**: Shows per-class score accumulation (e.g., `[Scores: c0=150 c1=200 c2=100 c3=80]`)
-- Records all predictions to `logs/predictions.csv`
-- Universal digest parsing adapts to any number of components and features
+This brings up the BMv2 switch via the standard `p4lang/tutorials` harness
+together with two Mininet hosts (`h1`, `h2`).
 
 ---
 
-## Complete Pipeline Examples
+## Step 7 — Runtime Controller
 
-### Quick Start with PCA + Decision Tree
+In a second terminal:
 
 ```bash
 cd /tutorials/exercises/p4sec/control_plane
-
-python3 1_extract_dataset.py --mode pcap --pcap-dir pcaps && \
-python3 2_pca_generate_entries.py && \
-python3 3_train_model.py --model-type dt && \
-python3 4_generate_model_entries.py --model-type dt && \
-python3 5_generating_p4_code.py --model-type dt && \
-cd .. && make clean && make
-
-# Terminal 1: Start Mininet
-sudo make run
-
-# Terminal 2: Start controller (new terminal)
-cd /tutorials/exercises/p4sec/control_plane
-./6_controller.py
+python3 6_controller.py
 ```
 
-### Using LDA + Random Forest
+The controller:
+1. Loads `tables/s1-commands.txt` into the BMv2 switch via
+   `simple_switch_CLI` (chunked for large RF vote tables).
+2. Subscribes to flow digests emitted by `basic.p4` when a flow finalises
+   (FIN/RST or idle timeout).
+3. Maps each digest into `logs/predictions.csv` together with the predicted
+   class label.
 
-```bash
-cd /tutorials/exercises/p4sec/control_plane
+---
 
-python3 1_extract_dataset.py --mode pcap --pcap-dir pcaps && \
-python3 2_lda_generate_entries.py && \
-python3 3_train_model.py --model-type rf && \
-python3 4_generate_model_entries.py --model-type rf && \
-python3 5_generating_p4_code.py --model-type rf && \
-cd .. && make clean && make
+## Dataset
+
+We evaluate on **CIC-IoT 2023**, restricted to four classes (Benign, DoS,
+Brute Force, Reconnaissance). PCAPs go in `control_plane/pcaps/<class>/`;
+the extractor derives labels from the directory name.
+
+---
+
+## Repository Layout
+
 ```
+basic.p4                   Generated BMv2 program (overwritten by step 5)
+p4sec_tofino.p4            Generated Tofino program (overwritten by step 5)
+Makefile                   Standard p4lang/tutorials make wrapper
+s1-runtime.json            BMv2 switch runtime descriptor
+topology.json              Mininet topology (h1 ↔ s1 ↔ h2)
 
-### Using Feature Selection + KNN (DT proxy deployable)
-
-```bash
-cd /tutorials/exercises/p4sec/control_plane
-
-python3 1_extract_dataset.py --mode pcap --pcap-dir pcaps && \
-python3 2_feature_selection_generate_entries.py --components 8 && \
-python3 3_train_model.py --model-type knn
-```
-
-### Using PCA + SVM (DT proxy deployable)
-
-```bash
-cd /tutorials/exercises/p4sec/control_plane
-
-python3 1_extract_dataset.py --mode pcap --pcap-dir pcaps && \
-python3 2_pca_generate_entries.py && \
-python3 3_train_model.py --model-type svm
-```
-
-### Using PCA + XGBoost
-
-```bash
-cd /tutorials/exercises/p4sec/control_plane
-
-python3 1_extract_dataset.py --mode pcap --pcap-dir pcaps && \
-python3 2_pca_generate_entries.py && \
-python3 3_train_model.py --model-type xgb && \
-python3 4_generate_model_entries.py --model-type xgb && \
-python3 5_generating_p4_code.py --model-type xgb && \
-cd .. && make clean && make
-```
-
-### Using LDA + Gradient Boosting
-
-```bash
-cd /tutorials/exercises/p4sec/control_plane
-
-python3 1_extract_dataset.py --mode pcap --pcap-dir pcaps && \
-python3 2_lda_generate_entries.py && \
-python3 3_train_model.py --model-type gb && \
-python3 4_generate_model_entries.py --model-type gb && \
-python3 5_generating_p4_code.py --model-type gb && \
-cd .. && make clean && make
-```
-
-### Using PCA + CNN (P4 deployable)
-
-```bash
-cd /tutorials/exercises/p4sec/control_plane
-
-python3 1_extract_dataset.py --mode pcap --pcap-dir pcaps && \
-python3 2_pca_generate_entries.py && \
-python3 3_train_model.py --model-type cnn --p4-export && \
-python3 4_generate_model_entries.py --model-type cnn && \
-python3 5_generating_p4_code.py --model-type cnn && \
-cd .. && make clean && make
-```
-
-### Switching Reduction Method or Model
-
-**IMPORTANT:** When switching reduction method or model type, always re-run step 2 to regenerate `s1-commands.txt` and `reduction_config.json`:
-
-```bash
-cd /tutorials/exercises/p4sec/control_plane
-
-# Example: Switch from PCA+DT to LDA+RF
-python3 2_lda_generate_entries.py          # Regenerate reduction tables & config
-python3 3_train_model.py --model-type rf  # Train new model
-python3 4_generate_model_entries.py --model-type rf
-python3 5_generating_p4_code.py --model-type rf
-cd .. && make clean && make
-```
-
-### Custom PCA Components
-
-```bash
-cd /tutorials/exercises/p4sec/control_plane
-
-python3 1_extract_dataset.py --mode pcap --pcap-dir pcaps
-
-# Use 5 PCA components with 12-bit quantization
-python3 2_pca_generate_entries.py --components 5 --bits 12
-
-python3 3_train_model.py --model-type rf && \
-python3 4_generate_model_entries.py --model-type rf && \
-python3 5_generating_p4_code.py --model-type rf && \
-cd .. && make clean && make
+control_plane/
+    1_extract_dataset.py            Feature extraction (PCAP → CSV)
+    2_pca_generate_entries.py       PCA reduction + DTR surrogate
+    2_lda_generate_entries.py       LDA reduction + DTR surrogate
+    2_autoencoder_generate_entries.py  Autoencoder reduction + DTR surrogate
+    3_train_model.py                DT / RF training
+    4_generate_model_entries.py     Range-match classifier entries
+    5_generating_p4_code.py         BMv2 + Tofino code synthesis
+    6_controller.py                 Runtime: load rules, log digests
+    pipeline_utils.py               Shared feature & config helpers
+    filter_pcaps.py                 Optional PCAP preprocessing
 ```
 
 ---
 
-## Recent Improvements
+## Citation
 
-### RF Vote Table: Correct Size Formula
-- `rf_vote_classify` table size was previously declared as `2^(n_estimators × vote_bits)` — up to **16 M slots** for 8 trees / 6 classes, which caused BMv2 to over-allocate memory and drop the Thrift connection mid-load
-- Fixed to `n_classes^n_estimators` (the actual number of entries): **6^4 = 1,296** for the default 4-tree / 6-class configuration
-- Step 5 (`5_generating_p4_code.py`) now computes this automatically for any class/tree count
-
-| Config | Old (wrong) | New (correct) |
-|---|---|---|
-| 6 classes, 4 trees | 2^12 = 4,096 | **6^4 = 1,296** |
-| 6 classes, 8 trees | 2^24 = 16,777,216 | **6^8 = 1,679,616** |
-| 6 classes, 10 trees | 2^30 = 1,073,741,824 | **6^10 = 60,466,176** |
-
-### Chunked CLI Entry Loading
-- BMv2's Thrift server drops the connection after ~800K sequential `table_add` RPCs, leaving large tables (e.g. `rf_vote_classify` with 1.68 M entries for 8 trees) partially loaded — the critical last entries were silently missing, causing those flows to be classified as Benign
-- The controller (`6_controller.py`) now loads `rf_vote_classify` / `xgb_classify` / `cnn_*` entries in chunks of **50,000** per Thrift session (`chunk_size` parameter in `load_switch_cli()`), with a fresh connection per chunk — total entries loaded is identical, but no connection is ever dropped
-
-### BMv2 Priority Semantics Fix
-- In BMv2's `simple_switch_CLI`, **higher priority number = matched first** (opposite of P4Runtime semantics)
-- Entry generation (`4_generate_model_entries.py`) previously assigned priority 1 to the most-specific rule and priority N to the widest catch-all — causing the catch-all leaf to always win and every flow to be classified as Benign
-- Fixed: most-specific rules now receive priority N (highest), catch-all rules receive priority 1
-
-### IPv4 Zero-Byte Padding Fix
-- P4Runtime strips leading zero-bytes from bitstrings: `0.0.0.0` arrived as `b'\x00'` (1 byte), causing `ipaddress.ip_address('0')` to raise `ValueError` and crash the controller
-- Fixed: `bytes_to_ip()` now reconstructs the full 32-bit address via integer arithmetic regardless of how many bytes P4Runtime sends
-
-### Default Estimator Count: 8 → 4
-- `--n-estimators` default reduced from 8 to **4** in `3_train_model.py`
-- All fallback defaults in `5_generating_p4_code.py` updated to match; if `rf_params.json` already exists with a different value, that stored value takes precedence
-- With 4 trees and 6 classes: `rf_vote_classify` has only **1,296 entries** (vs 1.68 M for 8 trees), loading in under a second
-- **Re-run step 5** (`5_generating_p4_code.py`) after changing `--n-estimators` so that `basic.p4` is regenerated with the correctly sized `rf_vote_classify` table
-
-### Four Dimensionality Reduction Methods
-- **PCA** (`2_pca_generate_entries.py`): principal components that maximise variance
-- **LDA** (`2_lda_generate_entries.py`): components that maximise class separation — typically better accuracy with fewer dimensions
-- **UMAP** (`2_umap_generate_entries.py`): non-linear manifold learning with a stable transform
-- **Feature Selection** (`2_feature_selection_generate_entries.py`): selects the top-k most discriminative raw features (MI / chi² / ANOVA); no transform tables required in P4
-- All four methods write a shared `tables/reduction_config.json` consumed by steps 3, 4, and 5
-
-### Unified Scripts for Steps 3 & 4
-- **Single `3_train_model.py`** replaces the separate `3_dt_`, `3_rf_`, `3_xgb_` scripts; select the backend with `--model-type {dt|rf|xgb|gb|knn|svm|cnn}`
-- **Single `4_generate_model_entries.py`** replaces the separate `4_dt_`, `4_rf_`, `4_xgb_` scripts; same `--model-type` flag (deployable models only)
-- **Three additional backends:** KNN (`knn`, DT proxy deployable), SVM (`svm`, DT proxy deployable), and Gradient Boosting (`gb`, deploys as XGB)
-- **Neural backend:** CNN (`cnn`, PyTorch; optional P4 lookup-table export)
-
-### Universal `pipeline_utils.py`
-- Shared utilities (`detect_feature_columns`, `detect_feature_max_values`, `load_reduction_config`) used by all pipeline steps
-- Ensures consistent feature detection regardless of reduction method
-
-### Extended Feature Set (20 features)
-- **Expanded from 9 → 13 → 17 → 20** flow-level features
-- SYN/ACK/FIN/RST added as per-packet **counts** (not booleans); P4 registers upgraded to `register<bit<32>>`
-- Further added: **MinIAT**, **FwdMaxPktLen**, **BwdMaxPktLen**, **FlagsPsh**, **InitFwdWinBytes**
-- **Protocol**, **SrcPort**, **DstPort** promoted from flow-key identifiers to first-class ML features — all three have full P4 type mappings and are available as direct match keys in Feature Selection mode
-
-### Robust Controller Startup
-- **Model/digest mismatch detection:** at startup, `model.n_features_in_` is compared against the P4 digest's component count; a clear one-time warning is printed if they differ
-- Per-flow error spam is suppressed when a mismatch is already known at startup
-- Controller reads `build/basic.p4.p4info.txtpb` (always regenerated by `make`)
-
-### MTU and Flow Timeout for PCAP Replay
-- Set interface MTU to 65535 before replay to handle jumbo frames (up to ~28 KB): `sh ip link set s1-eth1 mtu 65535`
-- Fixes `errno=90 Message too long` abort where tcpreplay stops mid-pcap on oversized packets
-- **FLOW_TIMEOUT is set to 20 s** (down from 60 s). With the Mu-IoT Benign pcap (52.78 s), replaying twice back-to-back flushes all open flows automatically: the second-pass gap `≥ 52.78 − flow_duration ≥ 32 s > 20 s`
-- Demo replay command: `tcpreplay -i s1-eth1 --timer=gtod --loop=2 <file.pcap>`
-
-### Universal and Scalable Design
-- **Dynamic Feature Count:** Digest parsing adapts to any number of reduction components
-- **Schema-Driven:** Reads field layout from P4Info instead of hardcoded offsets
-- **Extensible:** Add new features by updating extraction, reduction, and P4 generator — controller adapts automatically
-
----
-
-## File Structure
-
-```
-p4sec/
-├── README.md                                        # This file
-├── LICENSE
-├── Makefile                                         # P4 compilation
-├── requirements.txt                                 # Python dependencies
-├── basic.p4                                         # Generated P4 program (reduction+model-specific)
-├── control_plane/
-│   ├── pipeline_utils.py                           # Shared utilities (feature detection, config I/O)
-│   ├── 1_extract_dataset.py                        # Feature extraction (PCAP/PCAPNG, live)
-│   ├── 2_pca_generate_entries.py                 # Step 2 — PCA reduction
-│   ├── 2_lda_generate_entries.py                 # Step 2 — LDA reduction
-│   ├── 2_umap_generate_entries.py                # Step 2 — UMAP reduction
-│   ├── 2_feature_selection_generate_entries.py   # Step 2 — Feature Selection (no transform)
-│   ├── 3_train_model.py                         # Step 3 — unified training (dt|rf|xgb|gb|knn|svm|cnn)
-│   ├── 4_generate_model_entries.py                 # Step 4 — unified entry generation
-│   ├── 5_generating_p4_code.py                     # Step 5 — P4 code generation
-│   ├── 6_controller.py                             # Runtime controller (auto-detects all)
-│   ├── pcaps/                                      # PCAP/PCAPNG files
-│   │   ├── AttackIDS/                             # AttackIDS dataset (Access, CC, Discovery, Evasion)
-│   │   └── Mu-IoT/                                # Mu-IoT dataset (Benign, DDoS, PasswordHacking, Reconnaissance)
-│   ├── dataset/                                    # Extracted features (dataset.csv)
-│   ├── model/                                      # Trained models (dt/rf/xgb/gb/knn/svm .model)
-│   ├── tables/                                     # Generated rules & configs
-│   │   ├── s1-commands.txt                        # P4 table entries (reduction + model)
-│   │   ├── reduction_config.json                  # Universal pipeline config (written by step 2)
-│   │   ├── encoding_params.json                   # Transform encoding metadata
-│   │   ├── transform_mapping.csv                  # Quantised codes + labels
-│   │   ├── transform_metrics.json                 # Reduction quality metrics
-│   │   ├── transform_rules.txt                    # Human-readable transform rules
-│   │   ├── <model_type>_params.json               # RF/XGB/GB/DT metadata
-│   │   ├── <model_type>_metrics.json              # Accuracy & confusion matrix
-│   │   └── <model_type>_tree.txt                  # Human-readable decision tree rules
-│   └── logs/                                      # Runtime logs & predictions
-└── build/                                         # P4 compiler output
-    └── basic.p4.p4info.txtpb                      # P4 program metadata (regenerated by `make`)
-```
-
----
-
-## Key Features
-
-### Four Dimensionality Reduction Methods
-- **PCA:** Auto-selects components for ≥95% variance (or manually specified)
-- **LDA:** At most `min(n_features, n_classes-1)` components; maximises class separation
-- **UMAP:** Non-linear manifold learning with a stable transform
-- **Feature Selection:** Selects top-k raw features via MI, chi², or ANOVA; no transform stage in P4
-- All methods write `tables/reduction_config.json` for seamless downstream compatibility
-
-### Seven ML Backends
-1. **Decision Tree (DT):** Single range-match table, fastest inference
-2. **Random Forest (RF):** Multiple trees with majority voting
-3. **XGBoost (XGB):** Gradient boosted trees with score accumulation
-4. **Gradient Boosting (GB):** sklearn boosting; same P4 layout as XGB
-5. **K-Nearest Neighbors (KNN):** Non-parametric baseline (deploys via DT proxy)
-6. **Support Vector Machine (SVM):** Margin-based classifier (deploys via DT proxy)
-7. **1D CNN (CNN):** PyTorch model with optional P4 lookup-table export
-
-### Bidirectional Flow Tracking
-- Normalizes flow direction (A→B and B→A map to same flow)
-- Canonical 5-tuple: endpoint with smaller IP (then port) always first
-- Matches offline extraction for consistent training/inference
-
-### Model-Specific Runtime Verification
-- **RF:** Shows which class each tree predicted for debugging
-- **XGB / GB:** Displays per-class accumulated scores from dataplane
-- **DT:** Simple class output
-
-### Universal Digest Parsing
-- Reads digest schema from P4Info at runtime
-- Adapts to any feature count, component count, or model outputs
-- Fallback to heuristic parsing if schema unavailable
+If you use this code, please cite the accompanying paper.

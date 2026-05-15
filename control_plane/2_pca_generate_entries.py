@@ -7,11 +7,12 @@ import argparse
 import sys
 
 from sklearn.decomposition import PCA
+from sklearn.preprocessing import StandardScaler
 from sklearn.tree import DecisionTreeRegressor, DecisionTreeClassifier
 from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
 from sklearn.metrics import r2_score, accuracy_score
 
-from pipeline_utils import P4_FEATURE_MAX, find_dataset_csv
+from pipeline_utils import P4_FEATURE_MAX, P4_FEATURE_MAX_QUANTIZED, find_dataset_csv, quantize_features, FEATURE_QUANTIZE
 
 LOGO = """---------------------------------------------------------------------------
 ------PPPPPPPP------4444------SSSSSSSS------EEEEEEEE------CCCCCCCC---------
@@ -54,7 +55,7 @@ def parse_args():
     # Hidden option: variance target for auto-selection
     parser.add_argument("--var-target", type=float, default=0.95,
                         help="Explained variance target for auto PCA component selection (default: 0.95)")
-    parser.add_argument("--max-leaf-nodes", "-l", type=int, default=300000,
+    parser.add_argument("--max-leaf-nodes", "-l", type=int, default=65536,
                         help=(
                             "Maximum leaf nodes in the surrogate DecisionTreeRegressor (default: 65536).\n"
                             "This directly controls how many P4 table entries are generated:\n"
@@ -115,15 +116,17 @@ label_col = df.columns[-1]
 # Remove NaN / Inf
 df_clean = df.replace([np.inf, -np.inf], np.nan).dropna()
 
-# All 20 P4-compatible features in canonical order
+# P4-compatible ML features in canonical order.
+# SrcIP/DstIP excluded: they are flow identifiers, not ML features,
+# and at 32 bits they exceed Tofino's 20-bit range-match limit.
 P4_FEATURE_COLS = [
     "Protocol", "SrcPort", "DstPort",
-    "Duration", "MaxIAT", "UrgCount",
+    "Duration", "MaxIAT",
     "FwdPktCount", "BwdPktCount",
     "FwdBytes", "BwdBytes",
     "MaxWinSize",
     "FlagsSyn", "FlagsAck", "FlagsFin", "FlagsRst",
-    "MinIAT", "FwdMaxPktLen", "BwdMaxPktLen", "FlagsPsh", "InitFwdWinBytes",
+    "FwdMaxPktLen", "BwdMaxPktLen", "FlagsPsh", "InitFwdWinBytes",
 ]
 # Drop rows where any feature column is non-numeric (e.g. pyshark field corruption like '275=7')
 for _col in P4_FEATURE_COLS:
@@ -149,11 +152,8 @@ else:
     print(f"PCA components not specified; will auto-select for {VAR_TARGET*100:.0f}% explained variance")
 
 # ==========================================================
-# 2. Train/test split (NO NORMALIZATION)
+# 2. Train/test split
 # ==========================================================
-# CRITICAL: Use RAW features everywhere for consistency
-# PCA will be fit on raw features, and DecisionTreeRegressor will map
-# raw features -> quantized PCA codes. No normalization needed.
 X_train = X
 X_test = X
 y_train = y
@@ -162,18 +162,27 @@ y_test = y
 print("Train size:", X_train.shape[0], "Test size:", X_test.shape[0])
 
 # ==========================================================
-# 3. PCA (auto-select components if not provided), fit on RAW train, apply to both
-# ===========================================================
+# 3. PCA on SCALED features (auto-select components if not provided)
+# ==========================================================
+# StandardScaler ensures all features contribute equally to PCA.
+# Without scaling, high-magnitude features (Duration ~ 10^11, MaxIAT ~ 10^10)
+# dominate the first few PCA components, burying discriminative features
+# (flags, ports, window sizes) that range 0–65535.
+#
+# The scaler is only used here (Python-side) to compute better PCA loadings.
+# The surrogate DT (step 5) still takes RAW features as input and learns
+# the full mapping: raw features -> quantised PCA codes.  P4 never scales.
+scaler = StandardScaler()
+X_train_scaled = scaler.fit_transform(X_train)
+X_test_scaled = scaler.transform(X_test)
+
 if USER_N_COMPONENTS is None:
-    # Use variance target to auto-select minimum components.
-    # sklearn PCA accepts a float in (0,1) as n_components and selects
-    # the smallest k that explains >= VAR_TARGET of total variance.
     pca = PCA(n_components=VAR_TARGET, random_state=42)
 else:
     pca = PCA(n_components=USER_N_COMPONENTS, random_state=42)
 
-PC_train = pca.fit_transform(X_train)   # Fit on RAW features
-PC_test = pca.transform(X_test)         # Transform RAW features
+PC_train = pca.fit_transform(X_train_scaled)
+PC_test = pca.transform(X_test_scaled)
 
 k = PC_train.shape[1]
 if USER_N_COMPONENTS is None:
@@ -231,7 +240,24 @@ for j, r2 in enumerate(r2_quant, 1):
     print(f"PC{j}: {r2}")
 
 # ==========================================================
-# 5. Surrogate regressor: RAW features -> quantized PCA codes.
+# 4b. Quantize raw features (mirrors P4 data-plane bit-slicing)
+# ==========================================================
+# The P4 data plane pre-quantizes wide features (>20 bits) before range-match
+# tables. We apply the SAME quantization here so the surrogate DT learns
+# splits on quantized values — ensuring P4 table entries match runtime values.
+print("\nApplying feature quantization (Tofino range-match compatibility)...")
+X_df_q = quantize_features(pd.DataFrame(X_train, columns=feature_cols))
+X_train_q = X_df_q.values
+X_df_q_test = quantize_features(pd.DataFrame(X_test, columns=feature_cols))
+X_test_q = X_df_q_test.values
+for feat, (shift, qbits) in FEATURE_QUANTIZE.items():
+    if feat in feature_cols:
+        idx = feature_cols.index(feat)
+        print(f"  {feat:20s}: {X_train[:, idx].max():>15} → {X_train_q[:, idx].max():>10}  "
+              f"(>> {shift}, {qbits}b)")
+
+# ==========================================================
+# 5. Surrogate regressor: QUANTIZED features -> quantized PCA codes.
 #    --surrogate dt   : single DT (baseline)
 #    --surrogate rf   : RF teacher → refined targets → DT student
 #    --surrogate gbr  : GBR teacher → refined targets → DT student
@@ -244,8 +270,8 @@ if SURROGATE == 'rf':
     teacher = RandomForestRegressor(
         n_estimators=20, max_depth=None, min_samples_leaf=1,
         max_features='sqrt', random_state=42, n_jobs=-1)
-    teacher.fit(X_train, PC_code_train)
-    refined_targets = np.clip(np.rint(teacher.predict(X_train)), 0, MAX_VAL).astype(int)
+    teacher.fit(X_train_q, PC_code_train)
+    refined_targets = np.clip(np.rint(teacher.predict(X_train_q)), 0, MAX_VAL).astype(int)
     print(f"RF teacher trained (20 trees). Distilling to DT student...")
 elif SURROGATE == 'gbr':
     # GBR teacher: sequentially corrects residuals → lowest MSE
@@ -253,9 +279,9 @@ elif SURROGATE == 'gbr':
     for j in range(k):
         gbr_j = GradientBoostingRegressor(
             n_estimators=100, max_depth=5, learning_rate=0.1, random_state=42)
-        gbr_j.fit(X_train, PC_code_train[:, j])
+        gbr_j.fit(X_train_q, PC_code_train[:, j])
         refined_targets[:, j] = np.clip(
-            np.rint(gbr_j.predict(X_train)), 0, MAX_VAL).astype(int)
+            np.rint(gbr_j.predict(X_train_q)), 0, MAX_VAL).astype(int)
     print(f"GBR teacher trained ({k} components × 100 trees). Distilling to DT student...")
 else:
     refined_targets = PC_code_train
@@ -267,16 +293,16 @@ tree = DecisionTreeRegressor(
     random_state=42
 )
 
-# Fit DT on (possibly refined) targets
-tree.fit(X_train, refined_targets)
+# Fit DT on quantized features with (possibly refined) targets
+tree.fit(X_train_q, refined_targets)
 
 print("\ntree.n_outputs_:", tree.n_outputs_)
 print("tree.tree_.value.shape:", tree.tree_.value.shape)  # (n_nodes, 1, k)
 
 # ==========================================================
-# 6. Build leaf -> representative PC_code vector (size k) using TRAIN (raw features)
+# 6. Build leaf -> representative PC_code vector (size k) using TRAIN (quantized features)
 # ==========================================================
-leaf_ids_train = tree.apply(X_train)   # leaf node id for each train sample
+leaf_ids_train = tree.apply(X_train_q)   # leaf node id for each train sample
 unique_leaf_ids = np.unique(leaf_ids_train)
 print("Number of leaf nodes:", unique_leaf_ids.shape[0])
 
@@ -303,8 +329,8 @@ def get_tree_codes(dt, leaf_to_codes, X, k):
         codes[i, :] = leaf_to_codes[leaf_id]
     return codes
 
-PC_code_tree_train = get_tree_codes(tree, leaf_to_codes, X_train, k)
-PC_code_tree_test = get_tree_codes(tree, leaf_to_codes, X_test, k)
+PC_code_tree_train = get_tree_codes(tree, leaf_to_codes, X_train_q, k)
+PC_code_tree_test = get_tree_codes(tree, leaf_to_codes, X_test_q, k)
 
 # Decode to approximate PCA
 PC_train_tree_approx = decode_pc(PC_code_tree_train, pc_min, pc_range_safe, MAX_VAL)
@@ -454,8 +480,11 @@ encoding_params = {
     "auto_selected": bool(USER_N_COMPONENTS is None),
     "variance_target": float(VAR_TARGET) if USER_N_COMPONENTS is None else None,
     # PCA transform matrix — kept for offline tooling / reproducibility.
+    # Note: PCA was fit on StandardScaler-transformed features.
     "transform_components": pca.components_.tolist(),  # shape (k, n_features)
     "transform_mean":       pca.mean_.tolist(),         # shape (n_features,)
+    "scaler_mean":          scaler.mean_.tolist(),       # StandardScaler mean (raw feature space)
+    "scaler_scale":         scaler.scale_.tolist(),      # StandardScaler std  (raw feature space)
 }
 
 params_path = os.path.join(TABLES_DIR, "encoding_params.json")
@@ -574,8 +603,9 @@ def write_pca_p4_commands(dt, feature_names, leaf_to_codes, k, max_val, feature_
 
             clause = minimize(new_path)
             clauses = format_feature_ranges(clause, feature_names, feature_max_map)
-            codes = leaf_to_codes[node_id]  # shape (k,)
-            
+            codes = leaf_to_codes[node_id]  # shape (k,) or scalar when k=1
+            codes = np.atleast_1d(codes)
+
             # Generate one table_add per PCA component
             for j in range(k):
                 code_val = int(codes[j])
@@ -598,12 +628,13 @@ def write_pca_p4_commands(dt, feature_names, leaf_to_codes, k, max_val, feature_
     with open(filename, "w") as f:
         dfs(0, [])
 
-# Build feature max values from the canonical P4 type widths in pipeline_utils.
-# Fallback to dataset max only for any feature not in the canonical dict.
+# Build feature max values from the QUANTIZED P4 type widths.
+# The surrogate DT was trained on quantized features, so the table entries
+# must use quantized max values for correct range boundaries.
 feature_max_map = {}
 for feat in feature_cols:
-    if feat in P4_FEATURE_MAX:
-        feature_max_map[feat] = P4_FEATURE_MAX[feat]
+    if feat in P4_FEATURE_MAX_QUANTIZED:
+        feature_max_map[feat] = P4_FEATURE_MAX_QUANTIZED[feat]
     else:
         feature_max_map[feat] = int(np.nanmax(X_df[feat])) if feat in X_df.columns else MAX_VAL
 
@@ -639,7 +670,7 @@ def write_if_rules_for_pca(dt, feature_names, leaf_to_codes, filename):
 
             condition_str = " AND ".join(clauses) if clauses else "TRUE"
 
-            codes = leaf_to_codes[node_id]  # shape (k,)
+            codes = np.atleast_1d(leaf_to_codes[node_id])  # shape (k,)
             assigns = " AND ".join(
                 [f"PC{j+1}_code = {int(codes[j])}" for j in range(len(codes))]
             )
@@ -670,14 +701,9 @@ print(f"IF rules (feature ranges -> PC*_code) saved to: {rules_if_path}")
 print()
 print("=" * 60)
 print("IMPORTANT: s1-commands.txt now contains ONLY PCA transform entries.")
-print("You MUST re-run the unified classifier pipeline next:")
+print("You MUST re-run the classifier pipeline next:")
 print("  python3 3_train_model.py --model-type dt")
 print("  python3 3_train_model.py --model-type rf")
-print("  python3 3_train_model.py --model-type xgb")
-print("  python3 3_train_model.py --model-type gb")
-print("  python3 3_train_model.py --model-type knn")
-print("  python3 3_train_model.py --model-type svm")
-print("  python3 3_train_model.py --model-type cnn")
 print("Then run the matching 4_generate_model_entries.py and 5_generating_p4_code.py steps.")
 print("Skipping the classifier-entry regeneration step will result in all flows")
 print("being classified as class 0 (Benign) because model table entries are absent.")

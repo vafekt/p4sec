@@ -17,12 +17,7 @@ const bit<8>  TYPE_ARP_PSEUDO = 253;  // pseudo proto used in flow key for ARP
 const bit<32> NB_ENTRIES = 65536;
 const bit<32> MAX_REGISTER_ENTRIES = 65536;
 
-#define BLOOM_FILTER_BIT_WIDTH 32
 #define FLOW_TIMEOUT 20000000000  // 20s in nanoseconds
-
-#define FIRST_INDEX ((bit<32>)0)
-#define WRITE_REG(r, v) r.write(FIRST_INDEX, v)
-#define READ_REG(r,  v) r.read(v, FIRST_INDEX)
 
 /*************************************************************************
 *********************** H E A D E R S  ***********************************
@@ -36,7 +31,7 @@ typedef bit<48> iat_t;
 typedef bit<48> duration_t;
 typedef bit<16> port_t;
 typedef bit<32> bytes_t;
-typedef bit<32> pca_code_t;   // Quantized code (PC)
+typedef bit<16> pca_code_t;   // Quantized code (LD)
 typedef bit<8>  inference_result_t;
 
 header ethernet_t {
@@ -144,26 +139,18 @@ struct metadata {
     bit<32>    flags_psh;
     bit<16>    init_fwd_win;
 
-    // PC transformed features (quantized)
-    pca_code_t pc1_code;
-    pca_code_t pc2_code;
-    pca_code_t pc3_code;
-    pca_code_t pc4_code;
-    pca_code_t pc5_code;
-    pca_code_t pc6_code;
-    pca_code_t pc7_code;
-    pca_code_t pc8_code;
-    pca_code_t pc9_code;
-    pca_code_t pc10_code;
+    // LD transformed features (quantized)
+    pca_code_t ld1_code;
+    pca_code_t ld2_code;
+    pca_code_t ld3_code;
+    pca_code_t ld4_code;
+    pca_code_t ld5_code;
 
     // Classification result
     inference_result_t ml_result;
 
     // Timestamp
     bit<48> ingress_timestamp;
-
-    // RF packed vote field (4 trees x 3 bits)
-    bit<12> rf_votes;
 }
 
 struct headers {
@@ -199,16 +186,11 @@ struct digest_t {
     bit<16>    bwd_max_pkt_len;
     bit<32>    flags_psh;
     bit<16>    init_fwd_win;
-    pca_code_t pc1_code;
-    pca_code_t pc2_code;
-    pca_code_t pc3_code;
-    pca_code_t pc4_code;
-    pca_code_t pc5_code;
-    pca_code_t pc6_code;
-    pca_code_t pc7_code;
-    pca_code_t pc8_code;
-    pca_code_t pc9_code;
-    pca_code_t pc10_code;
+    pca_code_t ld1_code;
+    pca_code_t ld2_code;
+    pca_code_t ld3_code;
+    pca_code_t ld4_code;
+    pca_code_t ld5_code;
 
     inference_result_t ml_result;
 }
@@ -686,12 +668,12 @@ control MyIngress(inout headers hdr,
     }
 
 
-    // PC component 1 transformation
-    action set_pc1_code(pca_code_t code) {
-        meta.pc1_code = code;
+    // LD component 1 transformation
+    action set_ld1_code(pca_code_t code) {
+        meta.ld1_code = code;
     }
 
-    table pca_component1 {
+    table lda_component1 {
         key = {
             meta.protocol            : range;
             meta.canon_src_port      : range;
@@ -715,18 +697,18 @@ control MyIngress(inout headers hdr,
             meta.init_fwd_win        : range;
         }
         actions = {
-            set_pc1_code;
+            set_ld1_code;
             NoAction;
         }
         size = NB_ENTRIES;
     }
 
-    // PC component 2 transformation
-    action set_pc2_code(pca_code_t code) {
-        meta.pc2_code = code;
+    // LD component 2 transformation
+    action set_ld2_code(pca_code_t code) {
+        meta.ld2_code = code;
     }
 
-    table pca_component2 {
+    table lda_component2 {
         key = {
             meta.protocol            : range;
             meta.canon_src_port      : range;
@@ -750,18 +732,18 @@ control MyIngress(inout headers hdr,
             meta.init_fwd_win        : range;
         }
         actions = {
-            set_pc2_code;
+            set_ld2_code;
             NoAction;
         }
         size = NB_ENTRIES;
     }
 
-    // PC component 3 transformation
-    action set_pc3_code(pca_code_t code) {
-        meta.pc3_code = code;
+    // LD component 3 transformation
+    action set_ld3_code(pca_code_t code) {
+        meta.ld3_code = code;
     }
 
-    table pca_component3 {
+    table lda_component3 {
         key = {
             meta.protocol            : range;
             meta.canon_src_port      : range;
@@ -785,18 +767,18 @@ control MyIngress(inout headers hdr,
             meta.init_fwd_win        : range;
         }
         actions = {
-            set_pc3_code;
+            set_ld3_code;
             NoAction;
         }
         size = NB_ENTRIES;
     }
 
-    // PC component 4 transformation
-    action set_pc4_code(pca_code_t code) {
-        meta.pc4_code = code;
+    // LD component 4 transformation
+    action set_ld4_code(pca_code_t code) {
+        meta.ld4_code = code;
     }
 
-    table pca_component4 {
+    table lda_component4 {
         key = {
             meta.protocol            : range;
             meta.canon_src_port      : range;
@@ -820,18 +802,18 @@ control MyIngress(inout headers hdr,
             meta.init_fwd_win        : range;
         }
         actions = {
-            set_pc4_code;
+            set_ld4_code;
             NoAction;
         }
         size = NB_ENTRIES;
     }
 
-    // PC component 5 transformation
-    action set_pc5_code(pca_code_t code) {
-        meta.pc5_code = code;
+    // LD component 5 transformation
+    action set_ld5_code(pca_code_t code) {
+        meta.ld5_code = code;
     }
 
-    table pca_component5 {
+    table lda_component5 {
         key = {
             meta.protocol            : range;
             meta.canon_src_port      : range;
@@ -855,182 +837,7 @@ control MyIngress(inout headers hdr,
             meta.init_fwd_win        : range;
         }
         actions = {
-            set_pc5_code;
-            NoAction;
-        }
-        size = NB_ENTRIES;
-    }
-
-    // PC component 6 transformation
-    action set_pc6_code(pca_code_t code) {
-        meta.pc6_code = code;
-    }
-
-    table pca_component6 {
-        key = {
-            meta.protocol            : range;
-            meta.canon_src_port      : range;
-            meta.canon_dst_port      : range;
-            meta.duration            : range;
-            meta.max_iat             : range;
-            meta.urg_count           : range;
-            meta.fwd_pkt_count       : range;
-            meta.bwd_pkt_count       : range;
-            meta.fwd_bytes           : range;
-            meta.bwd_bytes           : range;
-            meta.max_win_size        : range;
-            meta.flags_syn           : range;
-            meta.flags_ack           : range;
-            meta.flags_fin           : range;
-            meta.flags_rst           : range;
-            meta.min_iat             : range;
-            meta.fwd_max_pkt_len     : range;
-            meta.bwd_max_pkt_len     : range;
-            meta.flags_psh           : range;
-            meta.init_fwd_win        : range;
-        }
-        actions = {
-            set_pc6_code;
-            NoAction;
-        }
-        size = NB_ENTRIES;
-    }
-
-    // PC component 7 transformation
-    action set_pc7_code(pca_code_t code) {
-        meta.pc7_code = code;
-    }
-
-    table pca_component7 {
-        key = {
-            meta.protocol            : range;
-            meta.canon_src_port      : range;
-            meta.canon_dst_port      : range;
-            meta.duration            : range;
-            meta.max_iat             : range;
-            meta.urg_count           : range;
-            meta.fwd_pkt_count       : range;
-            meta.bwd_pkt_count       : range;
-            meta.fwd_bytes           : range;
-            meta.bwd_bytes           : range;
-            meta.max_win_size        : range;
-            meta.flags_syn           : range;
-            meta.flags_ack           : range;
-            meta.flags_fin           : range;
-            meta.flags_rst           : range;
-            meta.min_iat             : range;
-            meta.fwd_max_pkt_len     : range;
-            meta.bwd_max_pkt_len     : range;
-            meta.flags_psh           : range;
-            meta.init_fwd_win        : range;
-        }
-        actions = {
-            set_pc7_code;
-            NoAction;
-        }
-        size = NB_ENTRIES;
-    }
-
-    // PC component 8 transformation
-    action set_pc8_code(pca_code_t code) {
-        meta.pc8_code = code;
-    }
-
-    table pca_component8 {
-        key = {
-            meta.protocol            : range;
-            meta.canon_src_port      : range;
-            meta.canon_dst_port      : range;
-            meta.duration            : range;
-            meta.max_iat             : range;
-            meta.urg_count           : range;
-            meta.fwd_pkt_count       : range;
-            meta.bwd_pkt_count       : range;
-            meta.fwd_bytes           : range;
-            meta.bwd_bytes           : range;
-            meta.max_win_size        : range;
-            meta.flags_syn           : range;
-            meta.flags_ack           : range;
-            meta.flags_fin           : range;
-            meta.flags_rst           : range;
-            meta.min_iat             : range;
-            meta.fwd_max_pkt_len     : range;
-            meta.bwd_max_pkt_len     : range;
-            meta.flags_psh           : range;
-            meta.init_fwd_win        : range;
-        }
-        actions = {
-            set_pc8_code;
-            NoAction;
-        }
-        size = NB_ENTRIES;
-    }
-
-    // PC component 9 transformation
-    action set_pc9_code(pca_code_t code) {
-        meta.pc9_code = code;
-    }
-
-    table pca_component9 {
-        key = {
-            meta.protocol            : range;
-            meta.canon_src_port      : range;
-            meta.canon_dst_port      : range;
-            meta.duration            : range;
-            meta.max_iat             : range;
-            meta.urg_count           : range;
-            meta.fwd_pkt_count       : range;
-            meta.bwd_pkt_count       : range;
-            meta.fwd_bytes           : range;
-            meta.bwd_bytes           : range;
-            meta.max_win_size        : range;
-            meta.flags_syn           : range;
-            meta.flags_ack           : range;
-            meta.flags_fin           : range;
-            meta.flags_rst           : range;
-            meta.min_iat             : range;
-            meta.fwd_max_pkt_len     : range;
-            meta.bwd_max_pkt_len     : range;
-            meta.flags_psh           : range;
-            meta.init_fwd_win        : range;
-        }
-        actions = {
-            set_pc9_code;
-            NoAction;
-        }
-        size = NB_ENTRIES;
-    }
-
-    // PC component 10 transformation
-    action set_pc10_code(pca_code_t code) {
-        meta.pc10_code = code;
-    }
-
-    table pca_component10 {
-        key = {
-            meta.protocol            : range;
-            meta.canon_src_port      : range;
-            meta.canon_dst_port      : range;
-            meta.duration            : range;
-            meta.max_iat             : range;
-            meta.urg_count           : range;
-            meta.fwd_pkt_count       : range;
-            meta.bwd_pkt_count       : range;
-            meta.fwd_bytes           : range;
-            meta.bwd_bytes           : range;
-            meta.max_win_size        : range;
-            meta.flags_syn           : range;
-            meta.flags_ack           : range;
-            meta.flags_fin           : range;
-            meta.flags_rst           : range;
-            meta.min_iat             : range;
-            meta.fwd_max_pkt_len     : range;
-            meta.bwd_max_pkt_len     : range;
-            meta.flags_psh           : range;
-            meta.init_fwd_win        : range;
-        }
-        actions = {
-            set_pc10_code;
+            set_ld5_code;
             NoAction;
         }
         size = NB_ENTRIES;
@@ -1041,111 +848,20 @@ control MyIngress(inout headers hdr,
         meta.ml_result = val;
     }
 
-    action set_rf_tree_0_vote(bit<3> vote) {
-        meta.rf_votes[2:0] = vote;
-    }
-
-    table rf_tree_0 {
+    // Decision Tree classification
+    table ml_code {
         key = {
-            meta.pc1_code                 : range;
-            meta.pc2_code                 : range;
-            meta.pc3_code                 : range;
-            meta.pc4_code                 : range;
-            meta.pc5_code                 : range;
-            meta.pc6_code                 : range;
-            meta.pc7_code                 : range;
-            meta.pc8_code                 : range;
-            meta.pc9_code                 : range;
-            meta.pc10_code                : range;
-        }
-        actions = {
-            set_rf_tree_0_vote;
-            NoAction;
-        }
-        size = NB_ENTRIES;
-    }
-
-    action set_rf_tree_1_vote(bit<3> vote) {
-        meta.rf_votes[5:3] = vote;
-    }
-
-    table rf_tree_1 {
-        key = {
-            meta.pc1_code                 : range;
-            meta.pc2_code                 : range;
-            meta.pc3_code                 : range;
-            meta.pc4_code                 : range;
-            meta.pc5_code                 : range;
-            meta.pc6_code                 : range;
-            meta.pc7_code                 : range;
-            meta.pc8_code                 : range;
-            meta.pc9_code                 : range;
-            meta.pc10_code                : range;
-        }
-        actions = {
-            set_rf_tree_1_vote;
-            NoAction;
-        }
-        size = NB_ENTRIES;
-    }
-
-    action set_rf_tree_2_vote(bit<3> vote) {
-        meta.rf_votes[8:6] = vote;
-    }
-
-    table rf_tree_2 {
-        key = {
-            meta.pc1_code                 : range;
-            meta.pc2_code                 : range;
-            meta.pc3_code                 : range;
-            meta.pc4_code                 : range;
-            meta.pc5_code                 : range;
-            meta.pc6_code                 : range;
-            meta.pc7_code                 : range;
-            meta.pc8_code                 : range;
-            meta.pc9_code                 : range;
-            meta.pc10_code                : range;
-        }
-        actions = {
-            set_rf_tree_2_vote;
-            NoAction;
-        }
-        size = NB_ENTRIES;
-    }
-
-    action set_rf_tree_3_vote(bit<3> vote) {
-        meta.rf_votes[11:9] = vote;
-    }
-
-    table rf_tree_3 {
-        key = {
-            meta.pc1_code                 : range;
-            meta.pc2_code                 : range;
-            meta.pc3_code                 : range;
-            meta.pc4_code                 : range;
-            meta.pc5_code                 : range;
-            meta.pc6_code                 : range;
-            meta.pc7_code                 : range;
-            meta.pc8_code                 : range;
-            meta.pc9_code                 : range;
-            meta.pc10_code                : range;
-        }
-        actions = {
-            set_rf_tree_3_vote;
-            NoAction;
-        }
-        size = NB_ENTRIES;
-    }
-
-    table rf_vote_classify {
-        key = {
-            meta.rf_votes : exact;
+            meta.ld1_code                 : range;
+            meta.ld2_code                 : range;
+            meta.ld3_code                 : range;
+            meta.ld4_code                 : range;
+            meta.ld5_code                 : range;
         }
         actions = {
             set_result;
             NoAction;
         }
-        size = 1296;
+        size = NB_ENTRIES;
     }
 
     apply {
@@ -1171,25 +887,15 @@ control MyIngress(inout headers hdr,
             if (meta.flow_ended == 1w1 &&
                     (meta.fwd_pkt_count + meta.bwd_pkt_count) >= 2) {
 
-                // Apply PC transformations
-                pca_component1.apply();
-                pca_component2.apply();
-                pca_component3.apply();
-                pca_component4.apply();
-                pca_component5.apply();
-                pca_component6.apply();
-                pca_component7.apply();
-                pca_component8.apply();
-                pca_component9.apply();
-                pca_component10.apply();
+                // Apply LD transformations
+                lda_component1.apply();
+                lda_component2.apply();
+                lda_component3.apply();
+                lda_component4.apply();
+                lda_component5.apply();
 
                 // Apply classifier
-                meta.rf_votes = 12w0;
-                rf_tree_0.apply();
-                rf_tree_1.apply();
-                rf_tree_2.apply();
-                rf_tree_3.apply();
-                rf_vote_classify.apply();
+                ml_code.apply();
 
                 // Send digest
                 digest<digest_t>(1, {
@@ -1215,16 +921,11 @@ control MyIngress(inout headers hdr,
                     meta.bwd_max_pkt_len,
                     meta.flags_psh,
                     meta.init_fwd_win,
-                    meta.pc1_code,
-                    meta.pc2_code,
-                    meta.pc3_code,
-                    meta.pc4_code,
-                    meta.pc5_code,
-                    meta.pc6_code,
-                    meta.pc7_code,
-                    meta.pc8_code,
-                    meta.pc9_code,
-                    meta.pc10_code,
+                    meta.ld1_code,
+                    meta.ld2_code,
+                    meta.ld3_code,
+                    meta.ld4_code,
+                    meta.ld5_code,
                     meta.ml_result
                 });
 

@@ -5,44 +5,45 @@ Extracts flow-based features from PCAP files or live network capture.
 
 Output columns per flow (bidirectional, canonical key):
 
-  Flow identifier columns (written to CSV but excluded from ML training by default):
-    SrcIP     - Canonical source IP   (always excluded; not a P4 match feature)
-    DstIP     - Canonical destination IP (always excluded; not a P4 match feature)
-
-  ML feature columns — all 20 match EXACTLY what the P4 switch computes and
+  ML feature columns — all 22 match EXACTLY what the P4 switch computes and
   sends as a digest when a flow ends (same names, same order).
+  SrcIP, DstIP are stored as 32-bit integer representations of the IP address.
+  SrcMAC, DstMAC are stored as 48-bit integer representations.
   Protocol, SrcPort, DstPort are available as ML features and are selectable
-  by the Feature Selection step (step 2); PCA/LDA/UMAP operate on the 17
+  by the Feature Selection step (step 2); PCA/LDA/UMAP operate on the
   traffic-statistic features below.
-    Protocol        - IP protocol number (6=TCP, 17=UDP, 1=ICMP, 253=ARP pseudo)
-    SrcPort         - Canonical source port (bit<16>)
-    DstPort         - Canonical destination port (bit<16>) — strong classification signal
-    Duration        - Time from first to last packet (nanoseconds)
-    MaxIAT          - Maximum inter-arrival time across consecutive packets (ns)
-    UrgCount        - Number of packets with URG flag set
-    FwdPktCount     - Packet count in forward (canonical) direction
-    BwdPktCount     - Packet count in backward (reverse) direction
-    FwdBytes        - Total bytes in forward direction
-    BwdBytes        - Total bytes in backward direction
-    MaxWinSize      - Maximum TCP window size observed in flow (0 for non-TCP)
-    FlagsSyn        - Number of packets with SYN flag set (0 for non-TCP)
-    FlagsAck        - Number of packets with ACK flag set (0 for non-TCP)
-    FlagsFin        - Number of packets with FIN flag set (0 for non-TCP)
-    FlagsRst        - Number of packets with RST flag set (0 for non-TCP)
-    MinIAT          - Minimum inter-arrival time across consecutive packets (ns)
-    FwdMaxPktLen    - Maximum packet length in forward direction (bytes)
-    BwdMaxPktLen    - Maximum packet length in backward direction (bytes)
-    FlagsPsh        - Number of packets with PSH flag set (0 for non-TCP)
-    InitFwdWinBytes - TCP window size of the first forward-direction packet (0 for non-TCP)
+    SrcIP              - Canonical source IP as 32-bit integer
+    DstIP              - Canonical destination IP as 32-bit integer
+    SrcMAC             - Canonical source MAC as 48-bit integer
+    DstMAC             - Canonical destination MAC as 48-bit integer
+    Protocol           - IP protocol number (6=TCP, 17=UDP, 1=ICMP, 253=ARP pseudo)
+    SrcPort            - Canonical source port (bit<16>)
+    DstPort            - Canonical destination port (bit<16>)
+    Duration           - Time from first to last packet (nanoseconds)
+    MaxIAT             - Maximum inter-arrival time across consecutive packets (ns)
+    FwdPktCount        - Packet count in forward (canonical) direction
+    BwdPktCount        - Packet count in backward (reverse) direction
+    FwdBytes           - Total bytes in forward direction
+    BwdBytes           - Total bytes in backward direction
+    MaxWinSize         - Maximum TCP window size observed in flow (0 for non-TCP)
+    FlagsSyn           - Number of packets with SYN flag set (0 for non-TCP)
+    FlagsAck           - Number of packets with ACK flag set (0 for non-TCP)
+    FlagsFin           - Number of packets with FIN flag set (0 for non-TCP)
+    FlagsRst           - Number of packets with RST flag set (0 for non-TCP)
+    FwdMaxPktLen       - Maximum packet length in forward direction (bytes)
+    BwdMaxPktLen       - Maximum packet length in backward direction (bytes)
+    FlagsPsh           - Number of packets with PSH flag set (0 for non-TCP)
+    InitFwdWinBytes    - TCP window size of the first forward-direction packet (0 for non-TCP)
 
 NOTE: Output is one row PER FLOW, emitted when a flow ends:
   - TCP FIN or RST flag is seen (flow closed)
-  - Flow has been idle for 20 s (timeout — matches P4 FLOW_TIMEOUT)
+  - Flow has been idle for 20 s (inactive timeout — matches P4 FLOW_TIMEOUT)
+  - Flow has been active for 60 s (active timeout — matches P4 ACTIVE_TIMEOUT)
   - End of PCAP file
 This mirrors P4's classify-and-digest behavior which is gated on
 meta.flow_ended == 1, so training data and live inference see the
 same complete-flow feature vectors.
-Only flows with at least 2 packets are written (Duration > 0).
+Flows with 1 or more packets are written (matches Zeek, NetFlow, CICFlowMeter).
 
 Direction convention (mirrors P4 compute_flow_hash() exactly):
   "Forward"  (is_reverse=0) = packets whose src_ip is the numerically smaller IP
@@ -65,7 +66,8 @@ from decimal import Decimal
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-FLOW_TIMEOUT_NS = 20 * 1_000_000_000  # 20 seconds in nanoseconds (matches P4 FLOW_TIMEOUT)
+FLOW_TIMEOUT_NS = 20 * 1_000_000_000        # 20s idle timeout in nanoseconds (matches P4 FLOW_TIMEOUT)
+ACTIVE_TIMEOUT_NS = 60 * 1_000_000_000      # 60s active timeout — force-export long-lived flows
 MAX_REGISTER_ENTRIES = 65536            # matches P4 MAX_REGISTER_ENTRIES (CRC16 → 65536 slots)
 
 # CRC functions matching BMv2's HashAlgorithm.crc16 / crc32
@@ -88,6 +90,7 @@ def _compute_flow_hashes(c_src_ip, c_dst_ip, c_src_port, c_dst_port, proto):
     h32 = _crc32_fn(data) % MAX_REGISTER_ENTRIES
     return h16, h32
 
+
 LOGO = """---------------------------------------------------------------------------
 ------PPPPPPPP------4444------SSSSSSSS------EEEEEEEE------CCCCCCCC---------
 ------PP-----PP----44--44----SS-------------EE------------CC---------------
@@ -108,27 +111,37 @@ class P4secArgumentParser(argparse.ArgumentParser):
 
 
 # ---------------------------------------------------------------------------
+# MAC address helper
+# ---------------------------------------------------------------------------
+
+def mac_to_int(mac_str):
+    """Convert MAC address string 'aa:bb:cc:dd:ee:ff' to 48-bit integer."""
+    return int(mac_str.replace(':', '').replace('-', ''), 16)
+
+
+# ---------------------------------------------------------------------------
 # Canonical key helper — MUST match P4 compute_flow_hash() logic exactly
 # ---------------------------------------------------------------------------
 
-def make_canonical_key(src_ip, src_port, dst_ip, dst_port, protocol):
+def make_canonical_key(src_ip, src_port, dst_ip, dst_port, protocol,
+                       src_mac='00:00:00:00:00:00', dst_mac='00:00:00:00:00:00'):
     """
     Normalise a 5-tuple so that both directions of a flow map to the same key.
     Returns (canon_src_ip, canon_src_port, canon_dst_ip, canon_dst_port,
-             protocol, is_reverse).
+             protocol, is_reverse, canon_src_mac, canon_dst_mac).
     """
     src_int = int(ipaddress.ip_address(src_ip))
     dst_int = int(ipaddress.ip_address(dst_ip))
 
     if src_int < dst_int:
-        return src_ip, src_port, dst_ip, dst_port, protocol, False
+        return src_ip, src_port, dst_ip, dst_port, protocol, False, src_mac, dst_mac
     elif src_int > dst_int:
-        return dst_ip, dst_port, src_ip, src_port, protocol, True
+        return dst_ip, dst_port, src_ip, src_port, protocol, True, dst_mac, src_mac
     else:
         if src_port <= dst_port:
-            return src_ip, src_port, dst_ip, dst_port, protocol, False
+            return src_ip, src_port, dst_ip, dst_port, protocol, False, src_mac, dst_mac
         else:
-            return dst_ip, dst_port, src_ip, src_port, protocol, True
+            return dst_ip, dst_port, src_ip, src_port, protocol, True, dst_mac, src_mac
 
 
 # ---------------------------------------------------------------------------
@@ -140,13 +153,14 @@ def _finalize_flow(flow_key, flow_data, label):
     Convert completed flow state into a feature dict.
     Mirrors P4's classify-and-digest step that runs when flow_ended==1.
     Only emits a row when the flow has at least 2 packets (Duration > 0).
-    flow_key = (canon_src_ip, canon_src_port, canon_dst_ip, canon_dst_port, protocol)
+    flow_key = (canon_src_ip, canon_src_port, canon_dst_ip, canon_dst_port,
+                protocol, canon_src_mac, canon_dst_mac)
     """
     timestamps = flow_data['timestamps']
-    if len(timestamps) < 2:
+    if len(timestamps) < 1:
         return None
 
-    duration_ns = timestamps[-1] - timestamps[0]
+    duration_ns = timestamps[-1] - timestamps[0] if len(timestamps) >= 2 else 0
 
     # MaxIAT: maximum consecutive inter-arrival time (mirrors P4 reg_max_iat)
     max_iat_ns = 0
@@ -155,17 +169,22 @@ def _finalize_flow(flow_key, flow_data, label):
         if iat > max_iat_ns:
             max_iat_ns = iat
 
+    src_ip_int = int(ipaddress.ip_address(flow_key[0]))
+    dst_ip_int = int(ipaddress.ip_address(flow_key[2]))
+    src_mac_int = mac_to_int(flow_key[5])
+    dst_mac_int = mac_to_int(flow_key[6])
+
     feature = {
-        # --- Identifier columns (not ML features) ---
-        'SrcIP':       flow_key[0],
-        'DstIP':       flow_key[2],
+        'SrcIP':       src_ip_int,
+        'DstIP':       dst_ip_int,
+        'SrcMAC':      src_mac_int,
+        'DstMAC':      dst_mac_int,
         'SrcPort':     flow_key[1],
         'DstPort':     flow_key[3],
         'Protocol':    flow_key[4],
         # --- ML features in P4 table key order ---
         'Duration':    duration_ns,
         'MaxIAT':      max_iat_ns,
-        'UrgCount':    flow_data['urg_count'],
         'FwdPktCount': flow_data['fwd_pkt_count'],
         'BwdPktCount': flow_data['bwd_pkt_count'],
         'FwdBytes':    flow_data['fwd_bytes'],
@@ -175,7 +194,6 @@ def _finalize_flow(flow_key, flow_data, label):
         'FlagsAck':        flow_data['flags_ack_count'],
         'FlagsFin':        flow_data['flags_fin_count'],
         'FlagsRst':        flow_data['flags_rst_count'],
-        'MinIAT':          flow_data['min_iat'],
         'FwdMaxPktLen':    flow_data['fwd_max_pkt_len'],
         'BwdMaxPktLen':    flow_data['bwd_max_pkt_len'],
         'FlagsPsh':        flow_data['flags_psh_count'],
@@ -192,7 +210,6 @@ def _empty_flow_state():
     """
     return {
         'timestamps':        [],
-        'urg_count':         0,
         'fwd_pkt_count':     0,
         'bwd_pkt_count':     0,
         'fwd_bytes':         0,
@@ -202,8 +219,6 @@ def _empty_flow_state():
         'flags_ack_count':   0,  # count of packets with ACK set
         'flags_fin_count':   0,  # count of packets with FIN set (also triggers flow end)
         'flags_rst_count':   0,  # count of packets with RST set (also triggers flow end)
-        # New features
-        'min_iat':           0,  # 0 = uninitialised (mirrors P4 register init)
         'fwd_max_pkt_len':   0,
         'bwd_max_pkt_len':   0,
         'flags_psh_count':   0,
@@ -216,11 +231,13 @@ def _update_flow_state(state, timestamp_ns, pkt_len, is_reverse,
                         flags_psh, win_size):
     """Accumulate a single packet into the flow state. Returns True if the flow
     should be finalized after this packet (FIN or RST seen), False otherwise."""
-    # ── MinIAT / timing ─────────────────────────────────────────────────
-    if state['timestamps']:
-        iat = timestamp_ns - state['timestamps'][-1]
-        if state['min_iat'] == 0 or iat < state['min_iat']:
-            state['min_iat'] = iat
+    # ── Quantize timestamp to microsecond resolution ────────────────────
+    # BMv2's ingress_global_timestamp is in microseconds; P4 converts via
+    # current_time = current_time_us * 1000.  All P4 timestamps are therefore
+    # multiples of 1000 ns.  Truncate here so Duration / MaxIAT
+    # in the training data match what the P4 switch will actually compute.
+    timestamp_ns = (timestamp_ns // 1000) * 1000
+
     state['timestamps'].append(timestamp_ns)
 
     # ── Per-direction counters ────────────────────────────────────────
@@ -241,7 +258,6 @@ def _update_flow_state(state, timestamp_ns, pkt_len, is_reverse,
     # ── Window / flag counts ─────────────────────────────────────────
     if win_size > state['max_win_size']:
         state['max_win_size'] = win_size
-    state['urg_count']       += flags_urg
     state['flags_syn_count'] += flags_syn
     state['flags_ack_count'] += flags_ack
     state['flags_fin_count'] += flags_fin
@@ -277,6 +293,14 @@ def _extract_packet_fields(packet):
       - ARP  (etherType 0x0806) — uses spa/tpa as IPs, oper as pseudo src_port,
             protocol encoded as 253 (reserved) to keep the 5-tuple schema intact
     """
+    # ── Extract Ethernet MAC addresses ─────────────────────────────────
+    try:
+        src_mac = packet.eth.src
+        dst_mac = packet.eth.dst
+    except AttributeError:
+        src_mac = '00:00:00:00:00:00'
+        dst_mac = '00:00:00:00:00:00'
+
     # ── ARP (no IP header, carried directly over Ethernet) ───────────────
     if hasattr(packet, 'arp') and not hasattr(packet, 'ip'):
         try:
@@ -290,6 +314,7 @@ def _extract_packet_fields(packet):
             return None
         return {
             'src_ip': src_ip, 'dst_ip': dst_ip, 'protocol': 253,
+            'src_mac': src_mac, 'dst_mac': dst_mac,
             'src_port': src_port, 'dst_port': dst_port,
             'flags_syn': 0, 'flags_ack': 0, 'flags_fin': 0,
             'flags_rst': 0, 'flags_urg': 0, 'flags_psh': 0,
@@ -338,6 +363,7 @@ def _extract_packet_fields(packet):
 
     return {
         'src_ip': src_ip, 'dst_ip': dst_ip, 'protocol': protocol,
+        'src_mac': src_mac, 'dst_mac': dst_mac,
         'src_port': src_port, 'dst_port': dst_port,
         'flags_syn': flags_syn, 'flags_ack': flags_ack,
         'flags_fin': flags_fin, 'flags_rst': flags_rst,
@@ -357,7 +383,7 @@ def _extract_packet_fields(packet):
 # PCAP file extraction
 # ---------------------------------------------------------------------------
 
-def extract_features_from_pcap(pcap_path, label=None):
+def extract_features_from_pcap(pcap_path, label=None, eof_flush=False):
     features_list = []
     import asyncio
     try:
@@ -377,6 +403,8 @@ def extract_features_from_pcap(pcap_path, label=None):
     processed_count = 0
     skipped_proto   = 0
     collision_count = 0
+    scan_idx        = 0   # scan_and_drain pointer (matches P4 reg_scan_idx)
+    drain_count     = 0
 
     try:
         for packet in cap:
@@ -387,10 +415,12 @@ def extract_features_from_pcap(pcap_path, label=None):
                     skipped_proto += 1
                     continue
 
-                c_src_ip, c_src_port, c_dst_ip, c_dst_port, proto, is_reverse = \
+                c_src_ip, c_src_port, c_dst_ip, c_dst_port, proto, is_reverse, \
+                    c_src_mac, c_dst_mac = \
                     make_canonical_key(fields['src_ip'], fields['src_port'],
                                        fields['dst_ip'], fields['dst_port'],
-                                       fields['protocol'])
+                                       fields['protocol'],
+                                       fields['src_mac'], fields['dst_mac'])
 
                 h16, h32 = _compute_flow_hashes(c_src_ip, c_dst_ip,
                                                  c_src_port, c_dst_port, proto)
@@ -401,9 +431,12 @@ def extract_features_from_pcap(pcap_path, label=None):
                     collision_count += 1
                     continue
 
+                src_ip_int = int(ipaddress.ip_address(c_src_ip))
+                dst_ip_int = int(ipaddress.ip_address(c_dst_ip))
+
                 state = flow_states[h16]
 
-                # Timeout: finalize the previous flow, then reset
+                # Idle timeout: finalize the previous flow, then reset
                 if state is not None and state['timestamps'] and \
                         (fields['timestamp_ns'] - state['timestamps'][-1]) > FLOW_TIMEOUT_NS:
                     feat = _finalize_flow(flow_keys[h16], state, label)
@@ -411,14 +444,25 @@ def extract_features_from_pcap(pcap_path, label=None):
                         features_list.append(feat)
                     # Reset for new flow (P4 does NOT clear bf2[old_h32] on timeout)
                     flow_states[h16] = _empty_flow_state()
-                    flow_keys[h16] = (c_src_ip, c_src_port, c_dst_ip, c_dst_port, proto)
+                    flow_keys[h16] = (c_src_ip, c_src_port, c_dst_ip, c_dst_port, proto, c_src_mac, c_dst_mac)
+                    bf1[h16] = 1
+                    bf2[h32] = 1
+                    reg_h2[h16] = h32
+                # Active timeout: flow running longer than 60s — export and restart
+                elif state is not None and state['timestamps'] and \
+                        (fields['timestamp_ns'] - state['timestamps'][0]) > ACTIVE_TIMEOUT_NS:
+                    feat = _finalize_flow(flow_keys[h16], state, label)
+                    if feat:
+                        features_list.append(feat)
+                    flow_states[h16] = _empty_flow_state()
+                    flow_keys[h16] = (c_src_ip, c_src_port, c_dst_ip, c_dst_port, proto, c_src_mac, c_dst_mac)
                     bf1[h16] = 1
                     bf2[h32] = 1
                     reg_h2[h16] = h32
                 elif state is None:
                     # Empty slot — start new flow
                     flow_states[h16] = _empty_flow_state()
-                    flow_keys[h16] = (c_src_ip, c_src_port, c_dst_ip, c_dst_port, proto)
+                    flow_keys[h16] = (c_src_ip, c_src_port, c_dst_ip, c_dst_port, proto, c_src_mac, c_dst_mac)
                     bf1[h16] = 1
                     bf2[h32] = 1
                     reg_h2[h16] = h32
@@ -442,6 +486,14 @@ def extract_features_from_pcap(pcap_path, label=None):
                     bf2[reg_h2[h16]] = 0
                     reg_h2[h16] = 0
 
+                # ── scan_and_drain DISABLED during normal traffic ──
+                # P4 only runs scan_and_drain on drain-trigger packets
+                # (src_ip=10.255.255.254).  During normal pcap processing,
+                # flows end via FIN/RST or timeout-on-arrival only.
+                # Remaining flows are exported by eof_flush (equivalent
+                # to P4's drain triggers).  This makes flow boundaries
+                # deterministic and reproducible between Python and P4.
+
                 processed_count += 1
                 if processed_count % 1000 == 0:
                     active = sum(1 for s in flow_states if s is not None)
@@ -460,17 +512,28 @@ def extract_features_from_pcap(pcap_path, label=None):
     if collision_count > 0:
         logger.info(f"Hash collisions: {collision_count} packets skipped "
                     f"(matches P4 bloom filter behavior)")
+    if drain_count > 0:
+        logger.info(f"Scan-and-drain: {drain_count} stale flows exported "
+                    f"(matches P4 scan_and_drain action)")
 
-    # Finalize all open flows at end of file (mirrors controller reading
-    # registers at capture end, or flow aging in production)
-    for h16 in range(MAX_REGISTER_ENTRIES):
-        if flow_states[h16] is not None:
-            feat = _finalize_flow(flow_keys[h16], flow_states[h16], label)
-            if feat:
-                features_list.append(feat)
+    # EOF flush: finalize remaining open flows.
+    # Default OFF (--eof-flush to enable) — P4 switch cannot know when the PCAP
+    # ends so flows that are still active remain in registers indefinitely.
+    # Disabling EOF flush makes training data match P4 inference exactly.
+    eof_flushed = 0
+    if eof_flush:
+        for h16 in range(MAX_REGISTER_ENTRIES):
+            if flow_states[h16] is not None:
+                feat = _finalize_flow(flow_keys[h16], flow_states[h16], label)
+                if feat:
+                    features_list.append(feat)
+                    eof_flushed += 1
 
+    active_remaining = sum(1 for s in flow_states if s is not None)
     logger.info(f"Extracted {len(features_list)} flows from "
-                f"{processed_count}/{total_packets} packets in {pcap_path}")
+                f"{processed_count}/{total_packets} packets in {pcap_path}"
+                f"{f' (eof_flush={eof_flushed})' if eof_flush else ''}"
+                f"{f' ({active_remaining} open flows discarded — use --eof-flush to keep)' if active_remaining and not eof_flush else ''}")
     return features_list
 
 
@@ -503,7 +566,7 @@ def extract_base_label(filename):
     return base
 
 
-def process_pcap_folder(folder_path, output_csv):
+def process_pcap_folder(folder_path, output_csv, eof_flush=False):
     pcap_files  = sorted(glob.glob(os.path.join(folder_path, "*.pcap")))
     pcapng_files = sorted(glob.glob(os.path.join(folder_path, "*.pcapng")))
     all_files   = pcap_files + pcapng_files
@@ -516,7 +579,7 @@ def process_pcap_folder(folder_path, output_csv):
         filename = os.path.basename(pcap_path)
         label    = extract_base_label(filename)
         logger.info(f"Processing {pcap_path}  (label={label})")
-        features = extract_features_from_pcap(pcap_path, label=label)
+        features = extract_features_from_pcap(pcap_path, label=label, eof_flush=eof_flush)
         mode = 'w' if not header_written else 'a'
         write_to_csv(features, output_csv, mode=mode, write_header=not header_written)
         header_written = True
@@ -552,10 +615,12 @@ def extract_features_from_interface(interface, output_csv, label=None,
                 if fields is None:
                     continue
 
-                c_src_ip, c_src_port, c_dst_ip, c_dst_port, proto, is_reverse = \
+                c_src_ip, c_src_port, c_dst_ip, c_dst_port, proto, is_reverse, \
+                    c_src_mac, c_dst_mac = \
                     make_canonical_key(fields['src_ip'], fields['src_port'],
                                        fields['dst_ip'], fields['dst_port'],
-                                       fields['protocol'])
+                                       fields['protocol'],
+                                       fields['src_mac'], fields['dst_mac'])
 
                 h16, h32 = _compute_flow_hashes(c_src_ip, c_dst_ip,
                                                  c_src_port, c_dst_port, proto)
@@ -565,22 +630,36 @@ def extract_features_from_interface(interface, output_csv, label=None,
                     collision_count += 1
                     continue
 
+                src_ip_int = int(ipaddress.ip_address(c_src_ip))
+                dst_ip_int = int(ipaddress.ip_address(c_dst_ip))
+
                 state = flow_states[h16]
 
-                # Timeout: finalize the previous flow, then reset
+                # Idle timeout: finalize the previous flow, then reset
                 if state is not None and state['timestamps'] and \
                         (fields['timestamp_ns'] - state['timestamps'][-1]) > FLOW_TIMEOUT_NS:
                     feat = _finalize_flow(flow_keys[h16], state, label)
                     if feat:
                         features_list.append(feat)
                     flow_states[h16] = _empty_flow_state()
-                    flow_keys[h16] = (c_src_ip, c_src_port, c_dst_ip, c_dst_port, proto)
+                    flow_keys[h16] = (c_src_ip, c_src_port, c_dst_ip, c_dst_port, proto, c_src_mac, c_dst_mac)
+                    bf1[h16] = 1
+                    bf2[h32] = 1
+                    reg_h2[h16] = h32
+                # Active timeout: flow running longer than 60s — export and restart
+                elif state is not None and state['timestamps'] and \
+                        (fields['timestamp_ns'] - state['timestamps'][0]) > ACTIVE_TIMEOUT_NS:
+                    feat = _finalize_flow(flow_keys[h16], state, label)
+                    if feat:
+                        features_list.append(feat)
+                    flow_states[h16] = _empty_flow_state()
+                    flow_keys[h16] = (c_src_ip, c_src_port, c_dst_ip, c_dst_port, proto, c_src_mac, c_dst_mac)
                     bf1[h16] = 1
                     bf2[h32] = 1
                     reg_h2[h16] = h32
                 elif state is None:
                     flow_states[h16] = _empty_flow_state()
-                    flow_keys[h16] = (c_src_ip, c_src_port, c_dst_ip, c_dst_port, proto)
+                    flow_keys[h16] = (c_src_ip, c_src_port, c_dst_ip, c_dst_port, proto, c_src_mac, c_dst_mac)
                     bf1[h16] = 1
                     bf2[h32] = 1
                     reg_h2[h16] = h32
@@ -650,6 +729,13 @@ def main():
     parser.add_argument('--duration', type=int)
     parser.add_argument('--label',    help='Label for captured flows in live mode')
     parser.add_argument('--output',   default='dataset/dataset.csv')
+    parser.add_argument('--eof-flush', dest='eof_flush', action='store_true',
+                        help='Finalize all open flows at end of each PCAP file.\n'
+                             'Default OFF — scan_and_drain handles stale flows\n'
+                             'the same way the P4 data plane does.')
+    parser.add_argument('--no-eof-flush', dest='eof_flush', action='store_false',
+                        help='Do NOT finalize open flows at end of each PCAP file (default).')
+    parser.set_defaults(eof_flush=True)
     args = parser.parse_args()
 
     if args.mode == 'pcap':
@@ -658,10 +744,10 @@ def main():
                 label = args.label
             else:
                 label = extract_base_label(os.path.basename(args.input))
-            features = extract_features_from_pcap(args.input, label=label)
+            features = extract_features_from_pcap(args.input, label=label, eof_flush=args.eof_flush)
             write_to_csv(features, args.output, mode='w', write_header=True)
         else:
-            process_pcap_folder(args.pcap_dir, args.output)
+            process_pcap_folder(args.pcap_dir, args.output, eof_flush=args.eof_flush)
     elif args.mode == 'live':
         if not args.interface:
             logger.error("--interface is required for live capture mode")
