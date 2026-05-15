@@ -28,6 +28,7 @@ P4_FEATURE_MAX = {
     "DstPort":         (2**16 - 1),   # port_t / bit<16>
     "Duration":        (2**48 - 1),   # bit<48>
     "MaxIAT":          (2**48 - 1),   # bit<48>
+    "MinIAT":          (2**48 - 1),   # bit<48>
     "FwdPktCount":     (2**32 - 1),   # bit<32>
     "BwdPktCount":     (2**32 - 1),   # bit<32>
     "FwdBytes":        (2**32 - 1),   # bit<32>
@@ -40,6 +41,7 @@ P4_FEATURE_MAX = {
     "FwdMaxPktLen":    (2**16 - 1),   # bit<16>
     "BwdMaxPktLen":    (2**16 - 1),   # bit<16>
     "FlagsPsh":        (2**32 - 1),   # bit<32>
+    "UrgCount":        (2**32 - 1),   # bit<32>
     "InitFwdWinBytes": (2**16 - 1),   # bit<16>
 }
 
@@ -49,11 +51,9 @@ ALL_RAW_FEATURES = list(P4_FEATURE_MAX.keys())
 # Columns that are never ML features
 NON_FEATURE_COLS = {'Label'}
 
-# ─── Feature quantization for Tofino range-match ────────────────────────
-# Tofino limits range match to fields ≤ 20 bits (5 PHV nibbles).
-# We pre-quantize features >20 bits via right-shift so the PCA surrogate DT
-# trains on the same reduced-precision values that the data plane sees.
-# Both BMv2 and Tofino use the same quantized values for consistency.
+# ─── Feature quantization for P4 range-match ────────────────────────────
+# We pre-quantize wide features via right-shift so the PCA/LDA/AE surrogate
+# DT trains on the same reduced-precision values that the data plane sees.
 #
 # Format: { feature_name: (shift_amount, quantized_bits) }
 # The quantized value = raw_value >> shift_amount, clamped to quantized_bits.
@@ -61,6 +61,7 @@ NON_FEATURE_COLS = {'Label'}
 FEATURE_QUANTIZE = {
     "Duration":    (20, 16),  # 48b ns → 16b (~1ms granularity, max ~65s)
     "MaxIAT":      (20, 16),  # 48b ns → 16b (~1ms granularity)
+    "MinIAT":      (20, 16),  # 48b ns → 16b (~1ms granularity)
     "FwdPktCount": (0,  16),  # 32b → 16b (truncate lower 16 bits; max 65535)
     "BwdPktCount": (0,  16),  # 32b → 16b
     "FwdBytes":    (4,  16),  # 32b → 16b (16-byte granularity; max ~1MB)
@@ -70,6 +71,7 @@ FEATURE_QUANTIZE = {
     "FlagsFin":    (0,   8),  # 32b → 8b
     "FlagsRst":    (0,   8),  # 32b → 8b
     "FlagsPsh":    (0,  16),  # 32b → 16b
+    "UrgCount":    (0,   8),  # 32b → 8b (URG count rarely > 255)
 }
 
 # P4 field widths AFTER quantization (for range-match key sizing)

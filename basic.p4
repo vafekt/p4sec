@@ -1,7 +1,7 @@
 /* -*- P4_16 -*- */
 /*
  * P4 Flow-Based ML Classification
- * Auto-generated - supports PCA / LDA / Autoencoder / UMAP / Feature Selection + DT / RF / XGB / GB / CNN
+ * Auto-generated - supports PCA / LDA / Autoencoder + DT / RF
  */
 
 #include <core.p4>
@@ -17,7 +17,8 @@ const bit<8>  TYPE_ARP_PSEUDO = 253;  // pseudo proto used in flow key for ARP
 const bit<32> NB_ENTRIES = 65536;
 const bit<32> MAX_REGISTER_ENTRIES = 65536;
 
-#define FLOW_TIMEOUT 20000000000  // 20s in nanoseconds
+#define FLOW_TIMEOUT 20000000000  // 20s idle timeout in nanoseconds
+#define ACTIVE_TIMEOUT 60000000000  // 60s active timeout in nanoseconds
 
 /*************************************************************************
 *********************** H E A D E R S  ***********************************
@@ -31,7 +32,7 @@ typedef bit<48> iat_t;
 typedef bit<48> duration_t;
 typedef bit<16> port_t;
 typedef bit<32> bytes_t;
-typedef bit<16> pca_code_t;   // Quantized code (LD)
+typedef bit<32> pca_code_t;   // Quantized code (PC)
 typedef bit<8>  inference_result_t;
 
 header ethernet_t {
@@ -107,6 +108,8 @@ struct metadata {
     // Canonical bidirectional flow key
     ip4Addr_t canon_src_ip;
     ip4Addr_t canon_dst_ip;
+    macAddr_t canon_src_mac;
+    macAddr_t canon_dst_mac;
     port_t    canon_src_port;
     port_t    canon_dst_port;
     bit<1>    is_reverse_dir;
@@ -117,11 +120,11 @@ struct metadata {
     bit<1>  is_first_packet;
     bit<1>  hash_collision;
     bit<1>  flow_ended;
-    
+
     // Flow-based features
     duration_t duration;
     iat_t      max_iat;
-    bit<32>    urg_count;
+    iat_t      min_iat;
     bit<32>    fwd_pkt_count;
     bit<32>    bwd_pkt_count;
     bytes_t    fwd_bytes;
@@ -132,19 +135,35 @@ struct metadata {
     bit<32>    flags_fin;
     bit<32>    flags_rst;
     bytes_t    pkt_len;      // IP totalLen for IPv4; 28 for ARP (fixed); used for byte counting
-    // New features
-    iat_t      min_iat;
     bit<16>    fwd_max_pkt_len;
     bit<16>    bwd_max_pkt_len;
     bit<32>    flags_psh;
+    bit<32>    flags_urg;
     bit<16>    init_fwd_win;
 
-    // LD transformed features (quantized)
-    pca_code_t ld1_code;
-    pca_code_t ld2_code;
-    pca_code_t ld3_code;
-    pca_code_t ld4_code;
-    pca_code_t ld5_code;
+    // Quantized features for range-match tables
+    bit<16> duration_q          ;  // duration >> 20
+    bit<16> max_iat_q           ;  // max_iat >> 20
+    bit<16> min_iat_q           ;  // min_iat >> 20
+    bit<16> fwd_pkt_count_q     ;  // fwd_pkt_count >> 0
+    bit<16> bwd_pkt_count_q     ;  // bwd_pkt_count >> 0
+    bit<16> fwd_bytes_q         ;  // fwd_bytes >> 4
+    bit<16> bwd_bytes_q         ;  // bwd_bytes >> 4
+    bit< 8> flags_syn_q         ;  // flags_syn >> 0
+    bit<16> flags_ack_q         ;  // flags_ack >> 0
+    bit< 8> flags_fin_q         ;  // flags_fin >> 0
+    bit< 8> flags_rst_q         ;  // flags_rst >> 0
+    bit<16> flags_psh_q         ;  // flags_psh >> 0
+    bit< 8> flags_urg_q         ;  // flags_urg >> 0
+
+    // PC transformed features (quantized)
+    pca_code_t pc1_code;
+    pca_code_t pc2_code;
+    pca_code_t pc3_code;
+    pca_code_t pc4_code;
+    pca_code_t pc5_code;
+    pca_code_t pc6_code;
+    pca_code_t pc7_code;
 
     // Classification result
     inference_result_t ml_result;
@@ -165,13 +184,15 @@ struct headers {
 struct digest_t {
     ip4Addr_t srcAddr;
     ip4Addr_t dstAddr;
+    macAddr_t srcMAC;
+    macAddr_t dstMAC;
     port_t srcPort;
     port_t dstPort;
     bit<8>  protocol;
 
     duration_t duration;
     iat_t      max_iat;
-    bit<32>    urg_count;
+    iat_t      min_iat;
     bit<32>    fwd_pkt_count;
     bit<32>    bwd_pkt_count;
     bytes_t    fwd_bytes;
@@ -181,16 +202,18 @@ struct digest_t {
     bit<32>    flags_ack;
     bit<32>    flags_fin;
     bit<32>    flags_rst;
-    iat_t      min_iat;
     bit<16>    fwd_max_pkt_len;
     bit<16>    bwd_max_pkt_len;
     bit<32>    flags_psh;
+    bit<32>    flags_urg;
     bit<16>    init_fwd_win;
-    pca_code_t ld1_code;
-    pca_code_t ld2_code;
-    pca_code_t ld3_code;
-    pca_code_t ld4_code;
-    pca_code_t ld5_code;
+    pca_code_t pc1_code;
+    pca_code_t pc2_code;
+    pca_code_t pc3_code;
+    pca_code_t pc4_code;
+    pca_code_t pc5_code;
+    pca_code_t pc6_code;
+    pca_code_t pc7_code;
 
     inference_result_t ml_result;
 }
@@ -280,7 +303,7 @@ control MyIngress(inout headers hdr,
     register<bit<48>>(MAX_REGISTER_ENTRIES) reg_time_first_pkt;
     register<bit<48>>(MAX_REGISTER_ENTRIES) reg_time_last_pkt;
     register<iat_t>(MAX_REGISTER_ENTRIES)   reg_max_iat;
-    register<bit<32>>(MAX_REGISTER_ENTRIES) reg_urg_count;
+    register<iat_t>(MAX_REGISTER_ENTRIES)   reg_min_iat;
     register<bit<32>>(MAX_REGISTER_ENTRIES) reg_fwd_pkt_count;
     register<bit<32>>(MAX_REGISTER_ENTRIES) reg_bwd_pkt_count;
     register<bytes_t>(MAX_REGISTER_ENTRIES) reg_fwd_bytes;
@@ -290,10 +313,10 @@ control MyIngress(inout headers hdr,
     register<bit<32>>(MAX_REGISTER_ENTRIES) reg_flags_ack;
     register<bit<32>>(MAX_REGISTER_ENTRIES) reg_flags_fin;
     register<bit<32>>(MAX_REGISTER_ENTRIES) reg_flags_rst;
-    register<iat_t>(MAX_REGISTER_ENTRIES)   reg_min_iat;
     register<bit<16>>(MAX_REGISTER_ENTRIES) reg_fwd_max_pkt_len;
     register<bit<16>>(MAX_REGISTER_ENTRIES) reg_bwd_max_pkt_len;
     register<bit<32>>(MAX_REGISTER_ENTRIES) reg_flags_psh;
+    register<bit<32>>(MAX_REGISTER_ENTRIES) reg_flags_urg;
     register<bit<16>>(MAX_REGISTER_ENTRIES) reg_init_fwd_win;
 
     register<bit<1>>(MAX_REGISTER_ENTRIES) bloom_filter_1;  // indexed by CRC16 hash
@@ -303,7 +326,14 @@ control MyIngress(inout headers hdr,
     register<bit<16>>(MAX_REGISTER_ENTRIES) reg_canon_dst_port;  // canonical dst port
     register<bit<32>>(MAX_REGISTER_ENTRIES) reg_canon_src_ip;   // canonical src IP
     register<bit<32>>(MAX_REGISTER_ENTRIES) reg_canon_dst_ip;   // canonical dst IP
+    register<bit<48>>(MAX_REGISTER_ENTRIES) reg_canon_src_mac;  // canonical src MAC
+    register<bit<48>>(MAX_REGISTER_ENTRIES) reg_canon_dst_mac;  // canonical dst MAC
     register<bit<8>>(MAX_REGISTER_ENTRIES)  reg_protocol;       // IP protocol
+
+    // Amortized drain: scan index cycles through all register slots.
+    // Each packet checks one extra slot for stale flows, so after
+    // ~MAX_REGISTER_ENTRIES packets all slots have been scanned.
+    register<bit<32>>(1) reg_scan_idx;
 
     action drop() {
         mark_to_drop(standard_metadata);
@@ -333,12 +363,16 @@ control MyIngress(inout headers hdr,
         if (meta.src_ip < meta.dst_ip) {
             meta.canon_src_ip   = meta.src_ip;
             meta.canon_dst_ip   = meta.dst_ip;
+            meta.canon_src_mac  = hdr.ethernet.srcAddr;
+            meta.canon_dst_mac  = hdr.ethernet.dstAddr;
             meta.canon_src_port = meta.src_port;
             meta.canon_dst_port = meta.dst_port;
             meta.is_reverse_dir = 1w0;
         } else if (meta.src_ip > meta.dst_ip) {
             meta.canon_src_ip   = meta.dst_ip;
             meta.canon_dst_ip   = meta.src_ip;
+            meta.canon_src_mac  = hdr.ethernet.dstAddr;
+            meta.canon_dst_mac  = hdr.ethernet.srcAddr;
             meta.canon_src_port = meta.dst_port;
             meta.canon_dst_port = meta.src_port;
             meta.is_reverse_dir = 1w1;
@@ -346,12 +380,16 @@ control MyIngress(inout headers hdr,
             if (meta.src_port <= meta.dst_port) {
                 meta.canon_src_ip   = meta.src_ip;
                 meta.canon_dst_ip   = meta.dst_ip;
+                meta.canon_src_mac  = hdr.ethernet.srcAddr;
+                meta.canon_dst_mac  = hdr.ethernet.dstAddr;
                 meta.canon_src_port = meta.src_port;
                 meta.canon_dst_port = meta.dst_port;
                 meta.is_reverse_dir = 1w0;
             } else {
                 meta.canon_src_ip   = meta.dst_ip;
                 meta.canon_dst_ip   = meta.src_ip;
+                meta.canon_src_mac  = hdr.ethernet.dstAddr;
+                meta.canon_dst_mac  = hdr.ethernet.srcAddr;
                 meta.canon_src_port = meta.dst_port;
                 meta.canon_dst_port = meta.src_port;
                 meta.is_reverse_dir = 1w1;
@@ -381,6 +419,9 @@ control MyIngress(inout headers hdr,
     action read_and_timeout_check() {
         bit<48> current_time_us = standard_metadata.ingress_global_timestamp;
         bit<48> current_time = current_time_us * 1000;
+        // Save current packet's MACs before any register read can overwrite meta
+        bit<48> pkt_src_mac = meta.canon_src_mac;
+        bit<48> pkt_dst_mac = meta.canon_dst_mac;
         bit<48> time_first;
         bit<48> time_last;
         iat_t   max_iat;
@@ -390,7 +431,6 @@ control MyIngress(inout headers hdr,
         bytes_t fwd_bytes;
         bytes_t bwd_bytes;
         bit<16> max_win_size;
-        bit<32> urg_count;
         bit<32> flags_syn;
         bit<32> flags_ack;
         bit<32> flags_fin;
@@ -398,6 +438,7 @@ control MyIngress(inout headers hdr,
         bit<16> fwd_max_pkt_len;
         bit<16> bwd_max_pkt_len;
         bit<32> flags_psh;
+        bit<32> flags_urg;
         bit<16> init_fwd_win;
 
         reg_time_first_pkt.read(time_first, meta.flow_hash);
@@ -409,7 +450,6 @@ control MyIngress(inout headers hdr,
         reg_fwd_bytes.read(fwd_bytes, meta.flow_hash);
         reg_bwd_bytes.read(bwd_bytes, meta.flow_hash);
         reg_max_win_size.read(max_win_size, meta.flow_hash);
-        reg_urg_count.read(urg_count, meta.flow_hash);
         reg_flags_syn.read(flags_syn, meta.flow_hash);
         reg_flags_ack.read(flags_ack, meta.flow_hash);
         reg_flags_fin.read(flags_fin, meta.flow_hash);
@@ -417,17 +457,23 @@ control MyIngress(inout headers hdr,
         reg_fwd_max_pkt_len.read(fwd_max_pkt_len, meta.flow_hash);
         reg_bwd_max_pkt_len.read(bwd_max_pkt_len, meta.flow_hash);
         reg_flags_psh.read(flags_psh, meta.flow_hash);
+        reg_flags_urg.read(flags_urg, meta.flow_hash);
         reg_init_fwd_win.read(init_fwd_win, meta.flow_hash);
+        // Read stored MACs into locals — do NOT overwrite meta.canon_src_mac
+        // which was correctly set by compute_flow_hash() from the current packet.
+        bit<48> stored_src_mac;
+        bit<48> stored_dst_mac;
+        reg_canon_src_mac.read(stored_src_mac, meta.flow_hash);
+        reg_canon_dst_mac.read(stored_dst_mac, meta.flow_hash);
 
-        // Timeout check — previous flow on this slot has been idle
+        // Idle timeout — previous flow on this slot has been idle
         if (time_first != 0 && time_last != 0 &&
                 (current_time - time_last) > FLOW_TIMEOUT) {
-            if ((fwd_pkt_count + bwd_pkt_count) >= 2) {
+            if ((fwd_pkt_count + bwd_pkt_count) >= 1) {
                 meta.flow_ended       = 1w1;
                 meta.duration         = time_last - time_first;
                 meta.max_iat          = max_iat;
                 meta.min_iat          = min_iat;
-                meta.urg_count        = urg_count;
                 meta.fwd_pkt_count    = fwd_pkt_count;
                 meta.bwd_pkt_count    = bwd_pkt_count;
                 meta.fwd_bytes        = fwd_bytes;
@@ -440,14 +486,16 @@ control MyIngress(inout headers hdr,
                 meta.fwd_max_pkt_len  = fwd_max_pkt_len;
                 meta.bwd_max_pkt_len  = bwd_max_pkt_len;
                 meta.flags_psh        = flags_psh;
+                meta.flags_urg        = flags_urg;
                 meta.init_fwd_win     = init_fwd_win;
+                meta.canon_src_mac    = stored_src_mac;
+                meta.canon_dst_mac    = stored_dst_mac;
             }
             // Reset ALL registers for the new flow (regardless of pkt count)
             reg_time_first_pkt.write(meta.flow_hash, current_time);
-            reg_time_last_pkt.write(meta.flow_hash, current_time);
+            reg_time_last_pkt.write(meta.flow_hash, 0);  // 0 so update_packet_stats skips IAT for 1st pkt
             reg_max_iat.write(meta.flow_hash, 0);
             reg_min_iat.write(meta.flow_hash, 0);
-            reg_urg_count.write(meta.flow_hash, 0);
             reg_fwd_pkt_count.write(meta.flow_hash, 0);
             reg_bwd_pkt_count.write(meta.flow_hash, 0);
             reg_fwd_bytes.write(meta.flow_hash, 0);
@@ -460,6 +508,7 @@ control MyIngress(inout headers hdr,
             reg_fwd_max_pkt_len.write(meta.flow_hash, 16w0);
             reg_bwd_max_pkt_len.write(meta.flow_hash, 16w0);
             reg_flags_psh.write(meta.flow_hash, 32w0);
+            reg_flags_urg.write(meta.flow_hash, 32w0);
             reg_init_fwd_win.write(meta.flow_hash, 16w0);
             bloom_filter_1.write(meta.flow_hash,   1w1);
             bloom_filter_2.write(meta.flow_hash_2, 1w1);
@@ -468,6 +517,63 @@ control MyIngress(inout headers hdr,
             reg_canon_dst_port.write(meta.flow_hash, meta.canon_dst_port);
             reg_canon_src_ip.write(meta.flow_hash, meta.canon_src_ip);
             reg_canon_dst_ip.write(meta.flow_hash, meta.canon_dst_ip);
+            reg_canon_src_mac.write(meta.flow_hash, pkt_src_mac);
+            reg_canon_dst_mac.write(meta.flow_hash, pkt_dst_mac);
+            reg_protocol.write(meta.flow_hash, meta.protocol);
+        }
+        // Active timeout — flow has been running longer than ACTIVE_TIMEOUT
+        else if (time_first != 0 && time_last != 0 &&
+                (current_time - time_first) > ACTIVE_TIMEOUT) {
+            if ((fwd_pkt_count + bwd_pkt_count) >= 1) {
+                meta.flow_ended       = 1w1;
+                meta.duration         = time_last - time_first;
+                meta.max_iat          = max_iat;
+                meta.min_iat          = min_iat;
+                meta.fwd_pkt_count    = fwd_pkt_count;
+                meta.bwd_pkt_count    = bwd_pkt_count;
+                meta.fwd_bytes        = fwd_bytes;
+                meta.bwd_bytes        = bwd_bytes;
+                meta.max_win_size     = max_win_size;
+                meta.flags_syn        = flags_syn;
+                meta.flags_ack        = flags_ack;
+                meta.flags_fin        = flags_fin;
+                meta.flags_rst        = flags_rst;
+                meta.fwd_max_pkt_len  = fwd_max_pkt_len;
+                meta.bwd_max_pkt_len  = bwd_max_pkt_len;
+                meta.flags_psh        = flags_psh;
+                meta.flags_urg        = flags_urg;
+                meta.init_fwd_win     = init_fwd_win;
+                meta.canon_src_mac    = stored_src_mac;
+                meta.canon_dst_mac    = stored_dst_mac;
+            }
+            // Reset registers for new flow
+            reg_time_first_pkt.write(meta.flow_hash, current_time);
+            reg_time_last_pkt.write(meta.flow_hash, 0);
+            reg_max_iat.write(meta.flow_hash, 0);
+            reg_min_iat.write(meta.flow_hash, 0);
+            reg_fwd_pkt_count.write(meta.flow_hash, 0);
+            reg_bwd_pkt_count.write(meta.flow_hash, 0);
+            reg_fwd_bytes.write(meta.flow_hash, 0);
+            reg_bwd_bytes.write(meta.flow_hash, 0);
+            reg_max_win_size.write(meta.flow_hash, 0);
+            reg_flags_syn.write(meta.flow_hash, 32w0);
+            reg_flags_ack.write(meta.flow_hash, 32w0);
+            reg_flags_fin.write(meta.flow_hash, 32w0);
+            reg_flags_rst.write(meta.flow_hash, 32w0);
+            reg_fwd_max_pkt_len.write(meta.flow_hash, 16w0);
+            reg_bwd_max_pkt_len.write(meta.flow_hash, 16w0);
+            reg_flags_psh.write(meta.flow_hash, 32w0);
+            reg_flags_urg.write(meta.flow_hash, 32w0);
+            reg_init_fwd_win.write(meta.flow_hash, 16w0);
+            bloom_filter_1.write(meta.flow_hash,   1w1);
+            bloom_filter_2.write(meta.flow_hash_2, 1w1);
+            reg_flow_hash_2.write(meta.flow_hash, meta.flow_hash_2);
+            reg_canon_src_port.write(meta.flow_hash, meta.canon_src_port);
+            reg_canon_dst_port.write(meta.flow_hash, meta.canon_dst_port);
+            reg_canon_src_ip.write(meta.flow_hash, meta.canon_src_ip);
+            reg_canon_dst_ip.write(meta.flow_hash, meta.canon_dst_ip);
+            reg_canon_src_mac.write(meta.flow_hash, pkt_src_mac);
+            reg_canon_dst_mac.write(meta.flow_hash, pkt_dst_mac);
             reg_protocol.write(meta.flow_hash, meta.protocol);
         }
     }
@@ -484,7 +590,6 @@ control MyIngress(inout headers hdr,
         bytes_t fwd_bytes;
         bytes_t bwd_bytes;
         bit<16> max_win_size;
-        bit<32> urg_count;
         bit<32> flags_syn;
         bit<32> flags_ack;
         bit<32> flags_fin;
@@ -492,6 +597,7 @@ control MyIngress(inout headers hdr,
         bit<16> fwd_max_pkt_len;
         bit<16> bwd_max_pkt_len;
         bit<32> flags_psh;
+        bit<32> flags_urg;
         bit<16> init_fwd_win;
 
         reg_time_first_pkt.read(time_first, meta.flow_hash);
@@ -503,7 +609,6 @@ control MyIngress(inout headers hdr,
         reg_fwd_bytes.read(fwd_bytes, meta.flow_hash);
         reg_bwd_bytes.read(bwd_bytes, meta.flow_hash);
         reg_max_win_size.read(max_win_size, meta.flow_hash);
-        reg_urg_count.read(urg_count, meta.flow_hash);
         reg_flags_syn.read(flags_syn, meta.flow_hash);
         reg_flags_ack.read(flags_ack, meta.flow_hash);
         reg_flags_fin.read(flags_fin, meta.flow_hash);
@@ -511,7 +616,12 @@ control MyIngress(inout headers hdr,
         reg_fwd_max_pkt_len.read(fwd_max_pkt_len, meta.flow_hash);
         reg_bwd_max_pkt_len.read(bwd_max_pkt_len, meta.flow_hash);
         reg_flags_psh.read(flags_psh, meta.flow_hash);
+        reg_flags_urg.read(flags_urg, meta.flow_hash);
         reg_init_fwd_win.read(init_fwd_win, meta.flow_hash);
+        // NOTE: Do NOT read reg_canon_src_mac/dst_mac into meta here.
+        // meta.canon_src_mac was correctly set by compute_flow_hash() and
+        // overwriting it with an uninitialized register (0) corrupts MAC
+        // for new flows and PCA table lookups.
 
         // First packet for a new flow (fresh empty slot)
         if (time_first == 0) {
@@ -525,6 +635,8 @@ control MyIngress(inout headers hdr,
             reg_canon_dst_port.write(meta.flow_hash, meta.canon_dst_port);
             reg_canon_src_ip.write(meta.flow_hash, meta.canon_src_ip);
             reg_canon_dst_ip.write(meta.flow_hash, meta.canon_dst_ip);
+            reg_canon_src_mac.write(meta.flow_hash, meta.canon_src_mac);
+            reg_canon_dst_mac.write(meta.flow_hash, meta.canon_dst_mac);
             reg_protocol.write(meta.flow_hash, meta.protocol);
         }
 
@@ -593,30 +705,28 @@ control MyIngress(inout headers hdr,
 
         reg_time_last_pkt.write(meta.flow_hash, current_time);
 
-        // TCP flag counts (URG, SYN, ACK, FIN, RST, PSH)
+        // TCP flag counts (SYN, ACK, FIN, RST, PSH, URG)
         if (meta.protocol == TYPE_TCP) {
-            if (hdr.tcp.ctrl[5:5] == 1w1) {
-                urg_count = urg_count + 1;
-                reg_urg_count.write(meta.flow_hash, urg_count);
-            }
             flags_syn = flags_syn + (bit<32>)hdr.tcp.ctrl[1:1];
             flags_ack = flags_ack + (bit<32>)hdr.tcp.ctrl[4:4];
             flags_fin = flags_fin + (bit<32>)hdr.tcp.ctrl[0:0];
             flags_rst = flags_rst + (bit<32>)hdr.tcp.ctrl[2:2];
             flags_psh = flags_psh + (bit<32>)hdr.tcp.ctrl[3:3];
+            flags_urg = flags_urg + (bit<32>)hdr.tcp.ctrl[5:5];
             reg_flags_syn.write(meta.flow_hash, flags_syn);
             reg_flags_ack.write(meta.flow_hash, flags_ack);
             reg_flags_fin.write(meta.flow_hash, flags_fin);
             reg_flags_rst.write(meta.flow_hash, flags_rst);
             reg_flags_psh.write(meta.flow_hash, flags_psh);
+            reg_flags_urg.write(meta.flow_hash, flags_urg);
         }
         if (meta.flow_ended == 1w0) {
-            meta.urg_count  = urg_count;
             meta.flags_syn  = flags_syn;
             meta.flags_ack  = flags_ack;
             meta.flags_fin  = flags_fin;
             meta.flags_rst  = flags_rst;
             meta.flags_psh  = flags_psh;
+            meta.flags_urg  = flags_urg;
         }
 
         // FIN/RST ends the flow
@@ -627,7 +737,6 @@ control MyIngress(inout headers hdr,
             meta.duration     = current_time - time_first;
             meta.max_iat      = max_iat;
             meta.min_iat      = min_iat;
-            meta.urg_count    = urg_count;
             reg_fwd_pkt_count.read(meta.fwd_pkt_count, meta.flow_hash);
             reg_bwd_pkt_count.read(meta.bwd_pkt_count, meta.flow_hash);
             reg_fwd_bytes.read(meta.fwd_bytes, meta.flow_hash);
@@ -636,13 +745,13 @@ control MyIngress(inout headers hdr,
             reg_fwd_max_pkt_len.read(meta.fwd_max_pkt_len, meta.flow_hash);
             reg_bwd_max_pkt_len.read(meta.bwd_max_pkt_len, meta.flow_hash);
             reg_flags_psh.read(meta.flags_psh, meta.flow_hash);
+            reg_flags_urg.read(meta.flags_urg, meta.flow_hash);
             reg_init_fwd_win.read(meta.init_fwd_win, meta.flow_hash);
             // Reset registers
             reg_time_first_pkt.write(meta.flow_hash, 0);
             reg_time_last_pkt.write(meta.flow_hash, 0);
             reg_max_iat.write(meta.flow_hash, 0);
             reg_min_iat.write(meta.flow_hash, 0);
-            reg_urg_count.write(meta.flow_hash, 0);
             reg_fwd_pkt_count.write(meta.flow_hash, 0);
             reg_bwd_pkt_count.write(meta.flow_hash, 0);
             reg_fwd_bytes.write(meta.flow_hash, 0);
@@ -655,6 +764,7 @@ control MyIngress(inout headers hdr,
             reg_fwd_max_pkt_len.write(meta.flow_hash, 16w0);
             reg_bwd_max_pkt_len.write(meta.flow_hash, 16w0);
             reg_flags_psh.write(meta.flow_hash, 32w0);
+            reg_flags_urg.write(meta.flow_hash, 32w0);
             reg_init_fwd_win.write(meta.flow_hash, 16w0);
             bloom_filter_1.write(meta.flow_hash,   1w0);  // release slot
             bloom_filter_2.write(meta.flow_hash_2, 1w0);
@@ -663,181 +773,253 @@ control MyIngress(inout headers hdr,
             reg_canon_dst_port.write(meta.flow_hash, 16w0);
             reg_canon_src_ip.write(meta.flow_hash, 32w0);   // clear IP bookmark
             reg_canon_dst_ip.write(meta.flow_hash, 32w0);
+            reg_canon_src_mac.write(meta.flow_hash, 48w0);  // clear MAC bookmark
+            reg_canon_dst_mac.write(meta.flow_hash, 48w0);
             reg_protocol.write(meta.flow_hash, 8w0);        // clear protocol bookmark
         }
     }
 
 
-    // LD component 1 transformation
-    action set_ld1_code(pca_code_t code) {
-        meta.ld1_code = code;
+    // PC component 1 transformation
+    action set_pc1_code(pca_code_t code) {
+        meta.pc1_code = code;
     }
 
-    table lda_component1 {
+    table pca_component1 {
         key = {
             meta.protocol            : range;
             meta.canon_src_port      : range;
             meta.canon_dst_port      : range;
-            meta.duration            : range;
-            meta.max_iat             : range;
-            meta.urg_count           : range;
-            meta.fwd_pkt_count       : range;
-            meta.bwd_pkt_count       : range;
-            meta.fwd_bytes           : range;
-            meta.bwd_bytes           : range;
+            meta.duration_q          : range;
+            meta.max_iat_q           : range;
+            meta.min_iat_q           : range;
+            meta.fwd_pkt_count_q     : range;
+            meta.bwd_pkt_count_q     : range;
+            meta.fwd_bytes_q         : range;
+            meta.bwd_bytes_q         : range;
             meta.max_win_size        : range;
-            meta.flags_syn           : range;
-            meta.flags_ack           : range;
-            meta.flags_fin           : range;
-            meta.flags_rst           : range;
-            meta.min_iat             : range;
+            meta.flags_syn_q         : range;
+            meta.flags_ack_q         : range;
+            meta.flags_fin_q         : range;
+            meta.flags_rst_q         : range;
             meta.fwd_max_pkt_len     : range;
             meta.bwd_max_pkt_len     : range;
-            meta.flags_psh           : range;
+            meta.flags_psh_q         : range;
+            meta.flags_urg_q         : range;
             meta.init_fwd_win        : range;
         }
         actions = {
-            set_ld1_code;
+            set_pc1_code;
             NoAction;
         }
         size = NB_ENTRIES;
     }
 
-    // LD component 2 transformation
-    action set_ld2_code(pca_code_t code) {
-        meta.ld2_code = code;
+    // PC component 2 transformation
+    action set_pc2_code(pca_code_t code) {
+        meta.pc2_code = code;
     }
 
-    table lda_component2 {
+    table pca_component2 {
         key = {
             meta.protocol            : range;
             meta.canon_src_port      : range;
             meta.canon_dst_port      : range;
-            meta.duration            : range;
-            meta.max_iat             : range;
-            meta.urg_count           : range;
-            meta.fwd_pkt_count       : range;
-            meta.bwd_pkt_count       : range;
-            meta.fwd_bytes           : range;
-            meta.bwd_bytes           : range;
+            meta.duration_q          : range;
+            meta.max_iat_q           : range;
+            meta.min_iat_q           : range;
+            meta.fwd_pkt_count_q     : range;
+            meta.bwd_pkt_count_q     : range;
+            meta.fwd_bytes_q         : range;
+            meta.bwd_bytes_q         : range;
             meta.max_win_size        : range;
-            meta.flags_syn           : range;
-            meta.flags_ack           : range;
-            meta.flags_fin           : range;
-            meta.flags_rst           : range;
-            meta.min_iat             : range;
+            meta.flags_syn_q         : range;
+            meta.flags_ack_q         : range;
+            meta.flags_fin_q         : range;
+            meta.flags_rst_q         : range;
             meta.fwd_max_pkt_len     : range;
             meta.bwd_max_pkt_len     : range;
-            meta.flags_psh           : range;
+            meta.flags_psh_q         : range;
+            meta.flags_urg_q         : range;
             meta.init_fwd_win        : range;
         }
         actions = {
-            set_ld2_code;
+            set_pc2_code;
             NoAction;
         }
         size = NB_ENTRIES;
     }
 
-    // LD component 3 transformation
-    action set_ld3_code(pca_code_t code) {
-        meta.ld3_code = code;
+    // PC component 3 transformation
+    action set_pc3_code(pca_code_t code) {
+        meta.pc3_code = code;
     }
 
-    table lda_component3 {
+    table pca_component3 {
         key = {
             meta.protocol            : range;
             meta.canon_src_port      : range;
             meta.canon_dst_port      : range;
-            meta.duration            : range;
-            meta.max_iat             : range;
-            meta.urg_count           : range;
-            meta.fwd_pkt_count       : range;
-            meta.bwd_pkt_count       : range;
-            meta.fwd_bytes           : range;
-            meta.bwd_bytes           : range;
+            meta.duration_q          : range;
+            meta.max_iat_q           : range;
+            meta.min_iat_q           : range;
+            meta.fwd_pkt_count_q     : range;
+            meta.bwd_pkt_count_q     : range;
+            meta.fwd_bytes_q         : range;
+            meta.bwd_bytes_q         : range;
             meta.max_win_size        : range;
-            meta.flags_syn           : range;
-            meta.flags_ack           : range;
-            meta.flags_fin           : range;
-            meta.flags_rst           : range;
-            meta.min_iat             : range;
+            meta.flags_syn_q         : range;
+            meta.flags_ack_q         : range;
+            meta.flags_fin_q         : range;
+            meta.flags_rst_q         : range;
             meta.fwd_max_pkt_len     : range;
             meta.bwd_max_pkt_len     : range;
-            meta.flags_psh           : range;
+            meta.flags_psh_q         : range;
+            meta.flags_urg_q         : range;
             meta.init_fwd_win        : range;
         }
         actions = {
-            set_ld3_code;
+            set_pc3_code;
             NoAction;
         }
         size = NB_ENTRIES;
     }
 
-    // LD component 4 transformation
-    action set_ld4_code(pca_code_t code) {
-        meta.ld4_code = code;
+    // PC component 4 transformation
+    action set_pc4_code(pca_code_t code) {
+        meta.pc4_code = code;
     }
 
-    table lda_component4 {
+    table pca_component4 {
         key = {
             meta.protocol            : range;
             meta.canon_src_port      : range;
             meta.canon_dst_port      : range;
-            meta.duration            : range;
-            meta.max_iat             : range;
-            meta.urg_count           : range;
-            meta.fwd_pkt_count       : range;
-            meta.bwd_pkt_count       : range;
-            meta.fwd_bytes           : range;
-            meta.bwd_bytes           : range;
+            meta.duration_q          : range;
+            meta.max_iat_q           : range;
+            meta.min_iat_q           : range;
+            meta.fwd_pkt_count_q     : range;
+            meta.bwd_pkt_count_q     : range;
+            meta.fwd_bytes_q         : range;
+            meta.bwd_bytes_q         : range;
             meta.max_win_size        : range;
-            meta.flags_syn           : range;
-            meta.flags_ack           : range;
-            meta.flags_fin           : range;
-            meta.flags_rst           : range;
-            meta.min_iat             : range;
+            meta.flags_syn_q         : range;
+            meta.flags_ack_q         : range;
+            meta.flags_fin_q         : range;
+            meta.flags_rst_q         : range;
             meta.fwd_max_pkt_len     : range;
             meta.bwd_max_pkt_len     : range;
-            meta.flags_psh           : range;
+            meta.flags_psh_q         : range;
+            meta.flags_urg_q         : range;
             meta.init_fwd_win        : range;
         }
         actions = {
-            set_ld4_code;
+            set_pc4_code;
             NoAction;
         }
         size = NB_ENTRIES;
     }
 
-    // LD component 5 transformation
-    action set_ld5_code(pca_code_t code) {
-        meta.ld5_code = code;
+    // PC component 5 transformation
+    action set_pc5_code(pca_code_t code) {
+        meta.pc5_code = code;
     }
 
-    table lda_component5 {
+    table pca_component5 {
         key = {
             meta.protocol            : range;
             meta.canon_src_port      : range;
             meta.canon_dst_port      : range;
-            meta.duration            : range;
-            meta.max_iat             : range;
-            meta.urg_count           : range;
-            meta.fwd_pkt_count       : range;
-            meta.bwd_pkt_count       : range;
-            meta.fwd_bytes           : range;
-            meta.bwd_bytes           : range;
+            meta.duration_q          : range;
+            meta.max_iat_q           : range;
+            meta.min_iat_q           : range;
+            meta.fwd_pkt_count_q     : range;
+            meta.bwd_pkt_count_q     : range;
+            meta.fwd_bytes_q         : range;
+            meta.bwd_bytes_q         : range;
             meta.max_win_size        : range;
-            meta.flags_syn           : range;
-            meta.flags_ack           : range;
-            meta.flags_fin           : range;
-            meta.flags_rst           : range;
-            meta.min_iat             : range;
+            meta.flags_syn_q         : range;
+            meta.flags_ack_q         : range;
+            meta.flags_fin_q         : range;
+            meta.flags_rst_q         : range;
             meta.fwd_max_pkt_len     : range;
             meta.bwd_max_pkt_len     : range;
-            meta.flags_psh           : range;
+            meta.flags_psh_q         : range;
+            meta.flags_urg_q         : range;
             meta.init_fwd_win        : range;
         }
         actions = {
-            set_ld5_code;
+            set_pc5_code;
+            NoAction;
+        }
+        size = NB_ENTRIES;
+    }
+
+    // PC component 6 transformation
+    action set_pc6_code(pca_code_t code) {
+        meta.pc6_code = code;
+    }
+
+    table pca_component6 {
+        key = {
+            meta.protocol            : range;
+            meta.canon_src_port      : range;
+            meta.canon_dst_port      : range;
+            meta.duration_q          : range;
+            meta.max_iat_q           : range;
+            meta.min_iat_q           : range;
+            meta.fwd_pkt_count_q     : range;
+            meta.bwd_pkt_count_q     : range;
+            meta.fwd_bytes_q         : range;
+            meta.bwd_bytes_q         : range;
+            meta.max_win_size        : range;
+            meta.flags_syn_q         : range;
+            meta.flags_ack_q         : range;
+            meta.flags_fin_q         : range;
+            meta.flags_rst_q         : range;
+            meta.fwd_max_pkt_len     : range;
+            meta.bwd_max_pkt_len     : range;
+            meta.flags_psh_q         : range;
+            meta.flags_urg_q         : range;
+            meta.init_fwd_win        : range;
+        }
+        actions = {
+            set_pc6_code;
+            NoAction;
+        }
+        size = NB_ENTRIES;
+    }
+
+    // PC component 7 transformation
+    action set_pc7_code(pca_code_t code) {
+        meta.pc7_code = code;
+    }
+
+    table pca_component7 {
+        key = {
+            meta.protocol            : range;
+            meta.canon_src_port      : range;
+            meta.canon_dst_port      : range;
+            meta.duration_q          : range;
+            meta.max_iat_q           : range;
+            meta.min_iat_q           : range;
+            meta.fwd_pkt_count_q     : range;
+            meta.bwd_pkt_count_q     : range;
+            meta.fwd_bytes_q         : range;
+            meta.bwd_bytes_q         : range;
+            meta.max_win_size        : range;
+            meta.flags_syn_q         : range;
+            meta.flags_ack_q         : range;
+            meta.flags_fin_q         : range;
+            meta.flags_rst_q         : range;
+            meta.fwd_max_pkt_len     : range;
+            meta.bwd_max_pkt_len     : range;
+            meta.flags_psh_q         : range;
+            meta.flags_urg_q         : range;
+            meta.init_fwd_win        : range;
+        }
+        actions = {
+            set_pc7_code;
             NoAction;
         }
         size = NB_ENTRIES;
@@ -851,17 +1033,124 @@ control MyIngress(inout headers hdr,
     // Decision Tree classification
     table ml_code {
         key = {
-            meta.ld1_code                 : range;
-            meta.ld2_code                 : range;
-            meta.ld3_code                 : range;
-            meta.ld4_code                 : range;
-            meta.ld5_code                 : range;
+            meta.pc1_code                 : range;
+            meta.pc2_code                 : range;
+            meta.pc3_code                 : range;
+            meta.pc4_code                 : range;
+            meta.pc5_code                 : range;
+            meta.pc6_code                 : range;
+            meta.pc7_code                 : range;
         }
         actions = {
             set_result;
             NoAction;
         }
         size = NB_ENTRIES;
+    }
+
+    // Amortized drain: each packet scans one extra register slot for stale
+    // flows whose timeout expired but no matching packet arrived to trigger
+    // the normal read_and_timeout_check.  After MAX_REGISTER_ENTRIES packets
+    // every slot has been scanned, matching the Python extractor's EOF flush.
+    action scan_and_drain() {
+        bit<48> current_time_us = standard_metadata.ingress_global_timestamp;
+        bit<48> current_time = current_time_us * 1000;
+
+        bit<32> scan_idx;
+        reg_scan_idx.read(scan_idx, 0);
+        bit<32> slot = scan_idx % MAX_REGISTER_ENTRIES;
+        reg_scan_idx.write(0, scan_idx + 1);
+
+        // Skip if this slot is the current packet's slot (already handled)
+        if (slot == meta.flow_hash) {
+            return;
+        }
+
+        bit<48> s_time_first;
+        bit<48> s_time_last;
+        reg_time_first_pkt.read(s_time_first, slot);
+        reg_time_last_pkt.read(s_time_last, slot);
+
+        if (s_time_first == 0 || s_time_last == 0) {
+            return;
+        }
+        if ((current_time - s_time_last) <= FLOW_TIMEOUT &&
+            (current_time - s_time_first) <= ACTIVE_TIMEOUT) {
+            return;
+        }
+
+        // Stale/long-lived flow detected — read remaining registers
+        bit<32> s_fwd_pkt; bit<32> s_bwd_pkt;
+        reg_fwd_pkt_count.read(s_fwd_pkt, slot);
+        reg_bwd_pkt_count.read(s_bwd_pkt, slot);
+        if ((s_fwd_pkt + s_bwd_pkt) < 1) {
+            // Empty flow — just clear the slot
+            reg_time_first_pkt.write(slot, 0);
+            reg_time_last_pkt.write(slot, 0);
+            reg_fwd_pkt_count.write(slot, 0);
+            reg_bwd_pkt_count.write(slot, 0);
+            bloom_filter_1.write(slot, 1w0);
+            return;
+        }
+
+        // Snapshot features into meta (overwrite current packet's meta)
+        meta.flow_ended    = 1w1;
+        meta.duration      = s_time_last - s_time_first;
+        reg_max_iat.read(meta.max_iat, slot);
+        reg_min_iat.read(meta.min_iat, slot);
+        meta.fwd_pkt_count = s_fwd_pkt;
+        meta.bwd_pkt_count = s_bwd_pkt;
+        reg_fwd_bytes.read(meta.fwd_bytes, slot);
+        reg_bwd_bytes.read(meta.bwd_bytes, slot);
+        reg_max_win_size.read(meta.max_win_size, slot);
+        reg_flags_syn.read(meta.flags_syn, slot);
+        reg_flags_ack.read(meta.flags_ack, slot);
+        reg_flags_fin.read(meta.flags_fin, slot);
+        reg_flags_rst.read(meta.flags_rst, slot);
+        reg_fwd_max_pkt_len.read(meta.fwd_max_pkt_len, slot);
+        reg_bwd_max_pkt_len.read(meta.bwd_max_pkt_len, slot);
+        reg_flags_psh.read(meta.flags_psh, slot);
+        reg_flags_urg.read(meta.flags_urg, slot);
+        reg_init_fwd_win.read(meta.init_fwd_win, slot);
+        reg_canon_src_ip.read(meta.canon_src_ip, slot);
+        reg_canon_dst_ip.read(meta.canon_dst_ip, slot);
+        reg_canon_src_mac.read(meta.canon_src_mac, slot);
+        reg_canon_dst_mac.read(meta.canon_dst_mac, slot);
+        reg_canon_src_port.read(meta.canon_src_port, slot);
+        reg_canon_dst_port.read(meta.canon_dst_port, slot);
+        reg_protocol.read(meta.protocol, slot);
+
+        // Clear the drained slot
+        reg_time_first_pkt.write(slot, 0);
+        reg_time_last_pkt.write(slot, 0);
+        reg_max_iat.write(slot, 0);
+        reg_min_iat.write(slot, 0);
+        reg_fwd_pkt_count.write(slot, 0);
+        reg_bwd_pkt_count.write(slot, 0);
+        reg_fwd_bytes.write(slot, 0);
+        reg_bwd_bytes.write(slot, 0);
+        reg_max_win_size.write(slot, 0);
+        reg_flags_syn.write(slot, 32w0);
+        reg_flags_ack.write(slot, 32w0);
+        reg_flags_fin.write(slot, 32w0);
+        reg_flags_rst.write(slot, 32w0);
+        reg_fwd_max_pkt_len.write(slot, 16w0);
+        reg_bwd_max_pkt_len.write(slot, 16w0);
+        reg_flags_psh.write(slot, 32w0);
+        reg_flags_urg.write(slot, 32w0);
+        reg_init_fwd_win.write(slot, 16w0);
+        bloom_filter_1.write(slot, 1w0);
+        bit<32> s_h2;
+        reg_flow_hash_2.read(s_h2, slot);
+        bloom_filter_2.write(s_h2, 1w0);
+        reg_flow_hash_2.write(slot, 32w0);
+        reg_canon_src_port.write(slot, 16w0);
+        reg_canon_dst_port.write(slot, 16w0);
+        reg_canon_src_ip.write(slot, 32w0);
+        reg_canon_dst_ip.write(slot, 32w0);
+        reg_canon_src_mac.write(slot, 48w0);
+        reg_canon_dst_mac.write(slot, 48w0);
+        reg_protocol.write(slot, 8w0);
     }
 
     apply {
@@ -882,17 +1171,74 @@ control MyIngress(inout headers hdr,
                 update_packet_stats();
             }
 
-            // Classify if flow ended (timeout from read_and_timeout_check, or
-            // FIN/RST detected inside update_packet_stats).
-            if (meta.flow_ended == 1w1 &&
-                    (meta.fwd_pkt_count + meta.bwd_pkt_count) >= 2) {
+            // Step 3: scan_and_drain ONLY on drain-trigger packets
+            // (src_ip = 10.255.255.254 = 0x0AFFFFFE).  During normal
+            // traffic, flows end via FIN/RST or timeout-on-arrival only,
+            // making flow boundaries deterministic across runs.
+            // Each packet exports at most 1 stale flow (flow_ended guard).
+            if (meta.src_ip == 32w0x0AFFFFFE) {
+                if (meta.flow_ended == 1w0) { scan_and_drain(); }
+                if (meta.flow_ended == 1w0) { scan_and_drain(); }
+                if (meta.flow_ended == 1w0) { scan_and_drain(); }
+                if (meta.flow_ended == 1w0) { scan_and_drain(); }
+                if (meta.flow_ended == 1w0) { scan_and_drain(); }
+                if (meta.flow_ended == 1w0) { scan_and_drain(); }
+                if (meta.flow_ended == 1w0) { scan_and_drain(); }
+                if (meta.flow_ended == 1w0) { scan_and_drain(); }
+                if (meta.flow_ended == 1w0) { scan_and_drain(); }
+                if (meta.flow_ended == 1w0) { scan_and_drain(); }
+                if (meta.flow_ended == 1w0) { scan_and_drain(); }
+                if (meta.flow_ended == 1w0) { scan_and_drain(); }
+                if (meta.flow_ended == 1w0) { scan_and_drain(); }
+                if (meta.flow_ended == 1w0) { scan_and_drain(); }
+                if (meta.flow_ended == 1w0) { scan_and_drain(); }
+                if (meta.flow_ended == 1w0) { scan_and_drain(); }
+                if (meta.flow_ended == 1w0) { scan_and_drain(); }
+                if (meta.flow_ended == 1w0) { scan_and_drain(); }
+                if (meta.flow_ended == 1w0) { scan_and_drain(); }
+                if (meta.flow_ended == 1w0) { scan_and_drain(); }
+                if (meta.flow_ended == 1w0) { scan_and_drain(); }
+                if (meta.flow_ended == 1w0) { scan_and_drain(); }
+                if (meta.flow_ended == 1w0) { scan_and_drain(); }
+                if (meta.flow_ended == 1w0) { scan_and_drain(); }
+                if (meta.flow_ended == 1w0) { scan_and_drain(); }
+                if (meta.flow_ended == 1w0) { scan_and_drain(); }
+                if (meta.flow_ended == 1w0) { scan_and_drain(); }
+                if (meta.flow_ended == 1w0) { scan_and_drain(); }
+                if (meta.flow_ended == 1w0) { scan_and_drain(); }
+                if (meta.flow_ended == 1w0) { scan_and_drain(); }
+                if (meta.flow_ended == 1w0) { scan_and_drain(); }
+                if (meta.flow_ended == 1w0) { scan_and_drain(); }
+            }
 
-                // Apply LD transformations
-                lda_component1.apply();
-                lda_component2.apply();
-                lda_component3.apply();
-                lda_component4.apply();
-                lda_component5.apply();
+            // Classify if flow ended (timeout from read_and_timeout_check,
+            // FIN/RST from update_packet_stats, or drain from scan_and_drain).
+            if (meta.flow_ended == 1w1 &&
+                    (meta.fwd_pkt_count + meta.bwd_pkt_count) >= 1) {
+
+                // Quantize features for range-match tables
+                meta.duration_q = (bit<16>)(meta.duration >> 20);
+                meta.max_iat_q = (bit<16>)(meta.max_iat >> 20);
+                meta.min_iat_q = (bit<16>)(meta.min_iat >> 20);
+                meta.fwd_pkt_count_q = (bit<16>)meta.fwd_pkt_count;
+                meta.bwd_pkt_count_q = (bit<16>)meta.bwd_pkt_count;
+                meta.fwd_bytes_q = (bit<16>)(meta.fwd_bytes >> 4);
+                meta.bwd_bytes_q = (bit<16>)(meta.bwd_bytes >> 4);
+                meta.flags_syn_q = (bit<8>)meta.flags_syn;
+                meta.flags_ack_q = (bit<16>)meta.flags_ack;
+                meta.flags_fin_q = (bit<8>)meta.flags_fin;
+                meta.flags_rst_q = (bit<8>)meta.flags_rst;
+                meta.flags_psh_q = (bit<16>)meta.flags_psh;
+                meta.flags_urg_q = (bit<8>)meta.flags_urg;
+
+                // Apply PC transformations
+                pca_component1.apply();
+                pca_component2.apply();
+                pca_component3.apply();
+                pca_component4.apply();
+                pca_component5.apply();
+                pca_component6.apply();
+                pca_component7.apply();
 
                 // Apply classifier
                 ml_code.apply();
@@ -901,12 +1247,14 @@ control MyIngress(inout headers hdr,
                 digest<digest_t>(1, {
                     meta.canon_src_ip,
                     meta.canon_dst_ip,
+                    meta.canon_src_mac,
+                    meta.canon_dst_mac,
                     meta.canon_src_port,
                     meta.canon_dst_port,
                     meta.protocol,
                     meta.duration,
                     meta.max_iat,
-                    meta.urg_count,
+                    meta.min_iat,
                     meta.fwd_pkt_count,
                     meta.bwd_pkt_count,
                     meta.fwd_bytes,
@@ -916,16 +1264,18 @@ control MyIngress(inout headers hdr,
                     meta.flags_ack,
                     meta.flags_fin,
                     meta.flags_rst,
-                    meta.min_iat,
                     meta.fwd_max_pkt_len,
                     meta.bwd_max_pkt_len,
                     meta.flags_psh,
+                    meta.flags_urg,
                     meta.init_fwd_win,
-                    meta.ld1_code,
-                    meta.ld2_code,
-                    meta.ld3_code,
-                    meta.ld4_code,
-                    meta.ld5_code,
+                    meta.pc1_code,
+                    meta.pc2_code,
+                    meta.pc3_code,
+                    meta.pc4_code,
+                    meta.pc5_code,
+                    meta.pc6_code,
+                    meta.pc7_code,
                     meta.ml_result
                 });
 

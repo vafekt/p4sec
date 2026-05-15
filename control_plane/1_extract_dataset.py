@@ -5,13 +5,12 @@ Extracts flow-based features from PCAP files or live network capture.
 
 Output columns per flow (bidirectional, canonical key):
 
-  ML feature columns — all 22 match EXACTLY what the P4 switch computes and
+  ML feature columns — all 20 match EXACTLY what the P4 switch computes and
   sends as a digest when a flow ends (same names, same order).
   SrcIP, DstIP are stored as 32-bit integer representations of the IP address.
   SrcMAC, DstMAC are stored as 48-bit integer representations.
-  Protocol, SrcPort, DstPort are available as ML features and are selectable
-  by the Feature Selection step (step 2); PCA/LDA/UMAP operate on the
-  traffic-statistic features below.
+  Protocol, SrcPort, DstPort are part of the 20-feature vector; PCA/LDA/AE
+  operate on the full feature set.
     SrcIP              - Canonical source IP as 32-bit integer
     DstIP              - Canonical destination IP as 32-bit integer
     SrcMAC             - Canonical source MAC as 48-bit integer
@@ -21,6 +20,7 @@ Output columns per flow (bidirectional, canonical key):
     DstPort            - Canonical destination port (bit<16>)
     Duration           - Time from first to last packet (nanoseconds)
     MaxIAT             - Maximum inter-arrival time across consecutive packets (ns)
+    MinIAT             - Minimum inter-arrival time across consecutive packets (ns)
     FwdPktCount        - Packet count in forward (canonical) direction
     BwdPktCount        - Packet count in backward (reverse) direction
     FwdBytes           - Total bytes in forward direction
@@ -33,6 +33,7 @@ Output columns per flow (bidirectional, canonical key):
     FwdMaxPktLen       - Maximum packet length in forward direction (bytes)
     BwdMaxPktLen       - Maximum packet length in backward direction (bytes)
     FlagsPsh           - Number of packets with PSH flag set (0 for non-TCP)
+    UrgCount           - Number of packets with URG flag set (0 for non-TCP)
     InitFwdWinBytes    - TCP window size of the first forward-direction packet (0 for non-TCP)
 
 NOTE: Output is one row PER FLOW, emitted when a flow ends:
@@ -162,12 +163,17 @@ def _finalize_flow(flow_key, flow_data, label):
 
     duration_ns = timestamps[-1] - timestamps[0] if len(timestamps) >= 2 else 0
 
-    # MaxIAT: maximum consecutive inter-arrival time (mirrors P4 reg_max_iat)
+    # MaxIAT / MinIAT: consecutive inter-arrival time bounds
+    # (mirrors P4 reg_max_iat / reg_min_iat).
+    # MinIAT is 0 when fewer than 2 packets are seen.
     max_iat_ns = 0
+    min_iat_ns = 0
     for i in range(1, len(timestamps)):
         iat = timestamps[i] - timestamps[i - 1]
         if iat > max_iat_ns:
             max_iat_ns = iat
+        if min_iat_ns == 0 or iat < min_iat_ns:
+            min_iat_ns = iat
 
     src_ip_int = int(ipaddress.ip_address(flow_key[0]))
     dst_ip_int = int(ipaddress.ip_address(flow_key[2]))
@@ -185,6 +191,7 @@ def _finalize_flow(flow_key, flow_data, label):
         # --- ML features in P4 table key order ---
         'Duration':    duration_ns,
         'MaxIAT':      max_iat_ns,
+        'MinIAT':      min_iat_ns,
         'FwdPktCount': flow_data['fwd_pkt_count'],
         'BwdPktCount': flow_data['bwd_pkt_count'],
         'FwdBytes':    flow_data['fwd_bytes'],
@@ -197,6 +204,7 @@ def _finalize_flow(flow_key, flow_data, label):
         'FwdMaxPktLen':    flow_data['fwd_max_pkt_len'],
         'BwdMaxPktLen':    flow_data['bwd_max_pkt_len'],
         'FlagsPsh':        flow_data['flags_psh_count'],
+        'UrgCount':        flow_data['flags_urg_count'],
         'InitFwdWinBytes': flow_data['init_fwd_win'],
     }
     if label is not None:
@@ -222,6 +230,7 @@ def _empty_flow_state():
         'fwd_max_pkt_len':   0,
         'bwd_max_pkt_len':   0,
         'flags_psh_count':   0,
+        'flags_urg_count':   0,  # count of packets with URG set
         'init_fwd_win':      0,  # window size of first forward packet (TCP only)
     }
 
@@ -263,6 +272,7 @@ def _update_flow_state(state, timestamp_ns, pkt_len, is_reverse,
     state['flags_fin_count'] += flags_fin
     state['flags_rst_count'] += flags_rst
     state['flags_psh_count'] += flags_psh
+    state['flags_urg_count'] += flags_urg
 
     # Signal flow-end when TCP FIN or RST is seen (mirrors P4 flow_ended logic)
     return bool(flags_fin or flags_rst)

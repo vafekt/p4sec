@@ -118,7 +118,7 @@ df_clean = df.replace([np.inf, -np.inf], np.nan).dropna()
 
 # P4-compatible ML features in canonical order.
 # SrcIP/DstIP excluded: they are flow identifiers, not ML features,
-# and at 32 bits they exceed Tofino's 20-bit range-match limit.
+# and at 32 bits they would dominate the range-match key width.
 P4_FEATURE_COLS = [
     "Protocol", "SrcPort", "DstPort",
     "Duration", "MaxIAT",
@@ -245,7 +245,7 @@ for j, r2 in enumerate(r2_quant, 1):
 # The P4 data plane pre-quantizes wide features (>20 bits) before range-match
 # tables. We apply the SAME quantization here so the surrogate DT learns
 # splits on quantized values — ensuring P4 table entries match runtime values.
-print("\nApplying feature quantization (Tofino range-match compatibility)...")
+print("\nApplying feature quantization (range-match compatibility)...")
 X_df_q = quantize_features(pd.DataFrame(X_train, columns=feature_cols))
 X_train_q = X_df_q.values
 X_df_q_test = quantize_features(pd.DataFrame(X_test, columns=feature_cols))
