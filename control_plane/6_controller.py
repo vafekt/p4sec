@@ -423,33 +423,6 @@ def parse_transform_field_names(digest_fields):
         return []
     return [name for _, name in sorted(codes, key=lambda x: x[0])]
 
-def parse_score_field_names(digest_fields):
-    """Return score fields mapped by class index (e.g., score_c0, xgb_c1)."""
-    scores = []
-    patterns = [
-        r"^(?:xgb_)?score[_-]?c?(\d+)$",
-        r"^(?:xgb_)?c(\d+)$",
-        r"^score_c(\d+)$",
-    ]
-    for name in digest_fields:
-        for pat in patterns:
-            m = re.match(pat, name)
-            if m:
-                scores.append((int(m.group(1)), name))
-                break
-    if not scores:
-        return []
-    return [name for _, name in sorted(scores, key=lambda x: x[0])]
-
-def format_score_debug(scores):
-    if not scores:
-        return ""
-    def sort_key(k):
-        m = re.match(r"c(\d+)$", k)
-        return int(m.group(1)) if m else k
-    parts = [f"{k}={scores.get(k, '?')}" for k in sorted(scores.keys(), key=sort_key)]
-    return f"  [Scores: {' '.join(parts)}]"
-
 def format_votes_debug(votes, class_labels):
     """Format RF per-tree votes for display."""
     if not votes:
@@ -707,7 +680,6 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path):
     digest_fields = load_digest_schema(p4info_file_path, digest_name)
     name_to_index = build_digest_field_index(digest_fields) if digest_fields else {}
     transform_field_names = parse_transform_field_names(digest_fields)
-    score_field_names = parse_score_field_names(digest_fields)
 
     if transform_field_names:
         n_components = len(transform_field_names)
@@ -750,9 +722,7 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path):
 
     # Infer model type from the compiled P4 program (p4info tables) — authoritative.
     # rf_votes is INTERNAL metadata in P4 and is never placed in digest_t,
-    # so we inspect table names: rf_vote_classify → RF, xgb_score_* → XGB.
-    model_type = None
-    declared_dt_type = None
+    # so we inspect table names: rf_vote_classify → RF, otherwise DT.
     p4info_model_type = detect_model_type_from_p4info(p4info_file_path)
 
     # Read universal model_params.json to get model_type field
@@ -764,42 +734,19 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path):
         except Exception as e:
             print(f"WARNING: Could not read {model_params_path}: {e}")
 
-    if digest_fields:
-        if any(re.match(r"^xgb_score_c\d+$", f) for f in digest_fields):
-            model_type = "xgb"
-        elif p4info_model_type == "rf":
-            model_type = "rf"
-        elif p4info_model_type == "xgb":
-            model_type = "xgb"
-        else:
-            model_type = "dt"
-            declared_dt_type = _mp.get("model_type")
-
-    # Fallback: use model_params.json model_type field
-    if model_type is None:
-        pmt = _mp.get("model_type", "")
-        if pmt in ("rf",):
-            model_type = "rf"
-        elif pmt in ("xgb", "gb"):
-            model_type = "xgb"
-        elif pmt in ("dt", "knn", "svm", "ada", "cnn"):
-            model_type = "dt"
-            declared_dt_type = pmt
-        else:
-            model_type = "dt"
+    # Resolve to dt or rf
+    pmt = _mp.get("model_type", "")
+    if p4info_model_type == "rf" or pmt == "rf":
+        model_type = "rf"
+    else:
+        model_type = "dt"
 
     rf_model = None
     rf_params = None
     rf_vote_bits = None
-    xgb_model = None
-    xgb_params = None
-    xgb_class_mapping = None
 
-    # Determine model path from model_type in params
-    _actual_type = _mp.get("model_type", model_type)
-    _model_path = os.path.join(script_dir, f'model/{_actual_type}.model')
-    if not os.path.exists(_model_path):
-        _model_path = os.path.join(script_dir, f'model/{model_type}.model')
+    # Determine model path
+    _model_path = os.path.join(script_dir, f'model/{model_type}.model')
 
     # Load class labels from universal params
     CLASS_LABELS = load_class_labels_from_model_params(model_params_path, _model_path)
@@ -813,19 +760,6 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path):
             rf_model = None
         rf_params = _mp if _mp.get("model_type") == "rf" else None
         rf_vote_bits = rf_params.get('vote_bits') if rf_params else None
-    elif model_type == "xgb":
-        try:
-            xgb_model = pd.read_pickle(_model_path)
-            print(f"{_actual_type.upper()} model loaded for runtime verification.")
-        except Exception as e:
-            print(f"WARNING: Unable to load XGB/GB model for verification: {e}")
-            xgb_model = None
-        xgb_params = _mp if _mp.get("model_type") in ("xgb", "gb") else None
-        if xgb_params:
-            classes = xgb_params.get("classes", [])
-            xgb_class_mapping = {idx: cls for idx, cls in enumerate(classes)}
-        else:
-            xgb_class_mapping = None
 
     # -----------------------------------------------------------------------
     # Stale-model check: verify that the loaded model's feature count matches
@@ -834,7 +768,7 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path):
     # rerun after adding/removing features.  Warn once here instead of crashing
     # on every single flow during runtime verification.
     # -----------------------------------------------------------------------
-    _verify_model = rf_model if model_type == 'rf' else (xgb_model if model_type == 'xgb' else None)
+    _verify_model = rf_model if model_type == 'rf' else None
     model_pca_mismatch = False
     if _verify_model is not None and hasattr(_verify_model, 'n_features_in_'):
         model_n_feat = _verify_model.n_features_in_
@@ -914,17 +848,13 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path):
     table_counts, rules_load_time = load_switch_cli(s1, runtime_cli_path)
     print("Rules installed. Installing digest listener...\n")
 
-    # Write run metadata so analyze_results.py can include it in the report
-    # Classify each table as "transform" or "classifier" regardless of method.
+    # Write run metadata. Classify each table as "transform" or "classifier".
     # Transform tables: pca_component* (PCA), lda_component* (LDA),
-    #                   ae_component* (Autoencoder), umap_component* (UMAP)
-    # Classifier tables: ml_code (DT / KNN / SVM),
-    #                    rf_tree_* / rf_vote_classify (RF),
-    #                    xgb_tree_* / xgb_classify (XGB / GB),
-    #                    ada_tree_* (AdaBoost),
-    #                    cnn* (CNN)
-    _TRANSFORM_RE  = re.compile(r'(pca|lda|ae|umap)_component\d+$')
-    _CLASSIFIER_RE = re.compile(r'ml_code|rf_tree_|rf_vote_classify|xgb_tree_|xgb_classify|ada_tree_|cnn')
+    #                   ae_component* (Autoencoder)
+    # Classifier tables: ml_code (DT),
+    #                    rf_tree_* / rf_vote_classify (RF)
+    _TRANSFORM_RE  = re.compile(r'(pca|lda|ae)_component\d+$')
+    _CLASSIFIER_RE = re.compile(r'ml_code|rf_tree_|rf_vote_classify')
 
     _transform_per_component = {}  # table_name -> count (one entry per component table)
     _n_model_entries = 0
@@ -940,10 +870,9 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path):
     _pca_entries_per_component = next(iter(_transform_per_component.values()), 0)
     _pca_total_entries = sum(_transform_per_component.values())
 
-    # Determine active model file path and its on-disk size
-    _active_model_path = _model_path
+    # Determine on-disk size of the active model
     try:
-        _model_size_bytes = os.path.getsize(_active_model_path)
+        _model_size_bytes = os.path.getsize(_model_path)
     except OSError:
         _model_size_bytes = 0
 
@@ -960,9 +889,8 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path):
         "transform_entries_per_component": _pca_entries_per_component,
         "transform_total_entries":       _pca_total_entries,
         "model_type":                    model_type,
-        "declared_dt_type":              declared_dt_type,
         "model_entries":                 _n_model_entries,
-        "model_file":                    os.path.basename(_active_model_path),
+        "model_file":                    os.path.basename(_model_path),
         "model_size_bytes":              _model_size_bytes,
         "transform_config_size_bytes":   _transform_config_size_bytes,
         "total_memory_bytes":            _model_size_bytes + _transform_config_size_bytes,
@@ -1087,15 +1015,6 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path):
                         if not pca_codes:
                             pca_codes = [0] * n_components
 
-                        xgb_scores = {}
-                        for name in (score_field_names or []):
-                            idx = name_to_index.get(name)
-                            if idx is None or idx >= len(st):
-                                continue
-                            m = re.search(r"(\d+)$", name)
-                            if m:
-                                xgb_scores[f"c{int(m.group(1))}"] = bytes_to_int(st[idx].bitstring)
-
                         class_field = get_idx(["ml_result", "class_id", "class", "label", "result"])
                         class_id = get_val(class_field, default=0)
                         if class_field is None and not warn_once["missing_class"]:
@@ -1141,19 +1060,9 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path):
                                 print(f"WARNING: Digest has no transform/class fields ({len(st)}); skipping")
                             continue
 
-                        # Determine layout: either [PCA... , class_id] or [PCA..., xgb_scores(4), class_id]
-                        has_xgb_scores = False
-                        if remaining >= 5 and (remaining - 1) not in (n_components, 9):
-                            if remaining >= n_components + 5:
-                                has_xgb_scores = True
-
-                        if has_xgb_scores:
-                            pca_count = min(n_components, remaining - 5)
-                            scores_start = base_fields + pca_count
-                            class_index = scores_start + 4
-                        else:
-                            pca_count = min(n_components, max(0, remaining - 1))
-                            class_index = base_fields + (remaining - 1)
+                        # Layout: [22 raw flow fields, K transform codes, class_id]
+                        pca_count = min(n_components, max(0, remaining - 1))
+                        class_index = base_fields + (remaining - 1)
 
                         # Extract transform codes (pad if digest has fewer than expected)
                         pca_codes = []
@@ -1165,18 +1074,7 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path):
                         if len(pca_codes) < n_components:
                             pca_codes.extend([0] * (n_components - len(pca_codes)))
 
-                        # Extract XGB scores if present
-                        xgb_scores = {}
-                        if has_xgb_scores and (class_index < len(st)):
-                            if scores_start + 3 < len(st):
-                                xgb_scores = {
-                                    'c0': bytes_to_int(st[scores_start].bitstring),
-                                    'c1': bytes_to_int(st[scores_start + 1].bitstring),
-                                    'c2': bytes_to_int(st[scores_start + 2].bitstring),
-                                    'c3': bytes_to_int(st[scores_start + 3].bitstring),
-                                }
-
-                        # Class ID is the last field in both layouts
+                        # Class ID is the last field
                         if class_index >= len(st):
                             if not warn_once["missing_fields"]:
                                 warn_once["missing_fields"] = True
@@ -1227,7 +1125,6 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path):
                         class_id,
                         class_label,
                         flags,
-                        xgb_scores,
                     ):
                         # Skip flows with < 1 packet (matches training data filter)
                         if (entry["features"]["fwd_pkt_count"] + entry["features"]["bwd_pkt_count"]) < 1:
@@ -1242,7 +1139,7 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path):
                         class_label = entry["class_label"]
 
                         verify_note = ""
-                        votes_or_scores_debug = ""
+                        votes_debug = ""
                         if model_type == "rf" and rf_model is not None and not model_pca_mismatch:
                             try:
                                 x_np = np.array([build_model_input(entry, needs_transform, reduction_feature_columns)[:rf_model.n_features_in_]], dtype=np.float64)
@@ -1262,7 +1159,7 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path):
                                     votes.append(v_id)
 
                                 # Display per-tree votes
-                                votes_or_scores_debug = format_votes_debug(votes, CLASS_LABELS)
+                                votes_debug = format_votes_debug(votes, CLASS_LABELS)
 
                                 vote_bits = rf_vote_bits
                                 if vote_bits is None:
@@ -1279,20 +1176,6 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path):
                                     )
                             except Exception as _ve:
                                 verify_note = f" | RF-VERIFY=error({type(_ve).__name__}: {_ve})"
-                        elif model_type == "xgb" and xgb_model is not None and not model_pca_mismatch:
-                            try:
-                                x_np = np.array([build_model_input(entry, needs_transform, reduction_feature_columns)[:xgb_model.n_features_in_]], dtype=np.float64)
-                                pred_id = int(xgb_model.predict(x_np)[0])
-                                # XGBoost returns encoded int; decode to class name using mapping
-                                pred_label = xgb_class_mapping.get(pred_id, f"unknown({pred_id})")
-
-                                if pred_id != class_id:
-                                    verify_note = f" | XGB-VERIFY={pred_label}({pred_id})"
-                            except Exception as _ve:
-                                verify_note = f" | XGB-VERIFY=error({type(_ve).__name__}: {_ve})"
-
-                            # Debug: show accumulated scores from dataplane (any class count)
-                            votes_or_scores_debug = format_score_debug(entry.get("xgb_scores", {}))
 
                         _code_sfx = (pca_display + " | ") if pca_display else ""
                         print(f"[{packet_id:<4}] {str(ipaddress.ip_address(f['src_ip'])):>15}:{f['src_port']:<5} -> {str(ipaddress.ip_address(f['dst_ip'])):>15}:{f['dst_port']:<5} | "
@@ -1303,8 +1186,8 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path):
                               f"Flags(S/A/F/R)={flags['syn']}/{flags['ack']}/{flags['fin']}/{flags['rst']} | "
                             f"{_code_sfx}"
                               f"Class={class_label}({class_id}){verify_note}", flush=True)
-                        if votes_or_scores_debug:
-                            print(votes_or_scores_debug, flush=True)
+                        if votes_debug:
+                            print(votes_debug, flush=True)
 
                         out.write(f"{f['src_ip']},{f['dst_ip']},{f['src_mac']},{f['dst_mac']},{f['src_port']},{f['dst_port']},{f['proto']},"
                                   f"{f['duration']},{f['max_iat']},{f['fwd_pkt_count']},{f['bwd_pkt_count']},"
