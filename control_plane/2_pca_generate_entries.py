@@ -126,7 +126,6 @@ P4_FEATURE_COLS = [
     "FwdMaxPktLen", "BwdMaxPktLen",
     "FlagsSyn", "FlagsAck", "FlagsFin", "FlagsRst", "FlagsPsh",
     "MaxWinSize", "InitFwdWinBytes",
-    "FlowCountPerSrc", "SynCountPerDst",
 ]
 # Drop rows where any feature column is non-numeric (e.g. pyshark field corruption like '275=7')
 for _col in P4_FEATURE_COLS:

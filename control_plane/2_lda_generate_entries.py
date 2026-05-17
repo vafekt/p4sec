@@ -124,7 +124,6 @@ P4_FEATURE_COLS = [
     "FwdMaxPktLen", "BwdMaxPktLen",
     "FlagsSyn", "FlagsAck", "FlagsFin", "FlagsRst", "FlagsPsh",
     "MaxWinSize", "InitFwdWinBytes",
-    "FlowCountPerSrc", "SynCountPerDst",
 ]
 X_df = df_clean[P4_FEATURE_COLS].astype(int)
 feature_cols = X_df.columns.tolist()

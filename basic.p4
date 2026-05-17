@@ -137,13 +137,7 @@ struct metadata {
     bit<32>    flags_psh;
     bit<16>    max_win_size;
     bit<16>    init_fwd_win;
-    bit<32>    flow_count_per_src;
-    bit<32>    syn_count_per_dst;
     bytes_t    pkt_len;      // IP totalLen for IPv4; 28 for ARP (fixed); used for byte counting
-
-    // Cross-flow per-IP register indices
-    bit<32>    flow_src_hash;
-    bit<32>    flow_dst_hash;
 
     // Quantized features for range-match tables
     bit<16> duration_q          ;  // duration >> 20
@@ -157,8 +151,6 @@ struct metadata {
     bit< 8> flags_fin_q         ;  // flags_fin >> 0
     bit< 8> flags_rst_q         ;  // flags_rst >> 0
     bit<16> flags_psh_q         ;  // flags_psh >> 0
-    bit<16> flow_count_per_src_q;  // flow_count_per_src >> 0
-    bit<16> syn_count_per_dst_q ;  // syn_count_per_dst >> 0
 
     // PC transformed features (quantized)
     pca_code_t pc1_code;
@@ -209,8 +201,6 @@ struct digest_t {
     bit<32>    flags_psh;
     bit<16>    max_win_size;
     bit<16>    init_fwd_win;
-    bit<32>    flow_count_per_src;
-    bit<32>    syn_count_per_dst;
 
     pca_code_t pc1_code;
     pca_code_t pc2_code;
@@ -321,9 +311,6 @@ control MyIngress(inout headers hdr,
     register<bit<16>>(MAX_REGISTER_ENTRIES) reg_bwd_max_pkt_len;
     register<bit<32>>(MAX_REGISTER_ENTRIES) reg_flags_psh;
     register<bit<16>>(MAX_REGISTER_ENTRIES) reg_init_fwd_win;
-    // Cross-flow features: indexed by CRC16(canonical src IP) / CRC16(canonical dst IP)
-    register<bit<32>>(MAX_REGISTER_ENTRIES) reg_flow_count_per_src;
-    register<bit<32>>(MAX_REGISTER_ENTRIES) reg_syn_count_per_dst;
 
     register<bit<1>>(MAX_REGISTER_ENTRIES) bloom_filter_1;  // indexed by CRC16 hash
     register<bit<1>>(MAX_REGISTER_ENTRIES) bloom_filter_2;  // indexed by CRC32 hash
@@ -409,11 +396,6 @@ control MyIngress(inout headers hdr,
             {meta.canon_src_ip, meta.canon_dst_ip,
              meta.canon_src_port, meta.canon_dst_port, meta.protocol},
             (bit<32>)MAX_REGISTER_ENTRIES);
-        // Per-IP register indices for cross-flow features (CRC16 of IP)
-        hash(meta.flow_src_hash, HashAlgorithm.crc16, (bit<16>)0,
-            {meta.canon_src_ip}, (bit<32>)MAX_REGISTER_ENTRIES);
-        hash(meta.flow_dst_hash, HashAlgorithm.crc16, (bit<16>)0,
-            {meta.canon_dst_ip}, (bit<32>)MAX_REGISTER_ENTRIES);
         // Bloom filter collision detection:
         // bf1 slot occupied (1) but bf2 fingerprint absent (0) → different flow at this slot
         bit<1> bf_val_1;
@@ -449,8 +431,6 @@ control MyIngress(inout headers hdr,
         bit<16> bwd_max_pkt_len;
         bit<32> flags_psh;
         bit<16> init_fwd_win;
-        bit<32> flow_count_per_src;
-        bit<32> syn_count_per_dst;
 
         reg_time_first_pkt.read(time_first, meta.flow_hash);
         reg_time_last_pkt.read(time_last, meta.flow_hash);
@@ -468,8 +448,6 @@ control MyIngress(inout headers hdr,
         reg_bwd_max_pkt_len.read(bwd_max_pkt_len, meta.flow_hash);
         reg_flags_psh.read(flags_psh, meta.flow_hash);
         reg_init_fwd_win.read(init_fwd_win, meta.flow_hash);
-        reg_flow_count_per_src.read(flow_count_per_src, meta.flow_src_hash);
-        reg_syn_count_per_dst.read(syn_count_per_dst, meta.flow_dst_hash);
         // Read stored MACs into locals — do NOT overwrite meta.canon_src_mac
         // which was correctly set by compute_flow_hash() from the current packet.
         bit<48> stored_src_mac;
@@ -497,8 +475,6 @@ control MyIngress(inout headers hdr,
                 meta.bwd_max_pkt_len    = bwd_max_pkt_len;
                 meta.flags_psh          = flags_psh;
                 meta.init_fwd_win       = init_fwd_win;
-                meta.flow_count_per_src = flow_count_per_src;
-                meta.syn_count_per_dst  = syn_count_per_dst;
                 meta.canon_src_mac      = stored_src_mac;
                 meta.canon_dst_mac      = stored_dst_mac;
             }
@@ -529,9 +505,6 @@ control MyIngress(inout headers hdr,
             reg_canon_src_mac.write(meta.flow_hash, pkt_src_mac);
             reg_canon_dst_mac.write(meta.flow_hash, pkt_dst_mac);
             reg_protocol.write(meta.flow_hash, meta.protocol);
-            // New flow at this slot: increment per-source flow counter
-            flow_count_per_src = flow_count_per_src + 32w1;
-            reg_flow_count_per_src.write(meta.flow_src_hash, flow_count_per_src);
         }
         // Active timeout — flow has been running longer than ACTIVE_TIMEOUT
         else if (time_first != 0 && time_last != 0 &&
@@ -553,8 +526,6 @@ control MyIngress(inout headers hdr,
                 meta.bwd_max_pkt_len    = bwd_max_pkt_len;
                 meta.flags_psh          = flags_psh;
                 meta.init_fwd_win       = init_fwd_win;
-                meta.flow_count_per_src = flow_count_per_src;
-                meta.syn_count_per_dst  = syn_count_per_dst;
                 meta.canon_src_mac      = stored_src_mac;
                 meta.canon_dst_mac      = stored_dst_mac;
             }
@@ -585,9 +556,6 @@ control MyIngress(inout headers hdr,
             reg_canon_src_mac.write(meta.flow_hash, pkt_src_mac);
             reg_canon_dst_mac.write(meta.flow_hash, pkt_dst_mac);
             reg_protocol.write(meta.flow_hash, meta.protocol);
-            // New flow at this slot: increment per-source flow counter
-            flow_count_per_src = flow_count_per_src + 32w1;
-            reg_flow_count_per_src.write(meta.flow_src_hash, flow_count_per_src);
         }
     }
 
@@ -610,8 +578,6 @@ control MyIngress(inout headers hdr,
         bit<16> bwd_max_pkt_len;
         bit<32> flags_psh;
         bit<16> init_fwd_win;
-        bit<32> flow_count_per_src;
-        bit<32> syn_count_per_dst;
 
         reg_time_first_pkt.read(time_first, meta.flow_hash);
         reg_time_last_pkt.read(time_last, meta.flow_hash);
@@ -629,8 +595,6 @@ control MyIngress(inout headers hdr,
         reg_bwd_max_pkt_len.read(bwd_max_pkt_len, meta.flow_hash);
         reg_flags_psh.read(flags_psh, meta.flow_hash);
         reg_init_fwd_win.read(init_fwd_win, meta.flow_hash);
-        reg_flow_count_per_src.read(flow_count_per_src, meta.flow_src_hash);
-        reg_syn_count_per_dst.read(syn_count_per_dst, meta.flow_dst_hash);
         // NOTE: Do NOT read reg_canon_src_mac/dst_mac into meta here.
         // meta.canon_src_mac was correctly set by compute_flow_hash() and
         // overwriting it with an uninitialized register (0) corrupts MAC
@@ -651,9 +615,6 @@ control MyIngress(inout headers hdr,
             reg_canon_src_mac.write(meta.flow_hash, meta.canon_src_mac);
             reg_canon_dst_mac.write(meta.flow_hash, meta.canon_dst_mac);
             reg_protocol.write(meta.flow_hash, meta.protocol);
-            // Cross-flow: bump per-source flow counter on every new flow
-            flow_count_per_src = flow_count_per_src + 32w1;
-            reg_flow_count_per_src.write(meta.flow_src_hash, flow_count_per_src);
         }
 
         // IAT update (MaxIAT only — paper Table 2)
@@ -718,8 +679,7 @@ control MyIngress(inout headers hdr,
 
         // TCP flag counts (SYN, ACK, FIN, RST, PSH)
         if (meta.protocol == TYPE_TCP) {
-            bit<32> syn_bit = (bit<32>)hdr.tcp.ctrl[1:1];
-            flags_syn = flags_syn + syn_bit;
+            flags_syn = flags_syn + (bit<32>)hdr.tcp.ctrl[1:1];
             flags_ack = flags_ack + (bit<32>)hdr.tcp.ctrl[4:4];
             flags_fin = flags_fin + (bit<32>)hdr.tcp.ctrl[0:0];
             flags_rst = flags_rst + (bit<32>)hdr.tcp.ctrl[2:2];
@@ -729,20 +689,13 @@ control MyIngress(inout headers hdr,
             reg_flags_fin.write(meta.flow_hash, flags_fin);
             reg_flags_rst.write(meta.flow_hash, flags_rst);
             reg_flags_psh.write(meta.flow_hash, flags_psh);
-            // Cross-flow: bump per-destination SYN counter on every SYN packet
-            if (syn_bit == 32w1) {
-                syn_count_per_dst = syn_count_per_dst + 32w1;
-                reg_syn_count_per_dst.write(meta.flow_dst_hash, syn_count_per_dst);
-            }
         }
         if (meta.flow_ended == 1w0) {
-            meta.flags_syn          = flags_syn;
-            meta.flags_ack          = flags_ack;
-            meta.flags_fin          = flags_fin;
-            meta.flags_rst          = flags_rst;
-            meta.flags_psh          = flags_psh;
-            meta.flow_count_per_src = flow_count_per_src;
-            meta.syn_count_per_dst  = syn_count_per_dst;
+            meta.flags_syn = flags_syn;
+            meta.flags_ack = flags_ack;
+            meta.flags_fin = flags_fin;
+            meta.flags_rst = flags_rst;
+            meta.flags_psh = flags_psh;
         }
 
         // FIN/RST ends the flow
@@ -761,8 +714,6 @@ control MyIngress(inout headers hdr,
             reg_bwd_max_pkt_len.read(meta.bwd_max_pkt_len, meta.flow_hash);
             reg_flags_psh.read(meta.flags_psh, meta.flow_hash);
             reg_init_fwd_win.read(meta.init_fwd_win, meta.flow_hash);
-            meta.flow_count_per_src = flow_count_per_src;
-            meta.syn_count_per_dst  = syn_count_per_dst;
             // Reset registers
             reg_time_first_pkt.write(meta.flow_hash, 0);
             reg_time_last_pkt.write(meta.flow_hash, 0);
@@ -790,9 +741,6 @@ control MyIngress(inout headers hdr,
             reg_canon_src_mac.write(meta.flow_hash, 48w0);  // clear MAC bookmark
             reg_canon_dst_mac.write(meta.flow_hash, 48w0);
             reg_protocol.write(meta.flow_hash, 8w0);        // clear protocol bookmark
-            // NOTE: reg_flow_count_per_src / reg_syn_count_per_dst are NOT reset
-            // — they accumulate per-IP across all flows for the lifetime of the
-            // switch, which is what the paper's cross-flow features measure.
         }
     }
 
@@ -822,8 +770,6 @@ control MyIngress(inout headers hdr,
             meta.flags_psh_q         : range;
             meta.max_win_size        : range;
             meta.init_fwd_win        : range;
-            meta.flow_count_per_src_q: range;
-            meta.syn_count_per_dst_q : range;
         }
         actions = {
             set_pc1_code;
@@ -857,8 +803,6 @@ control MyIngress(inout headers hdr,
             meta.flags_psh_q         : range;
             meta.max_win_size        : range;
             meta.init_fwd_win        : range;
-            meta.flow_count_per_src_q: range;
-            meta.syn_count_per_dst_q : range;
         }
         actions = {
             set_pc2_code;
@@ -892,8 +836,6 @@ control MyIngress(inout headers hdr,
             meta.flags_psh_q         : range;
             meta.max_win_size        : range;
             meta.init_fwd_win        : range;
-            meta.flow_count_per_src_q: range;
-            meta.syn_count_per_dst_q : range;
         }
         actions = {
             set_pc3_code;
@@ -927,8 +869,6 @@ control MyIngress(inout headers hdr,
             meta.flags_psh_q         : range;
             meta.max_win_size        : range;
             meta.init_fwd_win        : range;
-            meta.flow_count_per_src_q: range;
-            meta.syn_count_per_dst_q : range;
         }
         actions = {
             set_pc4_code;
@@ -962,8 +902,6 @@ control MyIngress(inout headers hdr,
             meta.flags_psh_q         : range;
             meta.max_win_size        : range;
             meta.init_fwd_win        : range;
-            meta.flow_count_per_src_q: range;
-            meta.syn_count_per_dst_q : range;
         }
         actions = {
             set_pc5_code;
@@ -997,8 +935,6 @@ control MyIngress(inout headers hdr,
             meta.flags_psh_q         : range;
             meta.max_win_size        : range;
             meta.init_fwd_win        : range;
-            meta.flow_count_per_src_q: range;
-            meta.syn_count_per_dst_q : range;
         }
         actions = {
             set_pc6_code;
@@ -1032,8 +968,6 @@ control MyIngress(inout headers hdr,
             meta.flags_psh_q         : range;
             meta.max_win_size        : range;
             meta.init_fwd_win        : range;
-            meta.flow_count_per_src_q: range;
-            meta.syn_count_per_dst_q : range;
         }
         actions = {
             set_pc7_code;
@@ -1134,13 +1068,6 @@ control MyIngress(inout headers hdr,
         reg_canon_src_port.read(meta.canon_src_port, slot);
         reg_canon_dst_port.read(meta.canon_dst_port, slot);
         reg_protocol.read(meta.protocol, slot);
-        // Re-compute per-IP cross-flow indices for the drained flow and snapshot
-        hash(meta.flow_src_hash, HashAlgorithm.crc16, (bit<16>)0,
-            {meta.canon_src_ip}, (bit<32>)MAX_REGISTER_ENTRIES);
-        hash(meta.flow_dst_hash, HashAlgorithm.crc16, (bit<16>)0,
-            {meta.canon_dst_ip}, (bit<32>)MAX_REGISTER_ENTRIES);
-        reg_flow_count_per_src.read(meta.flow_count_per_src, meta.flow_src_hash);
-        reg_syn_count_per_dst.read(meta.syn_count_per_dst, meta.flow_dst_hash);
 
         // Clear the drained slot
         reg_time_first_pkt.write(slot, 0);
@@ -1248,8 +1175,6 @@ control MyIngress(inout headers hdr,
                 meta.flags_fin_q = (bit<8>)meta.flags_fin;
                 meta.flags_rst_q = (bit<8>)meta.flags_rst;
                 meta.flags_psh_q = (bit<16>)meta.flags_psh;
-                meta.flow_count_per_src_q = (bit<16>)meta.flow_count_per_src;
-                meta.syn_count_per_dst_q = (bit<16>)meta.syn_count_per_dst;
 
                 // Apply PC transformations
                 pca_component1.apply();
@@ -1287,8 +1212,6 @@ control MyIngress(inout headers hdr,
                     meta.flags_psh,
                     meta.max_win_size,
                     meta.init_fwd_win,
-                    meta.flow_count_per_src,
-                    meta.syn_count_per_dst,
                     meta.pc1_code,
                     meta.pc2_code,
                     meta.pc3_code,

@@ -33,8 +33,6 @@ Output columns per flow (bidirectional, canonical key):
     FlagsPsh           - Number of packets with PSH flag set (0 for non-TCP)
     MaxWinSize         - Maximum TCP window size observed in flow (0 for non-TCP)
     InitFwdWinBytes    - TCP window size of the first forward-direction packet (0 for non-TCP)
-    FlowCountPerSrc    - Distinct flows initiated by this source IP up to flow finalization
-    SynCountPerDst     - SYN packets seen toward this destination IP up to flow finalization
 
 NOTE: Output is one row PER FLOW, emitted when a flow ends:
   - TCP FIN or RST flag is seen (flow closed)
@@ -70,7 +68,6 @@ logger = logging.getLogger(__name__)
 FLOW_TIMEOUT_NS = 20 * 1_000_000_000        # 20s idle timeout in nanoseconds (matches P4 FLOW_TIMEOUT)
 ACTIVE_TIMEOUT_NS = 60 * 1_000_000_000      # 60s active timeout — force-export long-lived flows
 MAX_REGISTER_ENTRIES = 65536            # matches P4 MAX_REGISTER_ENTRIES (CRC16 → 65536 slots)
-P4_FEATURE_MAX_RAW = (2 ** 32) - 1      # 32-bit cross-flow counter saturation
 
 # CRC functions matching BMv2's HashAlgorithm.crc16 / crc32
 _crc16_fn = crcmod.predefined.mkCrcFun('crc-16')
@@ -91,12 +88,6 @@ def _compute_flow_hashes(c_src_ip, c_dst_ip, c_src_port, c_dst_port, proto):
     h16 = _crc16_fn(data) % MAX_REGISTER_ENTRIES
     h32 = _crc32_fn(data) % MAX_REGISTER_ENTRIES
     return h16, h32
-
-
-def _ip_hash16(ip_str):
-    """CRC16-based hash of an IPv4 string, matching P4 per-IP register indexing."""
-    ip_int = int(ipaddress.ip_address(ip_str))
-    return _crc16_fn(struct.pack('!I', ip_int)) % MAX_REGISTER_ENTRIES
 
 
 LOGO = """---------------------------------------------------------------------------
@@ -206,8 +197,6 @@ def _finalize_flow(flow_key, flow_data, label):
         'FlagsPsh':        flow_data['flags_psh_count'],
         'MaxWinSize':      flow_data['max_win_size'],
         'InitFwdWinBytes': flow_data['init_fwd_win'],
-        'FlowCountPerSrc': flow_data['flow_count_per_src'],
-        'SynCountPerDst':  flow_data['syn_count_per_dst'],
     }
     if label is not None:
         feature['Label'] = label
@@ -233,22 +222,14 @@ def _empty_flow_state():
         'bwd_max_pkt_len':    0,
         'flags_psh_count':    0,
         'init_fwd_win':       0,  # window size of first forward packet (TCP only)
-        'flow_count_per_src': 0,  # snapshot of distinct flows from this source IP
-        'syn_count_per_dst':  0,  # snapshot of SYN packets toward this destination IP
     }
 
 
 def _update_flow_state(state, timestamp_ns, pkt_len, is_reverse,
                         flags_syn, flags_ack, flags_fin, flags_rst,
-                        flags_psh, win_size,
-                        flow_count_per_src, syn_count_per_dst):
+                        flags_psh, win_size):
     """Accumulate a single packet into the flow state. Returns True if the flow
-    should be finalized after this packet (FIN or RST seen), False otherwise.
-
-    flow_count_per_src and syn_count_per_dst are the current per-IP register
-    values (as seen by P4 at packet time); they are snapshotted into the flow
-    state so the finalized record carries the latest cross-flow counters.
-    """
+    should be finalized after this packet (FIN or RST seen), False otherwise."""
     # ── Quantize timestamp to microsecond resolution ────────────────────
     # BMv2's ingress_global_timestamp is in microseconds; P4 converts via
     # current_time = current_time_us * 1000.  All P4 timestamps are therefore
@@ -281,10 +262,6 @@ def _update_flow_state(state, timestamp_ns, pkt_len, is_reverse,
     state['flags_fin_count'] += flags_fin
     state['flags_rst_count'] += flags_rst
     state['flags_psh_count'] += flags_psh
-
-    # ── Cross-flow snapshots (mirrors P4 reg_flow_count_per_src/_dst reads) ──
-    state['flow_count_per_src'] = flow_count_per_src
-    state['syn_count_per_dst']  = syn_count_per_dst
 
     # Signal flow-end when TCP FIN or RST is seen (mirrors P4 flow_ended logic)
     return bool(flags_fin or flags_rst)
@@ -421,11 +398,6 @@ def extract_features_from_pcap(pcap_path, label=None, eof_flush=False):
     bf2         = bytearray(MAX_REGISTER_ENTRIES)  # bloom filter 2 (indexed by h32)
     reg_h2      = [0] * MAX_REGISTER_ENTRIES       # stored h32 per slot
 
-    # Cross-flow registers (mirror P4 reg_flow_count_per_src / reg_syn_count_per_dst).
-    # Indexed by CRC16 hash of the packet's canonical src/dst IP.
-    flow_count_per_src = [0] * MAX_REGISTER_ENTRIES
-    syn_count_per_dst  = [0] * MAX_REGISTER_ENTRIES
-
     total_packets   = 0
     processed_count = 0
     skipped_proto   = 0
@@ -461,16 +433,7 @@ def extract_features_from_pcap(pcap_path, label=None, eof_flush=False):
                 src_ip_int = int(ipaddress.ip_address(c_src_ip))
                 dst_ip_int = int(ipaddress.ip_address(c_dst_ip))
 
-                # Cross-flow per-IP indices
-                h_src_ip = _ip_hash16(c_src_ip)
-                h_dst_ip = _ip_hash16(c_dst_ip)
-
                 state = flow_states[h16]
-
-                # Detect "new flow at this slot" so FlowCountPerSrc only
-                # increments once per flow (P4 does the same: increment
-                # happens in the same branch that resets the per-flow state).
-                new_flow = False
 
                 # Idle timeout: finalize the previous flow, then reset
                 if state is not None and state['timestamps'] and \
@@ -484,7 +447,6 @@ def extract_features_from_pcap(pcap_path, label=None, eof_flush=False):
                     bf1[h16] = 1
                     bf2[h32] = 1
                     reg_h2[h16] = h32
-                    new_flow = True
                 # Active timeout: flow running longer than 60s — export and restart
                 elif state is not None and state['timestamps'] and \
                         (fields['timestamp_ns'] - state['timestamps'][0]) > ACTIVE_TIMEOUT_NS:
@@ -496,7 +458,6 @@ def extract_features_from_pcap(pcap_path, label=None, eof_flush=False):
                     bf1[h16] = 1
                     bf2[h32] = 1
                     reg_h2[h16] = h32
-                    new_flow = True
                 elif state is None:
                     # Empty slot — start new flow
                     flow_states[h16] = _empty_flow_state()
@@ -504,17 +465,6 @@ def extract_features_from_pcap(pcap_path, label=None, eof_flush=False):
                     bf1[h16] = 1
                     bf2[h32] = 1
                     reg_h2[h16] = h32
-                    new_flow = True
-
-                # Cross-flow counter updates (match P4 packet-time register writes):
-                #   FlowCountPerSrc[h_src] += 1 on every new flow start at this source
-                #   SynCountPerDst[h_dst]  += 1 on every SYN packet to this destination
-                if new_flow:
-                    flow_count_per_src[h_src_ip] = min(
-                        flow_count_per_src[h_src_ip] + 1, P4_FEATURE_MAX_RAW)
-                if fields['flags_syn']:
-                    syn_count_per_dst[h_dst_ip] = min(
-                        syn_count_per_dst[h_dst_ip] + 1, P4_FEATURE_MAX_RAW)
 
                 # Accumulate packet; check if flow ends (FIN/RST)
                 flow_ended = _update_flow_state(
@@ -522,9 +472,7 @@ def extract_features_from_pcap(pcap_path, label=None, eof_flush=False):
                     fields['timestamp_ns'], fields['pkt_len'], is_reverse,
                     fields['flags_syn'], fields['flags_ack'],
                     fields['flags_fin'], fields['flags_rst'],
-                    fields['flags_psh'], fields['win_size'],
-                    flow_count_per_src[h_src_ip],
-                    syn_count_per_dst[h_dst_ip])
+                    fields['flags_psh'], fields['win_size'])
 
                 if flow_ended:
                     feat = _finalize_flow(flow_keys[h16], flow_states[h16], label)
@@ -654,10 +602,6 @@ def extract_features_from_interface(interface, output_csv, label=None,
     bf2         = bytearray(MAX_REGISTER_ENTRIES)
     reg_h2      = [0] * MAX_REGISTER_ENTRIES
 
-    # Cross-flow registers (mirror P4 reg_flow_count_per_src / reg_syn_count_per_dst).
-    flow_count_per_src = [0] * MAX_REGISTER_ENTRIES
-    syn_count_per_dst  = [0] * MAX_REGISTER_ENTRIES
-
     try:
         for packet in cap.sniff_continuously():
             total_seen += 1
@@ -687,11 +631,8 @@ def extract_features_from_interface(interface, output_csv, label=None,
 
                 src_ip_int = int(ipaddress.ip_address(c_src_ip))
                 dst_ip_int = int(ipaddress.ip_address(c_dst_ip))
-                h_src_ip = _ip_hash16(c_src_ip)
-                h_dst_ip = _ip_hash16(c_dst_ip)
 
                 state = flow_states[h16]
-                new_flow = False
 
                 # Idle timeout: finalize the previous flow, then reset
                 if state is not None and state['timestamps'] and \
@@ -704,7 +645,6 @@ def extract_features_from_interface(interface, output_csv, label=None,
                     bf1[h16] = 1
                     bf2[h32] = 1
                     reg_h2[h16] = h32
-                    new_flow = True
                 # Active timeout: flow running longer than 60s — export and restart
                 elif state is not None and state['timestamps'] and \
                         (fields['timestamp_ns'] - state['timestamps'][0]) > ACTIVE_TIMEOUT_NS:
@@ -716,21 +656,12 @@ def extract_features_from_interface(interface, output_csv, label=None,
                     bf1[h16] = 1
                     bf2[h32] = 1
                     reg_h2[h16] = h32
-                    new_flow = True
                 elif state is None:
                     flow_states[h16] = _empty_flow_state()
                     flow_keys[h16] = (c_src_ip, c_src_port, c_dst_ip, c_dst_port, proto, c_src_mac, c_dst_mac)
                     bf1[h16] = 1
                     bf2[h32] = 1
                     reg_h2[h16] = h32
-                    new_flow = True
-
-                if new_flow:
-                    flow_count_per_src[h_src_ip] = min(
-                        flow_count_per_src[h_src_ip] + 1, P4_FEATURE_MAX_RAW)
-                if fields['flags_syn']:
-                    syn_count_per_dst[h_dst_ip] = min(
-                        syn_count_per_dst[h_dst_ip] + 1, P4_FEATURE_MAX_RAW)
 
                 # Accumulate packet; check if flow ends (FIN/RST)
                 flow_ended = _update_flow_state(
@@ -738,9 +669,7 @@ def extract_features_from_interface(interface, output_csv, label=None,
                     fields['timestamp_ns'], fields['pkt_len'], is_reverse,
                     fields['flags_syn'], fields['flags_ack'],
                     fields['flags_fin'], fields['flags_rst'],
-                    fields['flags_psh'], fields['win_size'],
-                    flow_count_per_src[h_src_ip],
-                    syn_count_per_dst[h_dst_ip])
+                    fields['flags_psh'], fields['win_size'])
 
                 if flow_ended:
                     feat = _finalize_flow(flow_keys[h16], flow_states[h16], label)

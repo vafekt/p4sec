@@ -41,8 +41,6 @@ P4_FEATURE_MAX = {
     "FlagsPsh":        (2**32 - 1),   # bit<32>
     "MaxWinSize":      (2**16 - 1),   # bit<16>
     "InitFwdWinBytes": (2**16 - 1),   # bit<16>
-    "FlowCountPerSrc": (2**32 - 1),   # bit<32>  cross-flow: distinct flows per source
-    "SynCountPerDst":  (2**32 - 1),   # bit<32>  cross-flow: SYN packets per destination
 }
 
 # All 20 P4 raw flow feature names (ML classifier input), in canonical order
@@ -70,8 +68,6 @@ FEATURE_QUANTIZE = {
     "FlagsFin":        (0,   8),  # 32b → 8b
     "FlagsRst":        (0,   8),  # 32b → 8b
     "FlagsPsh":        (0,  16),  # 32b → 16b
-    "FlowCountPerSrc": (0,  16),  # 32b → 16b
-    "SynCountPerDst":  (0,  16),  # 32b → 16b
 }
 
 # P4 field widths AFTER quantization (for range-match key sizing)

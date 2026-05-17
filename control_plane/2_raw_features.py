@@ -52,7 +52,6 @@ P4_FEATURE_COLS = [
     "FwdMaxPktLen", "BwdMaxPktLen",
     "FlagsSyn", "FlagsAck", "FlagsFin", "FlagsRst", "FlagsPsh",
     "MaxWinSize", "InitFwdWinBytes",
-    "FlowCountPerSrc", "SynCountPerDst",
 ]
 
 

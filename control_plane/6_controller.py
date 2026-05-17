@@ -469,8 +469,6 @@ _FEATURE_TO_ENTRY_KEY = {
     "FlagsPsh":         ("features", "flags_psh"),
     "MaxWinSize":       ("features", "max_win_size"),
     "InitFwdWinBytes":  ("features", "init_fwd_win"),
-    "FlowCountPerSrc":  ("features", "flow_count_per_src"),
-    "SynCountPerDst":   ("features", "syn_count_per_dst"),
 }
 
 
@@ -930,7 +928,7 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path):
                 extra_headers = ','.join(code_csv_headers) + ','
             else:
                 extra_headers = ''   # Feature Selection: no code columns
-            out.write(f"src_ip,dst_ip,src_mac,dst_mac,src_port,dst_port,proto,duration,max_iat,fwd_pkt_count,bwd_pkt_count,fwd_bytes,bwd_bytes,fwd_max_pkt_len,bwd_max_pkt_len,flags_syn,flags_ack,flags_fin,flags_rst,flags_psh,max_win_size,init_fwd_win,flow_count_per_src,syn_count_per_dst,{extra_headers}class_id,class_label\n")
+            out.write(f"src_ip,dst_ip,src_mac,dst_mac,src_port,dst_port,proto,duration,max_iat,fwd_pkt_count,bwd_pkt_count,fwd_bytes,bwd_bytes,fwd_max_pkt_len,bwd_max_pkt_len,flags_syn,flags_ack,flags_fin,flags_rst,flags_psh,max_win_size,init_fwd_win,{extra_headers}class_id,class_label\n")
             packet_id = 0
             # IPs used by run_demo.sh drain-trigger probes — filter them out
             _DRAIN_IPS = {int(ipaddress.ip_address("10.255.255.254")),
@@ -1006,8 +1004,6 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path):
                         flags_psh          = get_val(get_idx(["flags_psh"]))
                         max_win_size       = get_val(get_idx(["max_win_size"]))
                         init_fwd_win       = get_val(get_idx(["init_fwd_win"]))
-                        flow_count_per_src = get_val(get_idx(["flow_count_per_src"]))
-                        syn_count_per_dst  = get_val(get_idx(["syn_count_per_dst"]))
 
                         pca_codes = []
                         for name in (transform_field_names or []):
@@ -1055,10 +1051,8 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path):
                         flags_psh          = bytes_to_int(st[19].bitstring)
                         max_win_size       = bytes_to_int(st[20].bitstring)
                         init_fwd_win       = bytes_to_int(st[21].bitstring)
-                        flow_count_per_src = bytes_to_int(st[22].bitstring)
-                        syn_count_per_dst  = bytes_to_int(st[23].bitstring)
 
-                        base_fields = 24
+                        base_fields = 22
                         remaining = len(st) - base_fields
                         if remaining <= 0:
                             if not warn_once["missing_fields"]:
@@ -1116,8 +1110,6 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path):
                         "flags_psh": flags_psh,
                         "max_win_size": max_win_size,
                         "init_fwd_win": init_fwd_win,
-                        "flow_count_per_src": flow_count_per_src,
-                        "syn_count_per_dst":  syn_count_per_dst,
                     }
                     flags = {
                         "syn": flags_syn,
@@ -1203,7 +1195,6 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path):
                                   f"{f.get('fwd_max_pkt_len',0)},{f.get('bwd_max_pkt_len',0)},"
                                   f"{flags['syn']},{flags['ack']},{flags['fin']},{flags['rst']},"
                                   f"{f.get('flags_psh',0)},{f['max_win_size']},{f.get('init_fwd_win',0)},"
-                                  f"{f.get('flow_count_per_src',0)},{f.get('syn_count_per_dst',0)},"
                                   f"{format_codes_csv(entry['pca_codes'])}{class_id},{class_label}\n")
                         out.flush()
 

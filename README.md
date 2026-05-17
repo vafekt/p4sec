@@ -121,12 +121,16 @@ The 20 bidirectional flow features extracted (paper Table 2):
 | Volume | FwdPktCount, BwdPktCount, FwdBytes, BwdBytes, FwdMaxPktLen, BwdMaxPktLen | 32x4, 16x2 |
 | TCP Flags | FlagsSyn, FlagsAck, FlagsFin, FlagsRst, FlagsPsh | 32x5 |
 | Window | MaxWinSize, InitFwdWinBytes | 16, 16 |
-| Cross-flow | FlowCountPerSrc, SynCountPerDst | 32, 32 |
 
 Per-flow state is held in CRC16-indexed register arrays; a CRC32-indexed Bloom
-filter detects index collisions. Cross-flow counters use a separate CRC16 of
-the canonical source / destination IP. A flow is finalised on TCP FIN/RST,
-after a 20-second idle timeout, or via the amortised scan-and-drain action.
+filter detects index collisions. A flow is finalised on TCP FIN/RST, after a
+20-second idle timeout, or via the amortised scan-and-drain action.
+
+The two cross-flow features from the paper's Table 2 (`FlowCountPerSrc`,
+`SynCountPerDst`) are intentionally omitted from this implementation:
+their per-IP registers accumulate across the entire switch lifetime, which
+makes per-pcap replay tests order-dependent on BMv2 without provided no
+hardware register reset path.
 
 ## Step 2: Dimensionality Reduction
 
