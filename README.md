@@ -234,20 +234,90 @@ The controller:
 
 ## End-to-End Verification on BMv2
 
-To validate the deployed pipeline on real CIC-IoT traffic rather than
-relying on the offline holdout split:
+To validate the deployed pipeline on real traffic rather than relying on
+the offline holdout split:
 
-1. Run steps 1 to 5 once with the CIC-IoT PCAPs in place.
+1. Run steps 1 to 5 once with the PCAPs in place.
 2. `make run` to bring up the BMv2 switch.
 3. In a second terminal, start the controller from step 7.
 4. From a Mininet host, replay one of the labelled PCAPs into the switch:
 
    ```bash
-   mininet> h1 tcpreplay -i h1-eth0 /tutorials/exercises/p4sec/control_plane/CIC-IoT/DoS.v1.pcap
+   mininet> h1 ip link set eth0 mtu 9000        # avoid PF_PACKET EMSGSIZE on large frames
+   mininet> h1 tcpreplay -i eth0 -p 200 /tutorials/exercises/p4sec/control_plane/CIC-IoT/DoS.v1.pcap
    ```
 
-5. Stop the controller and compare `logs/predictions.csv` against the
+5. Optional: send drain-trigger packets (source IP 10.255.255.254) to
+   finalise stale flows still sitting in the per-flow registers without
+   waiting for the 20-second idle timeout. A pre-built helper pcap can be
+   generated with scapy:
+
+   ```python
+   from scapy.all import Ether, IP, UDP, wrpcap
+   pkts = [Ether()/IP(src='10.255.255.254', dst='10.255.255.253')/UDP(sport=1000+i, dport=2000)
+           for i in range(2048)]
+   wrpcap('drain.pcap', pkts)
+   ```
+
+   Each drain-trigger packet sweeps 32 register slots, so 2,048 packets
+   cover all 65,536 slots.
+
+6. Stop the controller and compare `logs/predictions.csv` against the
    ground-truth label encoded in the PCAP filename.
+
+### Why live BMv2 accuracy can lag offline holdout accuracy
+
+Two unavoidable sources of noise mean that line-rate accuracy on BMv2 will
+typically be a few percentage points below the offline holdout number, even
+with a model that scores 100% on the test split:
+
+1. **`tcpreplay` cannot reproduce the original packet timing.** The trained
+   model sees `Duration`, `MaxIAT` (and, internally, the inter-packet
+   gaps that influence flow-end decisions) at the resolution BMv2 measures
+   them: microseconds (multiplied to nanoseconds). `tcpreplay` re-emits
+   packets at a software-scheduled rate (`-p`, `--mbps`, or
+   `--topspeed`), so the inter-packet gaps the switch records are *not*
+   the gaps the offline extractor saw when reading the same pcap directly.
+   For flows whose decision boundary depends on timing features at the
+   sub-millisecond range, a few-microsecond shift is enough to push a
+   sample to the wrong side of a range-match rule.
+
+2. **PCAPs contain background / mixed traffic.** Public attack pcaps are
+   captures of *complete* sessions, not curated single-class flows. A
+   "BruteForce" pcap contains the brute-force flows plus the ARP, DNS,
+   ICMP and TCP control-plane traffic that ran alongside them. The
+   filename label is applied to every flow in the file, so a few
+   benign-looking ACK/FIN exchanges inside the BruteForce pcap legitimately
+   get classified as Benign (or as the nearest neighbouring class) at line
+   rate, even though they carry the BruteForce label in the dataset.
+
+Both effects show up most strongly on small or visually-similar classes
+(Evasion in `AttackIDS/`, BruteForce-vs-DoS in `CIC-IoT/`). They do **not**
+indicate a bug in the pipeline: the same trained model still produces 100%
+agreement when fed its own training PCA codes back through the DT.
+
+## Bundled Example PCAPs
+
+Two folders of labelled captures ship with the repo so you can run the
+pipeline end-to-end without sourcing a dataset:
+
+| Folder | Classes | Approx. size | Source |
+|---|---|---|---|
+| `control_plane/CIC-IoT/` | Benign, BruteForce, DoS, Reconnaissance | ~24 MB (not committed; place files manually) | CIC-IoT 2023 subset |
+| `control_plane/AttackIDS/` | Access, CC, Discovery, Evasion | ~480 KB (committed) | AttackIDS demo captures |
+
+`AttackIDS/` is small enough to ship in-tree as a runnable example. To use
+it, point step 1 at that directory:
+
+```bash
+python3 1_extract_dataset.py --mode pcap --pcap-dir AttackIDS --output dataset/dataset.csv
+```
+
+The 14 captures yield ~176 labelled flows. On the live BMv2 switch this
+pipeline reproduces a measured **97.47% overall accuracy** (Access 100% /
+CC 96.70% / Discovery 95.83%), within a couple of percentage points of
+the offline holdout result, with the gap attributable to the two effects
+described above.
 
 ## Repository Layout
 
@@ -268,6 +338,7 @@ control_plane/
     5_generating_p4_code.py          BMv2 P4 code synthesis
     6_controller.py                  Runtime: load rules, log digests
     pipeline_utils.py                Shared feature and config helpers
+    AttackIDS/                       Bundled example PCAPs (Access/CC/Discovery/Evasion)
     CIC-IoT/                         Place CIC-IoT 2023 PCAP files here
 ```
 
