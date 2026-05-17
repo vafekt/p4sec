@@ -445,30 +445,32 @@ def format_codes_csv(codes):
     return ','.join(str(c) for c in codes) + ','
 
 
-# Map canonical feature names (from reduction_config) to entry["features"] / entry["flags"] keys
+# Map canonical feature names (paper Table 2) to entry["features"] / entry["flags"] keys
 _FEATURE_TO_ENTRY_KEY = {
-    "SrcIP":           ("features", "src_ip"),
-    "DstIP":           ("features", "dst_ip"),
-    "SrcMAC":          ("features", "src_mac"),
-    "DstMAC":          ("features", "dst_mac"),
-    "Protocol":        ("features", "proto"),
-    "SrcPort":         ("features", "src_port"),
-    "DstPort":         ("features", "dst_port"),
-    "Duration":        ("features", "duration"),
-    "MaxIAT":          ("features", "max_iat"),
-    "FwdPktCount":     ("features", "fwd_pkt_count"),
-    "BwdPktCount":     ("features", "bwd_pkt_count"),
-    "FwdBytes":        ("features", "fwd_bytes"),
-    "BwdBytes":        ("features", "bwd_bytes"),
-    "MaxWinSize":      ("features", "max_win_size"),
-    "FlagsSyn":        ("flags", "syn"),
-    "FlagsAck":        ("flags", "ack"),
-    "FlagsFin":        ("flags", "fin"),
-    "FlagsRst":        ("flags", "rst"),
-    "FwdMaxPktLen":    ("features", "fwd_max_pkt_len"),
-    "BwdMaxPktLen":    ("features", "bwd_max_pkt_len"),
-    "FlagsPsh":        ("features", "flags_psh"),
-    "InitFwdWinBytes": ("features", "init_fwd_win"),
+    "SrcIP":            ("features", "src_ip"),
+    "DstIP":            ("features", "dst_ip"),
+    "SrcMAC":           ("features", "src_mac"),
+    "DstMAC":           ("features", "dst_mac"),
+    "Protocol":         ("features", "proto"),
+    "SrcPort":          ("features", "src_port"),
+    "DstPort":          ("features", "dst_port"),
+    "Duration":         ("features", "duration"),
+    "MaxIAT":           ("features", "max_iat"),
+    "FwdPktCount":      ("features", "fwd_pkt_count"),
+    "BwdPktCount":      ("features", "bwd_pkt_count"),
+    "FwdBytes":         ("features", "fwd_bytes"),
+    "BwdBytes":         ("features", "bwd_bytes"),
+    "FwdMaxPktLen":     ("features", "fwd_max_pkt_len"),
+    "BwdMaxPktLen":     ("features", "bwd_max_pkt_len"),
+    "FlagsSyn":         ("flags", "syn"),
+    "FlagsAck":         ("flags", "ack"),
+    "FlagsFin":         ("flags", "fin"),
+    "FlagsRst":         ("flags", "rst"),
+    "FlagsPsh":         ("features", "flags_psh"),
+    "MaxWinSize":       ("features", "max_win_size"),
+    "InitFwdWinBytes":  ("features", "init_fwd_win"),
+    "FlowCountPerSrc":  ("features", "flow_count_per_src"),
+    "SynCountPerDst":   ("features", "syn_count_per_dst"),
 }
 
 
@@ -928,7 +930,7 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path):
                 extra_headers = ','.join(code_csv_headers) + ','
             else:
                 extra_headers = ''   # Feature Selection: no code columns
-            out.write(f"src_ip,dst_ip,src_mac,dst_mac,src_port,dst_port,proto,duration,max_iat,fwd_pkt_count,bwd_pkt_count,fwd_bytes,bwd_bytes,max_win_size,flags_syn,flags_ack,flags_fin,flags_rst,fwd_max_pkt_len,bwd_max_pkt_len,flags_psh,init_fwd_win,{extra_headers}class_id,class_label\n")
+            out.write(f"src_ip,dst_ip,src_mac,dst_mac,src_port,dst_port,proto,duration,max_iat,fwd_pkt_count,bwd_pkt_count,fwd_bytes,bwd_bytes,fwd_max_pkt_len,bwd_max_pkt_len,flags_syn,flags_ack,flags_fin,flags_rst,flags_psh,max_win_size,init_fwd_win,flow_count_per_src,syn_count_per_dst,{extra_headers}class_id,class_label\n")
             packet_id = 0
             # IPs used by run_demo.sh drain-trigger probes — filter them out
             _DRAIN_IPS = {int(ipaddress.ip_address("10.255.255.254")),
@@ -989,21 +991,23 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path):
                         dst_port = get_val(dst_port_field, default=0)
                         proto = get_val(proto_field, default=0)
 
-                        duration     = get_val(get_idx(["duration"]))
-                        max_iat      = get_val(get_idx(["max_iat"]))
-                        fwd_pkt_count= get_val(get_idx(["fwd_pkt_count"]))
-                        bwd_pkt_count= get_val(get_idx(["bwd_pkt_count"]))
-                        fwd_bytes    = get_val(get_idx(["fwd_bytes"]))
-                        bwd_bytes    = get_val(get_idx(["bwd_bytes"]))
-                        max_win_size = get_val(get_idx(["max_win_size"]))
-                        flags_syn = get_val(get_idx(["flags_syn", "syn"]))
-                        flags_ack = get_val(get_idx(["flags_ack", "ack"]))
-                        flags_fin = get_val(get_idx(["flags_fin", "fin"]))
-                        flags_rst = get_val(get_idx(["flags_rst", "rst"]))
-                        fwd_max_pkt_len= get_val(get_idx(["fwd_max_pkt_len"]))
-                        bwd_max_pkt_len= get_val(get_idx(["bwd_max_pkt_len"]))
-                        flags_psh      = get_val(get_idx(["flags_psh"]))
-                        init_fwd_win   = get_val(get_idx(["init_fwd_win"]))
+                        duration           = get_val(get_idx(["duration"]))
+                        max_iat            = get_val(get_idx(["max_iat"]))
+                        fwd_pkt_count      = get_val(get_idx(["fwd_pkt_count"]))
+                        bwd_pkt_count      = get_val(get_idx(["bwd_pkt_count"]))
+                        fwd_bytes          = get_val(get_idx(["fwd_bytes"]))
+                        bwd_bytes          = get_val(get_idx(["bwd_bytes"]))
+                        fwd_max_pkt_len    = get_val(get_idx(["fwd_max_pkt_len"]))
+                        bwd_max_pkt_len    = get_val(get_idx(["bwd_max_pkt_len"]))
+                        flags_syn          = get_val(get_idx(["flags_syn", "syn"]))
+                        flags_ack          = get_val(get_idx(["flags_ack", "ack"]))
+                        flags_fin          = get_val(get_idx(["flags_fin", "fin"]))
+                        flags_rst          = get_val(get_idx(["flags_rst", "rst"]))
+                        flags_psh          = get_val(get_idx(["flags_psh"]))
+                        max_win_size       = get_val(get_idx(["max_win_size"]))
+                        init_fwd_win       = get_val(get_idx(["init_fwd_win"]))
+                        flow_count_per_src = get_val(get_idx(["flow_count_per_src"]))
+                        syn_count_per_dst  = get_val(get_idx(["syn_count_per_dst"]))
 
                         pca_codes = []
                         for name in (transform_field_names or []):
@@ -1035,24 +1039,26 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path):
                         dst_port = bytes_to_int(st[5].bitstring)
                         proto = bytes_to_int(st[6].bitstring)
 
-                        # Extract flow-based features (order matches P4 digest_t struct)
-                        duration      = bytes_to_int(st[7].bitstring)   # Flow duration
-                        max_iat       = bytes_to_int(st[8].bitstring)   # Max inter-arrival time
-                        fwd_pkt_count = bytes_to_int(st[9].bitstring)   # Forward packet count
-                        bwd_pkt_count = bytes_to_int(st[10].bitstring)  # Backward packet count
-                        fwd_bytes     = bytes_to_int(st[11].bitstring)  # Forward bytes
-                        bwd_bytes     = bytes_to_int(st[12].bitstring)  # Backward bytes
-                        max_win_size  = bytes_to_int(st[13].bitstring)  # Max window size
-                        flags_syn = bytes_to_int(st[14].bitstring)      # SYN flag
-                        flags_ack = bytes_to_int(st[15].bitstring)      # ACK flag
-                        flags_fin = bytes_to_int(st[16].bitstring)      # FIN flag
-                        flags_rst = bytes_to_int(st[17].bitstring)      # RST flag
-                        fwd_max_pkt_len = bytes_to_int(st[18].bitstring) # Fwd max pkt len
-                        bwd_max_pkt_len = bytes_to_int(st[19].bitstring) # Bwd max pkt len
-                        flags_psh       = bytes_to_int(st[20].bitstring) # PSH flag count
-                        init_fwd_win    = bytes_to_int(st[21].bitstring) # Initial fwd window
+                        # Extract flow-based features in P4 digest_t order (paper Table 2)
+                        duration           = bytes_to_int(st[7].bitstring)   # Flow duration
+                        max_iat            = bytes_to_int(st[8].bitstring)   # Max inter-arrival time
+                        fwd_pkt_count      = bytes_to_int(st[9].bitstring)
+                        bwd_pkt_count      = bytes_to_int(st[10].bitstring)
+                        fwd_bytes          = bytes_to_int(st[11].bitstring)
+                        bwd_bytes          = bytes_to_int(st[12].bitstring)
+                        fwd_max_pkt_len    = bytes_to_int(st[13].bitstring)
+                        bwd_max_pkt_len    = bytes_to_int(st[14].bitstring)
+                        flags_syn          = bytes_to_int(st[15].bitstring)
+                        flags_ack          = bytes_to_int(st[16].bitstring)
+                        flags_fin          = bytes_to_int(st[17].bitstring)
+                        flags_rst          = bytes_to_int(st[18].bitstring)
+                        flags_psh          = bytes_to_int(st[19].bitstring)
+                        max_win_size       = bytes_to_int(st[20].bitstring)
+                        init_fwd_win       = bytes_to_int(st[21].bitstring)
+                        flow_count_per_src = bytes_to_int(st[22].bitstring)
+                        syn_count_per_dst  = bytes_to_int(st[23].bitstring)
 
-                        base_fields = 22
+                        base_fields = 24
                         remaining = len(st) - base_fields
                         if remaining <= 0:
                             if not warn_once["missing_fields"]:
@@ -1105,11 +1111,13 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path):
                         "bwd_pkt_count": bwd_pkt_count,
                         "fwd_bytes": fwd_bytes,
                         "bwd_bytes": bwd_bytes,
-                        "max_win_size": max_win_size,
                         "fwd_max_pkt_len": fwd_max_pkt_len,
                         "bwd_max_pkt_len": bwd_max_pkt_len,
                         "flags_psh": flags_psh,
+                        "max_win_size": max_win_size,
                         "init_fwd_win": init_fwd_win,
+                        "flow_count_per_src": flow_count_per_src,
+                        "syn_count_per_dst":  syn_count_per_dst,
                     }
                     flags = {
                         "syn": flags_syn,
@@ -1191,8 +1199,11 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path):
 
                         out.write(f"{f['src_ip']},{f['dst_ip']},{f['src_mac']},{f['dst_mac']},{f['src_port']},{f['dst_port']},{f['proto']},"
                                   f"{f['duration']},{f['max_iat']},{f['fwd_pkt_count']},{f['bwd_pkt_count']},"
-                                  f"{f['fwd_bytes']},{f['bwd_bytes']},{f['max_win_size']},{flags['syn']},{flags['ack']},{flags['fin']},{flags['rst']},"
-                                  f"{f.get('fwd_max_pkt_len',0)},{f.get('bwd_max_pkt_len',0)},{f.get('flags_psh',0)},{f.get('init_fwd_win',0)},"
+                                  f"{f['fwd_bytes']},{f['bwd_bytes']},"
+                                  f"{f.get('fwd_max_pkt_len',0)},{f.get('bwd_max_pkt_len',0)},"
+                                  f"{flags['syn']},{flags['ack']},{flags['fin']},{flags['rst']},"
+                                  f"{f.get('flags_psh',0)},{f['max_win_size']},{f.get('init_fwd_win',0)},"
+                                  f"{f.get('flow_count_per_src',0)},{f.get('syn_count_per_dst',0)},"
                                   f"{format_codes_csv(entry['pca_codes'])}{class_id},{class_label}\n")
                         out.flush()
 

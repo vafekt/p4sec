@@ -28,21 +28,21 @@ P4_FEATURE_MAX = {
     "DstPort":         (2**16 - 1),   # port_t / bit<16>
     "Duration":        (2**48 - 1),   # bit<48>
     "MaxIAT":          (2**48 - 1),   # bit<48>
-    "MinIAT":          (2**48 - 1),   # bit<48>
     "FwdPktCount":     (2**32 - 1),   # bit<32>
     "BwdPktCount":     (2**32 - 1),   # bit<32>
     "FwdBytes":        (2**32 - 1),   # bit<32>
     "BwdBytes":        (2**32 - 1),   # bit<32>
-    "MaxWinSize":      (2**16 - 1),   # bit<16>
+    "FwdMaxPktLen":    (2**16 - 1),   # bit<16>
+    "BwdMaxPktLen":    (2**16 - 1),   # bit<16>
     "FlagsSyn":        (2**32 - 1),   # bit<32>
     "FlagsAck":        (2**32 - 1),   # bit<32>
     "FlagsFin":        (2**32 - 1),   # bit<32>
     "FlagsRst":        (2**32 - 1),   # bit<32>
-    "FwdMaxPktLen":    (2**16 - 1),   # bit<16>
-    "BwdMaxPktLen":    (2**16 - 1),   # bit<16>
     "FlagsPsh":        (2**32 - 1),   # bit<32>
-    "UrgCount":        (2**32 - 1),   # bit<32>
+    "MaxWinSize":      (2**16 - 1),   # bit<16>
     "InitFwdWinBytes": (2**16 - 1),   # bit<16>
+    "FlowCountPerSrc": (2**32 - 1),   # bit<32>  cross-flow: distinct flows per source
+    "SynCountPerDst":  (2**32 - 1),   # bit<32>  cross-flow: SYN packets per destination
 }
 
 # All 20 P4 raw flow feature names (ML classifier input), in canonical order
@@ -59,19 +59,19 @@ NON_FEATURE_COLS = {'Label'}
 # The quantized value = raw_value >> shift_amount, clamped to quantized_bits.
 # Features not listed here are already ≤ 16 bits and need no quantization.
 FEATURE_QUANTIZE = {
-    "Duration":    (20, 16),  # 48b ns → 16b (~1ms granularity, max ~65s)
-    "MaxIAT":      (20, 16),  # 48b ns → 16b (~1ms granularity)
-    "MinIAT":      (20, 16),  # 48b ns → 16b (~1ms granularity)
-    "FwdPktCount": (0,  16),  # 32b → 16b (truncate lower 16 bits; max 65535)
-    "BwdPktCount": (0,  16),  # 32b → 16b
-    "FwdBytes":    (4,  16),  # 32b → 16b (16-byte granularity; max ~1MB)
-    "BwdBytes":    (4,  16),  # 32b → 16b
-    "FlagsSyn":    (0,   8),  # 32b → 8b (SYN count rarely > 255)
-    "FlagsAck":    (0,  16),  # 32b → 16b
-    "FlagsFin":    (0,   8),  # 32b → 8b
-    "FlagsRst":    (0,   8),  # 32b → 8b
-    "FlagsPsh":    (0,  16),  # 32b → 16b
-    "UrgCount":    (0,   8),  # 32b → 8b (URG count rarely > 255)
+    "Duration":        (20, 16),  # 48b ns → 16b (~1ms granularity, max ~65s)
+    "MaxIAT":          (20, 16),  # 48b ns → 16b (~1ms granularity)
+    "FwdPktCount":     (0,  16),  # 32b → 16b (truncate lower 16 bits; max 65535)
+    "BwdPktCount":     (0,  16),  # 32b → 16b
+    "FwdBytes":        (4,  16),  # 32b → 16b (16-byte granularity; max ~1MB)
+    "BwdBytes":        (4,  16),  # 32b → 16b
+    "FlagsSyn":        (0,   8),  # 32b → 8b (SYN count rarely > 255)
+    "FlagsAck":        (0,  16),  # 32b → 16b
+    "FlagsFin":        (0,   8),  # 32b → 8b
+    "FlagsRst":        (0,   8),  # 32b → 8b
+    "FlagsPsh":        (0,  16),  # 32b → 16b
+    "FlowCountPerSrc": (0,  16),  # 32b → 16b
+    "SynCountPerDst":  (0,  16),  # 32b → 16b
 }
 
 # P4 field widths AFTER quantization (for range-match key sizing)

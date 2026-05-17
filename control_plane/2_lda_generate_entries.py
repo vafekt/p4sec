@@ -117,12 +117,14 @@ label_col = df.columns[-1]
 df_clean = df.replace([np.inf, -np.inf], np.nan).dropna()
 
 P4_FEATURE_COLS = [
-    "SrcIP", "DstIP",
-    "Protocol", "SrcPort", "DstPort",
+    "Protocol",
+    "SrcPort", "DstPort",
     "Duration", "MaxIAT",
     "FwdPktCount", "BwdPktCount", "FwdBytes", "BwdBytes",
-    "MaxWinSize", "FlagsSyn", "FlagsAck", "FlagsFin", "FlagsRst",
-    "FwdMaxPktLen", "BwdMaxPktLen", "FlagsPsh", "InitFwdWinBytes",
+    "FwdMaxPktLen", "BwdMaxPktLen",
+    "FlagsSyn", "FlagsAck", "FlagsFin", "FlagsRst", "FlagsPsh",
+    "MaxWinSize", "InitFwdWinBytes",
+    "FlowCountPerSrc", "SynCountPerDst",
 ]
 X_df = df_clean[P4_FEATURE_COLS].astype(int)
 feature_cols = X_df.columns.tolist()

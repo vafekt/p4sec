@@ -21,6 +21,8 @@ Thumbs.db
 
 # Build artifacts
 basic.json
+basic.p4info
+basic.p4info.txt
 *.log
 
 # Data outputs
@@ -54,8 +56,9 @@ control_plane/pcaps/
 control_plane/tables/
 control_plane/combos/
 
-# Paper PDF (local reference only)
+# PDFs (local reference only) — paper PDF below is intentionally tracked
 *.pdf
+!In_Network_Intrusion_Detection_Using_Principal_Component_Analysis_and_Machine_Learning_Models_on_P4_Programmable_Data_Planes.pdf
 
 # CIC-IoT dataset (~24 MB; users provide their own PCAPs)
 control_plane/CIC-IoT/

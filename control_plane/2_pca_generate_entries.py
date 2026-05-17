@@ -48,10 +48,10 @@ def parse_args():
             "Code prefix: PC*_code\n"
         )
     )
-    parser.add_argument("--components", "-k", type=int, default=None,
-                        help="Number of PCA components (if omitted, auto-select for high explained variance)")
-    parser.add_argument("--bits", "-b", type=int, default=16,
-                        help="Quantization bits for PCA codes (default: 16). Supports 8, 16, 24, 32 bits.")
+    parser.add_argument("--components", "-k", type=int, default=7,
+                        help="Number of PCA components (default: 7 — paper's recommended k for BMv2 peak F1)")
+    parser.add_argument("--bits", "-b", type=int, default=32,
+                        help="Quantization bits for PCA codes (default: 32 — paper's recommended b for peak F1)")
     # Hidden option: variance target for auto-selection
     parser.add_argument("--var-target", type=float, default=0.95,
                         help="Explained variance target for auto PCA component selection (default: 0.95)")
@@ -116,17 +116,17 @@ label_col = df.columns[-1]
 # Remove NaN / Inf
 df_clean = df.replace([np.inf, -np.inf], np.nan).dropna()
 
-# P4-compatible ML features in canonical order.
-# SrcIP/DstIP excluded: they are flow identifiers, not ML features,
-# and at 32 bits they would dominate the range-match key width.
+# P4-compatible ML features in paper Table 2 order (20 features, 7 groups).
+# SrcIP/DstIP excluded: they are flow identifiers, not ML features.
 P4_FEATURE_COLS = [
-    "Protocol", "SrcPort", "DstPort",
+    "Protocol",
+    "SrcPort", "DstPort",
     "Duration", "MaxIAT",
-    "FwdPktCount", "BwdPktCount",
-    "FwdBytes", "BwdBytes",
-    "MaxWinSize",
-    "FlagsSyn", "FlagsAck", "FlagsFin", "FlagsRst",
-    "FwdMaxPktLen", "BwdMaxPktLen", "FlagsPsh", "InitFwdWinBytes",
+    "FwdPktCount", "BwdPktCount", "FwdBytes", "BwdBytes",
+    "FwdMaxPktLen", "BwdMaxPktLen",
+    "FlagsSyn", "FlagsAck", "FlagsFin", "FlagsRst", "FlagsPsh",
+    "MaxWinSize", "InitFwdWinBytes",
+    "FlowCountPerSrc", "SynCountPerDst",
 ]
 # Drop rows where any feature column is non-numeric (e.g. pyshark field corruption like '275=7')
 for _col in P4_FEATURE_COLS:
