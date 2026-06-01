@@ -1,8 +1,9 @@
-# In-Network IoT Attack Detection Using Principal Component Analysis and Machine Learning Models on P4 Programmable Data Planes
+# In-Network IoT Intrusion Detection Using Principal Component Analysis and Machine Learning Models on P4 Programmable Data Planes
 
 Reference implementation for the paper
-*"In-Network IoT Attack Detection Using Principal Component Analysis and
-Machine Learning Models on P4 Programmable Data Planes."*
+*"In-Network IoT Intrusion Detection Using Principal Component Analysis and
+Machine Learning Models on P4 Programmable Data Planes,"* submitted to MIST 2026
+(ESORICS 2026 Workshop on Mobile and IoT Security Technologies).
 
 The pipeline extracts 20 bidirectional flow features at line rate, optionally
 projects them onto a K-dimensional PCA subspace with B-bit quantisation, and
@@ -13,6 +14,17 @@ range-match rule with per-feature ranges.
 
 Four CIC-IoT 2023 categories are targeted: **Benign**, **DoS**,
 **Brute Force**, and **Reconnaissance**.
+
+## Deployment position
+
+The paper positions this IDS against two deployment tiers:
+
+- **IoT gateway** (BMv2 / P4Pi on Raspberry Pi). The BMv2 evaluation in this
+  repository directly models this tier, following the deployment model of
+  P4Pir.
+- **IIoT aggregation switch** (Tofino-class ASIC). Discussed in the paper as
+  future work, with a Tofino-1 resource analysis as a precursor. No Tofino
+  code is shipped in this repository.
 
 LDA and Autoencoder are kept in the repository as drop-in alternative
 reduction methods; the paper itself evaluates PCA only.
