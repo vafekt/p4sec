@@ -808,6 +808,25 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path):
     s1.requests_stream.put(_force_arb)
     s1.dispatcher.arbitration_queue.get()  # wait for ack
 
+    # Re-set the forwarding pipeline config under our new election_id so the
+    # digest_entry Write succeeds.  BMv2 ties pipeline-config visibility to
+    # the master that installed it; after we override election_id=1 with 2,
+    # the device reports "No forwarding pipeline config set" until we set it
+    # again here.  We build the request manually because
+    # SwitchConnection.SetForwardingPipelineConfig hardcodes election_id=1.
+    try:
+        _dev_cfg = s1.buildDeviceConfig(bmv2_json_file_path=bmv2_file_path)
+        _sfpc_req = p4runtime_pb2.SetForwardingPipelineConfigRequest()
+        _sfpc_req.device_id = s1.device_id
+        _sfpc_req.election_id.low = 2
+        _sfpc_req.config.p4info.CopyFrom(p4info_helper.p4info)
+        _sfpc_req.config.p4_device_config = _dev_cfg.SerializeToString()
+        _sfpc_req.action = p4runtime_pb2.SetForwardingPipelineConfigRequest.VERIFY_AND_COMMIT
+        s1.client_stub.SetForwardingPipelineConfig(_sfpc_req)
+        print("Forwarding pipeline config re-installed under election_id=2.")
+    except Exception as e:
+        print(f"WARNING: SetForwardingPipelineConfig under election_id=2 failed: {e}")
+
     # Reset all flow-state registers so stale state from any previous run
     # (e.g. tcpreplay before the controller started) doesn't produce ghost flows.
     print("Resetting switch flow-state registers...")
