@@ -294,7 +294,7 @@ with a model that scores 100% on the test split:
    sub-millisecond range, a few-microsecond shift is enough to push a
    sample to the wrong side of a range-match rule.
 
-2. **PCAPs contain background / mixed traffic.** Public attack pcaps are
+2. **PCAPs contain background / mixed traffic.** Public intrusion pcaps are
    captures of *complete* sessions, not curated single-class flows. A
    "BruteForce" pcap contains the brute-force flows plus the ARP, DNS,
    ICMP and TCP control-plane traffic that ran alongside them. The
