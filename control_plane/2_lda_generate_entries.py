@@ -74,6 +74,18 @@ parser = P4secArgumentParser(
             "Code prefix: LD*_code\n"
         )
     )
+parser.add_argument("--mode", "-m", choices=["surrogate", "additive"],
+                    default="surrogate",
+                    help=(
+                        "LDA realisation in the data plane:\n"
+                        "  surrogate  Approximate the LDA rotation with a DecisionTreeRegressor.\n"
+                        "             Wide 18-field range-match tables, one per component.\n"
+                        "             Entries scale with tree leaves (~10^4–10^5 entries).\n"
+                        "  additive   Exact linear projection as one single-field range table per\n"
+                        "             feature, summed into K signed accumulators.  Strictly lighter\n"
+                        "             and exact vs surrogate; subsumes 2_lda_linear_entries.py.\n"
+                        "  (default: surrogate)"
+                    ))
 parser.add_argument("--components", "-k", type=int, default=None,
                     help="Number of LDA components (default: n_classes-1)")
 parser.add_argument("--bits", "-b", type=int, default=16,
@@ -92,6 +104,25 @@ parser.add_argument("--surrogate", "-s", choices=["dt", "rf", "gbr"],
                         "(default: dt)"
                     ))
 args = parser.parse_args()
+
+if args.mode == "additive":
+    # Dispatch to the additive (exact linear) LDA path.  Subsumes the former
+    # standalone 2_lda_linear_entries.py.  Default components for LDA = 3 if
+    # user did not supply --components (LDA max = n_classes - 1; for 4-class
+    # CICIoT/CIC-IoT that's 3).
+    from importlib import util as _imp_util
+    _here_dir = os.path.dirname(os.path.abspath(__file__))
+    _spec = _imp_util.spec_from_file_location(
+        "lda_linear_entries", os.path.join(_here_dir, "2_lda_linear_entries.py"))
+    _mod = _imp_util.module_from_spec(_spec)
+    import argparse as _argparse
+    _ns = _argparse.Namespace(
+        components=args.components if args.components is not None else 3,
+        bits=args.bits)
+    _spec.loader.exec_module(_mod)
+    _mod.parse_args = lambda: _ns
+    _mod.main()
+    sys.exit(0)
 
 USER_K = args.components
 BITS = args.bits

@@ -1,0 +1,365 @@
+<mxfile host="Electron" agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) draw.io/28.2.5 Chrome/138.0.7204.251 Electron/37.6.1 Safari/537.36" version="28.2.5">
+  <diagram name="Offline Training Pipeline" id="offline-pipeline">
+    <mxGraphModel dx="912" dy="706" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="900" pageHeight="1450" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="s3a_eval1" style="strokeColor=#CE93D8;strokeWidth=1.5;fontFamily=Helvetica;" parent="1" source="s3_dt" target="s3_eval" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="pcap_input" value="Labeled PCAP / PCAPNG Files" style="shape=cylinder3;whiteSpace=wrap;html=0;boundedLbl=1;backgroundOutline=1;size=12;fillColor=#E3F2FD;strokeColor=#1565C0;fontSize=13;fontStyle=1;strokeWidth=2;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="340" y="10" width="220" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="s1_bg" value="" style="rounded=1;whiteSpace=wrap;html=0;fillColor=#E8EAF6;strokeColor=#283593;strokeWidth=2;arcSize=4;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="10" y="80" width="880" height="200" as="geometry" />
+        </mxCell>
+        <mxCell id="s1_num" value="Step 1" style="text;html=0;align=left;verticalAlign=middle;fontSize=15;fontStyle=1;fontColor=#283593;strokeColor=none;fillColor=none;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="30" y="88" width="60" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="s1_title" value="Feature Extraction (1_extract_dataset.py)" style="text;html=0;align=center;verticalAlign=middle;fontSize=16;fontStyle=1;fontColor=#283593;strokeColor=none;fillColor=none;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="275" y="80" width="350" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="s1a" value="Parse packets via pyshark&#xa;(Ethernet, ARP, IP, TCP/UDP)" style="rounded=1;whiteSpace=wrap;html=0;fillColor=#FFFFFF;strokeColor=#9FA8DA;fontSize=15;strokeWidth=1.5;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="113" y="110" width="160" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="s1b" value="Canonical 5-tuple&#xa;normalization&#xa;(min IP = forward)" style="rounded=1;whiteSpace=wrap;html=0;fillColor=#FFFFFF;strokeColor=#9FA8DA;fontSize=15;strokeWidth=1.5;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="293" y="110" width="150" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="s1c" value="Accumulate per-flow&#xa;state: 18 features&#xa;(counts, max, timestamps)" style="rounded=1;whiteSpace=wrap;html=0;fillColor=#FFFFFF;strokeColor=#9FA8DA;fontSize=15;strokeWidth=1.5;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="463" y="110" width="165" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="s1d" value="Finalize flow on&#xa;FIN / RST / timeout&#xa;/ end of PCAP" style="rounded=1;whiteSpace=wrap;html=0;fillColor=#FFFFFF;strokeColor=#9FA8DA;fontSize=15;strokeWidth=1.5;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="648" y="110" width="152" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="s1a1" style="strokeColor=#9FA8DA;strokeWidth=1.5;fontFamily=Helvetica;" parent="1" source="s1a" target="s1b" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="s1a2" style="strokeColor=#9FA8DA;strokeWidth=1.5;fontFamily=Helvetica;" parent="1" source="s1b" target="s1c" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="s1a3" style="strokeColor=#9FA8DA;strokeWidth=1.5;fontFamily=Helvetica;" parent="1" source="s1c" target="s1d" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="s1_features" value="Protocol | SrcPort | DstPort | Duration | MaxIAT | MinIAT | UrgCount | FwdPktCount | BwdPktCount&#xa;FwdBytes | BwdBytes | FwdMaxPktLen | BwdMaxPktLen | MaxWinSize | FlagsSyn | FlagsAck | FlagsFin | FlagsRst | FlagsPsh | InitFwdWinBytes" style="rounded=1;whiteSpace=wrap;html=0;fillColor=#C5CAE9;strokeColor=#283593;fontSize=15;fontFamily=Helvetica;align=center;" parent="1" vertex="1">
+          <mxGeometry x="15" y="195" width="870" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="s1_out" value="dataset.csv" style="shape=document;whiteSpace=wrap;html=0;boundedLbl=1;backgroundOutline=1;size=0.12;fillColor=#C5CAE9;strokeColor=#283593;fontSize=15;fontStyle=1;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="30" y="245" width="120" height="35" as="geometry" />
+        </mxCell>
+        <mxCell id="s1_out_note" value="18 features + Label per flow" style="text;html=0;align=left;fontSize=15;fontColor=#546E7A;strokeColor=none;fillColor=none;fontStyle=2;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="160" y="248" width="160" height="16" as="geometry" />
+        </mxCell>
+        <mxCell id="s2_bg" value="" style="rounded=1;whiteSpace=wrap;html=0;fillColor=#E8F5E9;strokeColor=#2E7D32;strokeWidth=2;arcSize=4;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="10" y="310" width="880" height="280" as="geometry" />
+        </mxCell>
+        <mxCell id="s2_num" value="Step 2" style="text;html=0;align=left;verticalAlign=middle;fontSize=15;fontStyle=1;fontColor=#2E7D32;strokeColor=none;fillColor=none;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="30" y="318" width="60" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="s2_title" value="PCA Dimensionality Reduction (2_pca_generate_entries.py)" style="text;html=0;align=center;verticalAlign=middle;fontSize=16;fontStyle=1;fontColor=#2E7D32;strokeColor=none;fillColor=none;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="220" y="310" width="450" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="s2a" value="Load dataset.csv&#xa;Clean NaN / Inf" style="rounded=1;whiteSpace=wrap;html=0;fillColor=#FFFFFF;strokeColor=#A5D6A7;fontSize=15;strokeWidth=1.5;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="20" y="340" width="130" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="s2b" value="Fit sklearn PCA on&#xa;quantized features&#xa;→ matrix A and&#xa;intercept b" style="rounded=1;whiteSpace=wrap;html=0;fillColor=#FFFFFF;strokeColor=#A5D6A7;fontSize=15;strokeWidth=1.5;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="170" y="340" width="160" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="s2c" value="Select K components&#xa;(user-specified k,&#xa;b = 32 bits)" style="rounded=1;whiteSpace=wrap;html=0;fillColor=#FFFFFF;strokeColor=#A5D6A7;fontSize=15;strokeWidth=1.5;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="360" y="340" width="160" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="s2d" value="Fixed-point scale&#xa;SCALE = 2^b - 1&#xa;PC accumulator&#xa;is b-bit integer" style="rounded=1;whiteSpace=wrap;html=0;fillColor=#FFFFFF;strokeColor=#A5D6A7;fontSize=15;strokeWidth=1.5;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="540" y="340" width="140" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="s2e" value="Expand A row by&#xa;input feature i&#xa;(additive form):&#xa;PC_j = Σ_i A_ji⋅x_i + b_j" style="rounded=1;whiteSpace=wrap;html=0;fillColor=#FFFFFF;strokeColor=#A5D6A7;fontSize=15;strokeWidth=1.5;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="700" y="340" width="180" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="s2f" value="For each feature i,&#xa;enumerate its&#xa;distinct quantized&#xa;values v" style="rounded=1;whiteSpace=wrap;html=0;fillColor=#FFFFFF;strokeColor=#A5D6A7;fontSize=15;strokeWidth=1.5;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="30" y="430" width="145" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="s2g" value="Precompute scaled&#xa;contributions:&#xa;d_j(i, v) = A_ji⋅v⋅SCALE" style="rounded=1;whiteSpace=wrap;html=0;fillColor=#FFFFFF;strokeColor=#A5D6A7;fontSize=15;strokeWidth=1.5;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="195" y="430" width="140" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="s2h" value="Emit one single-field&#xa;range table per&#xa;feature i, keyed on v" style="rounded=1;whiteSpace=wrap;html=0;fillColor=#FFFFFF;strokeColor=#A5D6A7;fontSize=15;strokeWidth=1.5;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="355" y="430" width="150" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="s2i" value="Action: accumulator&#xa;PC_j += d_j(i, v)&#xa;for j = 1..K&#xa;(K codes per packet)" style="rounded=1;whiteSpace=wrap;html=0;fillColor=#FFFFFF;strokeColor=#A5D6A7;fontSize=15;strokeWidth=1.5;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="527.5" y="430" width="192.5" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="s2a1" style="strokeColor=#A5D6A7;strokeWidth=1.5;fontFamily=Helvetica;" parent="1" source="s2a" target="s2b" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="s2a2" style="strokeColor=#A5D6A7;strokeWidth=1.5;fontFamily=Helvetica;" parent="1" source="s2b" target="s2c" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="s2a3" style="strokeColor=#A5D6A7;strokeWidth=1.5;fontFamily=Helvetica;" parent="1" source="s2c" target="s2d" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="s2a4" style="strokeColor=#A5D6A7;strokeWidth=1.5;fontFamily=Helvetica;" parent="1" source="s2d" target="s2e" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="s2a5" style="strokeColor=#A5D6A7;strokeWidth=1.5;edgeStyle=orthogonalEdgeStyle;fontFamily=Helvetica;" parent="1" source="s2e" target="s2f" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="790" y="420" />
+              <mxPoint x="20" y="420" />
+              <mxPoint x="20" y="450" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="s2a6" style="strokeColor=#A5D6A7;strokeWidth=1.5;fontFamily=Helvetica;" parent="1" source="s2f" target="s2g" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="s2a7" style="strokeColor=#A5D6A7;strokeWidth=1.5;fontFamily=Helvetica;" parent="1" source="s2g" target="s2h" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="s2a8" style="strokeColor=#A5D6A7;strokeWidth=1.5;fontFamily=Helvetica;" parent="1" source="s2h" target="s2i" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="s2_out1" value="s1-commands.txt&#xa;(PCA transform entries)" style="shape=document;whiteSpace=wrap;html=0;boundedLbl=1;backgroundOutline=1;size=0.12;fillColor=#C8E6C9;strokeColor=#2E7D32;fontSize=15;fontStyle=1;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="20" y="510" width="220" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="s2_out2" value="reduction_config.json" style="shape=document;whiteSpace=wrap;html=0;boundedLbl=1;backgroundOutline=1;size=0.12;fillColor=#C8E6C9;strokeColor=#2E7D32;fontSize=15;fontStyle=1;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="260" y="510" width="180" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="s2_out3" value="pca_encoding_params.json" style="shape=document;whiteSpace=wrap;html=0;boundedLbl=1;backgroundOutline=1;size=0.12;fillColor=#C8E6C9;strokeColor=#2E7D32;fontSize=15;fontStyle=1;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="460" y="510" width="210" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="s2_out4" value="pca_integer_mapping.csv&#xa;(PC codes + Labels)" style="shape=document;whiteSpace=wrap;html=0;boundedLbl=1;backgroundOutline=1;size=0.12;fillColor=#C8E6C9;strokeColor=#2E7D32;fontSize=15;fontStyle=1;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="680" y="510" width="197.5" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="s3_bg" value="" style="rounded=1;whiteSpace=wrap;html=0;fillColor=#F3E5F5;strokeColor=#6A1B9A;strokeWidth=2;arcSize=4;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="10" y="590" width="880" height="260" as="geometry" />
+        </mxCell>
+        <mxCell id="s3_num" value="Step 3" style="text;html=0;align=left;verticalAlign=middle;fontSize=15;fontStyle=1;fontColor=#6A1B9A;strokeColor=none;fillColor=none;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="30" y="598" width="60" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="s3_title" value="Classifier Training (3_train_model.py)" style="text;html=0;align=center;verticalAlign=middle;fontSize=16;fontStyle=1;fontColor=#6A1B9A;strokeColor=none;fillColor=none;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="270" y="590" width="340" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="s3a" value="Load&#xa;pca_integer_mapping.csv" style="rounded=1;whiteSpace=wrap;html=0;fillColor=#FFFFFF;strokeColor=#CE93D8;fontSize=15;strokeWidth=1.5;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="20" y="635" width="180" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="s3b" value="Detect feature columns&#xa;from reduction_config.json" style="rounded=1;whiteSpace=wrap;html=0;fillColor=#FFFFFF;strokeColor=#CE93D8;fontSize=15;strokeWidth=1.5;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="235" y="635" width="195" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="s3c" value="Encode class labels&#xa;to integer targets" style="rounded=1;whiteSpace=wrap;html=0;fillColor=#FFFFFF;strokeColor=#CE93D8;fontSize=15;strokeWidth=1.5;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="460" y="635" width="140" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="s3_choice" value="Model type?" style="rhombus;whiteSpace=wrap;html=0;fillColor=#F3E5F5;strokeColor=#6A1B9A;fontSize=15;fontStyle=1;strokeWidth=1.5;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="700" y="630" width="110" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="s3_dt" value="Train Decision Tree Classifier" style="rounded=1;whiteSpace=wrap;html=0;fillColor=#BBDEFB;strokeColor=#1565C0;fontSize=15;strokeWidth=1.5;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="30" y="720" width="180" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="s3_dt_lbl" value="DT" style="text;html=0;align=center;fontSize=13;fontStyle=1;fontColor=#1565C0;strokeColor=none;fillColor=none;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="30" y="699.5" width="30" height="18" as="geometry" />
+        </mxCell>
+        <mxCell id="s3_rf" value="Train Random Forest Classifier" style="rounded=1;whiteSpace=wrap;html=0;fillColor=#FFE0B2;strokeColor=#E65100;fontSize=15;strokeWidth=1.5;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="235" y="720" width="185" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="s3_rf_lbl" value="RF" style="text;html=0;align=center;fontSize=13;fontStyle=1;fontColor=#E65100;strokeColor=none;fillColor=none;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="240" y="699.5" width="25" height="18" as="geometry" />
+        </mxCell>
+        <mxCell id="s3_eval" value="Evaluate: accuracy,&#xa;confusion matrix,&#xa;classification report" style="rounded=1;whiteSpace=wrap;html=0;fillColor=#FFFFFF;strokeColor=#CE93D8;fontSize=15;strokeWidth=1.5;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="460.5" y="717.5" width="170" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="s3_save" value="Save trained model&#xa;to model/dt.model&#xa;or model/rf.model" style="rounded=1;whiteSpace=wrap;html=0;fillColor=#FFFFFF;strokeColor=#CE93D8;fontSize=15;strokeWidth=1.5;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="680" y="717.5" width="160" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="s3a1" style="strokeColor=#CE93D8;strokeWidth=1.5;fontFamily=Helvetica;" parent="1" source="s3a" target="s3b" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="s3a2" style="strokeColor=#CE93D8;strokeWidth=1.5;fontFamily=Helvetica;" parent="1" source="s3b" target="s3c" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="s3a3" style="strokeColor=#CE93D8;strokeWidth=1.5;fontFamily=Helvetica;" parent="1" source="s3c" target="s3_choice" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="s3a_dt" value="DT" style="strokeColor=#1565C0;strokeWidth=1.5;fontSize=10;fontColor=#1565C0;fontStyle=1;edgeStyle=orthogonalEdgeStyle;exitX=0.5;exitY=1;exitDx=0;exitDy=0;fontFamily=Helvetica;" parent="1" source="s3_choice" target="s3_dt" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="755" y="690" />
+              <mxPoint x="120" y="690" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="s3a_rf" value="RF" style="strokeColor=#E65100;strokeWidth=1.5;fontSize=10;fontColor=#E65100;fontStyle=1;edgeStyle=orthogonalEdgeStyle;exitX=0.5;exitY=1;exitDx=0;exitDy=0;fontFamily=Helvetica;" parent="1" source="s3_choice" target="s3_rf" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="755" y="700" />
+              <mxPoint x="332" y="700" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="s3a_eval2" style="strokeColor=#CE93D8;strokeWidth=1.5;fontFamily=Helvetica;" parent="1" source="s3_rf" target="s3_eval" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="s3a_save" style="strokeColor=#CE93D8;strokeWidth=1.5;fontFamily=Helvetica;" parent="1" source="s3_eval" target="s3_save" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="s3_out1" value="model/dt.model&#xa;or model/rf.model" style="shape=document;whiteSpace=wrap;html=0;boundedLbl=1;backgroundOutline=1;size=0.12;fillColor=#E1BEE7;strokeColor=#6A1B9A;fontSize=15;fontStyle=1;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="30" y="797" width="150" height="42" as="geometry" />
+        </mxCell>
+        <mxCell id="s3_out2" value="dt_metrics.json&#xa;or rf_metrics.json" style="shape=document;whiteSpace=wrap;html=0;boundedLbl=1;backgroundOutline=1;size=0.12;fillColor=#E1BEE7;strokeColor=#6A1B9A;fontSize=15;fontStyle=1;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="195" y="797" width="155" height="42" as="geometry" />
+        </mxCell>
+        <mxCell id="s3_out3" value="rf_params.json&#xa;(vote packing config)" style="shape=document;whiteSpace=wrap;html=0;boundedLbl=1;backgroundOutline=1;size=0.12;fillColor=#E1BEE7;strokeColor=#6A1B9A;fontSize=15;fontStyle=2;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="395" y="797" width="175" height="42" as="geometry" />
+        </mxCell>
+        <mxCell id="s3_out3_note" value="RF only" style="text;html=0;align=center;fontSize=13;fontColor=#6A1B9A;strokeColor=none;fillColor=none;fontStyle=2;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="575" y="811" width="50" height="14" as="geometry" />
+        </mxCell>
+        <mxCell id="s4_bg" value="" style="rounded=1;whiteSpace=wrap;html=0;fillColor=#FFF3E0;strokeColor=#E65100;strokeWidth=2;arcSize=4;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="10" y="870" width="880" height="250" as="geometry" />
+        </mxCell>
+        <mxCell id="s4_num" value="Step 4" style="text;html=0;align=left;verticalAlign=middle;fontSize=15;fontStyle=1;fontColor=#E65100;strokeColor=none;fillColor=none;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="30" y="878" width="60" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="s4_title" value="P4 Table Entry Generation (4_generate_model_entries.py)" style="text;html=0;align=center;verticalAlign=middle;fontSize=16;fontStyle=1;fontColor=#E65100;strokeColor=none;fillColor=none;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="210" y="878" width="440" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="s4a" value="Load trained model&#xa;from model/*.model" style="rounded=1;whiteSpace=wrap;html=0;fillColor=#FFFFFF;strokeColor=#FFCC80;fontSize=15;strokeWidth=1.5;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="30" y="910" width="140" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="s4b" value="Load feature max&#xa;values from&#xa;reduction_config.json" style="rounded=1;whiteSpace=wrap;html=0;fillColor=#FFFFFF;strokeColor=#FFCC80;fontSize=15;strokeWidth=1.5;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="190" y="910" width="170" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="s4_dt_bg" value="" style="rounded=1;whiteSpace=wrap;html=0;fillColor=#E3F2FD;strokeColor=#1565C0;strokeWidth=1;arcSize=6;dashed=1;dashPattern=5 3;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="30" y="980" width="350" height="110" as="geometry" />
+        </mxCell>
+        <mxCell id="s4_dt_lbl" value="DT Path" style="text;html=0;align=left;fontSize=15;fontStyle=1;fontColor=#1565C0;strokeColor=none;fillColor=none;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="40" y="985" width="60" height="18" as="geometry" />
+        </mxCell>
+        <mxCell id="s4_dt1" value="Traverse DT leaves&#xa;(depth-first search)" style="rounded=1;whiteSpace=wrap;html=0;fillColor=#FFFFFF;strokeColor=#90CAF9;fontSize=15;strokeWidth=1.5;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="40" y="1010" width="130" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="s4_dt2" value="Generate range match&#xa;entries for ml_code table&#xa;(1 entry per leaf)" style="rounded=1;whiteSpace=wrap;html=0;fillColor=#FFFFFF;strokeColor=#90CAF9;fontSize=15;strokeWidth=1.5;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="185" y="1010" width="185" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="s4_dta" style="strokeColor=#90CAF9;strokeWidth=1.5;fontFamily=Helvetica;" parent="1" source="s4_dt1" target="s4_dt2" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="s4_rf_bg" value="" style="rounded=1;whiteSpace=wrap;html=0;fillColor=#FFF3E0;strokeColor=#E65100;strokeWidth=1;arcSize=6;dashed=1;dashPattern=5 3;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="410" y="980" width="460" height="110" as="geometry" />
+        </mxCell>
+        <mxCell id="s4_rf_lbl" value="RF Path" style="text;html=0;align=left;fontSize=15;fontStyle=1;fontColor=#E65100;strokeColor=none;fillColor=none;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="420" y="985" width="60" height="18" as="geometry" />
+        </mxCell>
+        <mxCell id="s4_rf1" value="Traverse each of&#xa;T trees separately" style="rounded=1;whiteSpace=wrap;html=0;fillColor=#FFFFFF;strokeColor=#FFAB91;fontSize=15;strokeWidth=1.5;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="445" y="1010" width="120" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="s4_rf2" value="Generate entries&#xa;for rf_tree_0 ...&#xa;rf_tree_{T-1}" style="rounded=1;whiteSpace=wrap;html=0;fillColor=#FFFFFF;strokeColor=#FFAB91;fontSize=15;strokeWidth=1.5;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="580" y="1010" width="120" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="s4_rf3" value="Generate&#xa;rf_vote_classify&#xa;entries (2^(TxV))" style="rounded=1;whiteSpace=wrap;html=0;fillColor=#FFFFFF;strokeColor=#FFAB91;fontSize=15;strokeWidth=1.5;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="715" y="1010" width="120" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="s4_rfa" style="strokeColor=#FFAB91;strokeWidth=1.5;fontFamily=Helvetica;" parent="1" source="s4_rf1" target="s4_rf2" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="s4_rfb" style="strokeColor=#FFAB91;strokeWidth=1.5;fontFamily=Helvetica;" parent="1" source="s4_rf2" target="s4_rf3" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="s4a1" style="strokeColor=#FFCC80;strokeWidth=1.5;fontFamily=Helvetica;" parent="1" source="s4a" target="s4b" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="s4_out" value="s1-commands.txt (appended)&#xa;PCA entries + classifier entries" style="shape=document;whiteSpace=wrap;html=0;boundedLbl=1;backgroundOutline=1;size=0.10;fillColor=#FFE0B2;strokeColor=#E65100;fontSize=15;fontStyle=1;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="30" y="1105" width="240" height="42" as="geometry" />
+        </mxCell>
+        <mxCell id="s4_out2_doc" value="dt_tree.txt or rf_trees.txt&#xa;(human-readable rules)" style="shape=document;whiteSpace=wrap;html=0;boundedLbl=1;backgroundOutline=1;size=0.10;fillColor=#FFE0B2;strokeColor=#E65100;fontSize=15;fontStyle=2;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="295" y="1105" width="195" height="42" as="geometry" />
+        </mxCell>
+        <mxCell id="s5_bg" value="" style="rounded=1;whiteSpace=wrap;html=0;fillColor=#E3F2FD;strokeColor=#1565C0;strokeWidth=2;arcSize=4;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="10" y="1180" width="880" height="200" as="geometry" />
+        </mxCell>
+        <mxCell id="s5_num" value="Step 5" style="text;html=0;align=left;verticalAlign=middle;fontSize=15;fontStyle=1;fontColor=#1565C0;strokeColor=none;fillColor=none;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="30" y="1188" width="60" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="s5_title" value="P4 Code Generation (5_generating_p4_code.py)" style="text;html=0;align=center;verticalAlign=middle;fontSize=16;fontStyle=1;fontColor=#1565C0;strokeColor=none;fillColor=none;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="240" y="1188" width="400" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="s5a" value="Load&#xa;reduction_config.json&#xa;(method, components,&#xa;bits, features)" style="rounded=1;whiteSpace=wrap;html=0;fillColor=#FFFFFF;strokeColor=#90CAF9;fontSize=15;strokeWidth=1.5;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="22.5" y="1220" width="160" height="85" as="geometry" />
+        </mxCell>
+        <mxCell id="s5b" value="Load model params&#xa;(rf_params.json&#xa;or xgb_params.json)" style="rounded=1;whiteSpace=wrap;html=0;fillColor=#FFFFFF;strokeColor=#90CAF9;fontSize=15;strokeWidth=1.5;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="202.5" y="1220" width="150" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="s5c" value="Generate parser&#xa;(Ethernet, ARP, IP,&#xa;TCP, UDP headers)" style="rounded=1;whiteSpace=wrap;html=0;fillColor=#FFFFFF;strokeColor=#90CAF9;fontSize=15;strokeWidth=1.5;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="375" y="1220" width="130" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="s5d" value="Generate registers&#xa;for flow features&#xa;+ flow tracking logic" style="rounded=1;whiteSpace=wrap;html=0;fillColor=#FFFFFF;strokeColor=#90CAF9;fontSize=15;strokeWidth=1.5;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="527.5" y="1220" width="165" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="s5e" value="Generate PCA tables&#xa;+ classifier tables&#xa;+ digest + deparser" style="rounded=1;whiteSpace=wrap;html=0;fillColor=#FFFFFF;strokeColor=#90CAF9;fontSize=15;strokeWidth=1.5;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="720" y="1220" width="160" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="s5a1" style="strokeColor=#90CAF9;strokeWidth=1.5;fontFamily=Helvetica;" parent="1" source="s5a" target="s5b" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="s5a2" style="strokeColor=#90CAF9;strokeWidth=1.5;fontFamily=Helvetica;" parent="1" source="s5b" target="s5c" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="s5a3" style="strokeColor=#90CAF9;strokeWidth=1.5;fontFamily=Helvetica;" parent="1" source="s5c" target="s5d" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="s5a4" style="strokeColor=#90CAF9;strokeWidth=1.5;fontFamily=Helvetica;" parent="1" source="s5d" target="s5e" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="s5_out1" value="basic.p4&#xa;(BMv2 target)" style="shape=document;whiteSpace=wrap;html=0;boundedLbl=1;backgroundOutline=1;size=0.12;fillColor=#BBDEFB;strokeColor=#1565C0;fontSize=15;fontStyle=1;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="30" y="1320" width="130" height="42" as="geometry" />
+        </mxCell>
+        <mxCell id="s5_out2" value="p4sec_tofino.p4&#xa;(Tofino target)" style="shape=document;whiteSpace=wrap;html=0;boundedLbl=1;backgroundOutline=1;size=0.12;fillColor=#BBDEFB;strokeColor=#1565C0;fontSize=15;fontStyle=1;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="170" y="1320" width="130" height="42" as="geometry" />
+        </mxCell>
+        <mxCell id="s6_bg" value="" style="rounded=1;whiteSpace=wrap;html=0;fillColor=#ECEFF1;strokeColor=#37474F;strokeWidth=2;arcSize=4;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="10" y="1400" width="880" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="s6_title" value="Runtime Controller (6_controller.py)" style="text;html=0;align=center;verticalAlign=middle;fontSize=16;fontStyle=1;fontColor=#37474F;strokeColor=none;fillColor=none;fontFamily=Helvetica;" parent="1" vertex="1">
+          <mxGeometry x="285" y="1408" width="310" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="main_a1" style="edgeStyle=orthogonalEdgeStyle;strokeColor=#37474F;strokeWidth=2;fontFamily=Helvetica;" parent="1" source="pcap_input" target="s1_bg" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="main_a2" style="edgeStyle=orthogonalEdgeStyle;strokeColor=#37474F;strokeWidth=2;fontFamily=Helvetica;" parent="1" source="s1_out" target="s2_bg" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="main_a3" style="edgeStyle=orthogonalEdgeStyle;strokeColor=#37474F;strokeWidth=2;fontFamily=Helvetica;" parent="1" source="s2_out4" target="s3_bg" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="450" y="570" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="main_a4" style="edgeStyle=orthogonalEdgeStyle;strokeColor=#37474F;strokeWidth=2;fontFamily=Helvetica;" parent="1" source="s3_out1" target="s4_bg" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="main_a5" style="edgeStyle=orthogonalEdgeStyle;strokeColor=#37474F;strokeWidth=2;fontFamily=Helvetica;" parent="1" source="s4_out" target="s5_bg" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="main_a6" style="edgeStyle=orthogonalEdgeStyle;strokeColor=#37474F;strokeWidth=2;fontFamily=Helvetica;" parent="1" source="s5_out1" target="s6_bg" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="cfg_a1" value="config" style="edgeStyle=orthogonalEdgeStyle;strokeColor=#2E7D32;strokeWidth=1;dashed=1;fontSize=12;fontColor=#2E7D32;fontStyle=2;fontFamily=Helvetica;" parent="1" source="s2_out2" target="s3b" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="333" y="580" />
+              <mxPoint x="288" y="580" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="8YPTi2ucfalb52NzUPGS-5" style="strokeColor=#CE93D8;strokeWidth=1.5;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;fontFamily=Helvetica;" parent="1" source="s3_dt" target="s3_eval" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="640" y="800" as="sourcePoint" />
+            <mxPoint x="681" y="800" as="targetPoint" />
+            <Array as="points">
+              <mxPoint x="210" y="790" />
+              <mxPoint x="300" y="790" />
+              <mxPoint x="390" y="790" />
+              <mxPoint x="450" y="790" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

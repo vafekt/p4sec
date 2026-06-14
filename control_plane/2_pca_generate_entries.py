@@ -48,6 +48,19 @@ def parse_args():
             "Code prefix: PC*_code\n"
         )
     )
+    parser.add_argument("--mode", "-m", choices=["surrogate", "additive"],
+                        default="surrogate",
+                        help=(
+                            "PCA realisation in the data plane:\n"
+                            "  surrogate  Approximate the PCA rotation with a per-component DecisionTreeRegressor.\n"
+                            "             Wide 18-field range-match tables, one per component; entries scale with\n"
+                            "             tree leaves (~10^4-10^5 on real datasets).  Original paper variant.\n"
+                            "  additive   Exact linear projection implemented as one single-field range table per\n"
+                            "             feature, summed into K signed accumulators.  Entries scale with feature\n"
+                            "             value cardinality (low thousands).  Strictly lighter and exact vs.\n"
+                            "             surrogate; subsumes the former 2_pca_linear_entries.py.\n"
+                            "  (default: surrogate)"
+                        ))
     parser.add_argument("--components", "-k", type=int, default=7,
                         help="Number of PCA components (default: 7 — paper's recommended k for BMv2 peak F1)")
     parser.add_argument("--bits", "-b", type=int, default=32,
@@ -80,6 +93,23 @@ def parse_args():
     return parser.parse_args()
 
 args = parse_args()
+
+if args.mode == "additive":
+    # Dispatch to the additive (exact linear) PCA path.  This subsumes the
+    # former standalone 2_pca_linear_entries.py.  All flags except --mode are
+    # passed through (additive ignores --max-leaf-nodes and --surrogate).
+    from importlib import util as _imp_util
+    _here_dir = os.path.dirname(os.path.abspath(__file__))
+    _spec = _imp_util.spec_from_file_location(
+        "pca_linear_entries", os.path.join(_here_dir, "2_pca_linear_entries.py"))
+    _mod = _imp_util.module_from_spec(_spec)
+    # Inject the parsed args so the additive module's parse_args() returns ours
+    import argparse as _argparse
+    _ns = _argparse.Namespace(components=args.components, bits=args.bits)
+    _spec.loader.exec_module(_mod)
+    _mod.parse_args = lambda: _ns      # override before main() reads args
+    _mod.main()
+    sys.exit(0)
 
 USER_N_COMPONENTS = args.components
 BITS = args.bits

@@ -178,21 +178,27 @@ class P4CodeGenerator:
 
         # Code prefix: "pc" for PCA, "ld" for LDA, "ae" for Autoencoder.
         # 'raw' skips the transform stage entirely (paper Section 4.2 baseline).
-        _KNOWN_METHODS = {'pca', 'lda', 'autoencoder', 'raw'}
+        # 'pca_linear' is PCA implemented as additive per-feature contribution
+        # tables (single-field range keys) instead of a multivariate surrogate.
+        _KNOWN_METHODS = {'pca', 'pca_linear', 'lda', 'lda_linear', 'autoencoder', 'raw'}
         if method not in _KNOWN_METHODS:
             import warnings
             warnings.warn(
                 f"Unknown reduction method '{method}' in reduction_config.json — defaulting to PCA. "
                 f"Known methods: {sorted(_KNOWN_METHODS)}", stacklevel=2)
 
-        if method == 'lda':
+        # PCA-linear: additive per-feature projection (see 2_pca_linear_entries.py)
+        self.linear = method in ('pca_linear', 'lda_linear')
+        self.linear_params = self.reduction_config.get('linear', {}) if self.linear else {}
+
+        if method in ('lda', 'lda_linear'):
             self.code_prefix = 'ld'
         elif method == 'autoencoder':
             self.code_prefix = 'ae'
         elif method == 'raw':
             self.code_prefix = 'raw'
         else:
-            self.code_prefix = 'pc'
+            self.code_prefix = 'pc'   # pca and pca_linear both emit pc*_code
 
         # Transform table/action prefixes — each method gets its own distinct table name
         if method == 'lda':
@@ -204,6 +210,9 @@ class P4CodeGenerator:
         elif method == 'raw':
             self.table_prefix = 'raw'
             self.action_prefix = 'raw'
+        elif method in ('pca_linear', 'lda_linear'):
+            self.table_prefix = 'featc'
+            self.action_prefix = 'addc'
         else:
             self.table_prefix = 'pca'
             self.action_prefix = 'pc'
@@ -396,6 +405,13 @@ struct metadata {
             code += f'\n    // {pfx.upper()} transformed features (quantized)\n'
             for i in range(1, self.n_components + 1):
                 code += f'    pca_code_t {pfx}{i}_code;\n'
+
+        # PCA-linear: signed accumulators that sum per-feature contributions
+        if self.linear:
+            acc_w = int(self.linear_params.get('acc_width', 64))
+            code += f'\n    // PCA-linear signed accumulators (summed contributions)\n'
+            for i in range(1, self.n_components + 1):
+                code += f'    int<{acc_w}> {pfx}{i}_acc;\n'
 
         code += '''
     // Classification result
@@ -1000,8 +1016,37 @@ control MyIngress(inout headers hdr,
 
 '''
 
-        # ── Transform tables (PCA / LDA / Autoencoder) ───────────────────
-        if self.needs_transform:
+        # ── Transform tables ─────────────────────────────────────────────
+        if self.needs_transform and self.linear:
+            # PCA-linear: one single-field range table PER FEATURE.  Each table
+            # adds that feature's K precomputed fixed-point contributions to the
+            # K accumulators.  No feature shares a match key with another.
+            acc_w = int(self.linear_params.get('acc_width', 64))
+            dw    = int(self.linear_params.get('delta_width', 64))
+            ncomp = self.n_components
+            for feat in TRANSFORM_KEY_FEATURES:
+                meta_f = FEATURE_TO_META_Q[feat]
+                params = ', '.join(f'int<{dw}> d{j}' for j in range(1, ncomp + 1))
+                adds = ''.join(
+                    f'        meta.{pfx}{j}_acc = meta.{pfx}{j}_acc + (int<{acc_w}>)d{j};\n'
+                    for j in range(1, ncomp + 1))
+                code += f'''
+    // Per-feature contribution: {feat}
+    action addc_{meta_f}({params}) {{
+{adds}    }}
+
+    table featc_{meta_f} {{
+        key = {{
+            meta.{meta_f:20s}: range;
+        }}
+        actions = {{
+            addc_{meta_f};
+            NoAction;
+        }}
+        size = NB_ENTRIES;
+    }}
+'''
+        elif self.needs_transform:
             for i in range(1, self.n_components + 1):
                 code += f'''
     // {pfx.upper()} component {i} transformation
@@ -1104,23 +1149,50 @@ control MyIngress(inout headers hdr,
         # ── Build classify+digest snippet (used for BOTH timeout and FIN/RST paths) ──
         classify_snippet = ''
 
+        # Pre-quantize features for range-match tables.
+        # Needed for BOTH raw-feature classification (ml_code reads meta.*_q
+        # directly) AND for the PCA/LDA/Autoencoder transform tables. Earlier
+        # versions of this codegen emitted the shift block only inside
+        # `if self.needs_transform:`, so raw-mode `basic.p4` left every _q
+        # field unassigned (default 0) and the live classifier matched the
+        # wrong leaf. Always emit the shifts.
+        classify_snippet += '\n                // Quantize features for range-match tables\n'
+        for feat in TRANSFORM_KEY_FEATURES:
+            if feat in FEATURE_QUANTIZE:
+                shift, qbits = FEATURE_QUANTIZE[feat]
+                raw_meta = FEATURE_TO_META[feat]
+                q_meta = FEATURE_TO_META_Q[feat]
+                if shift > 0:
+                    classify_snippet += f'                meta.{q_meta} = (bit<{qbits}>)(meta.{raw_meta} >> {shift});\n'
+                else:
+                    classify_snippet += f'                meta.{q_meta} = (bit<{qbits}>)meta.{raw_meta};\n'
+
         # Transform tables (PCA/LDA/Autoencoder only)
         if self.needs_transform:
-            # Pre-quantize features for range-match tables
-            classify_snippet += '\n                // Quantize features for range-match tables\n'
-            for feat in TRANSFORM_KEY_FEATURES:
-                if feat in FEATURE_QUANTIZE:
-                    shift, qbits = FEATURE_QUANTIZE[feat]
-                    raw_meta = FEATURE_TO_META[feat]
-                    q_meta = FEATURE_TO_META_Q[feat]
-                    if shift > 0:
-                        classify_snippet += f'                meta.{q_meta} = (bit<{qbits}>)(meta.{raw_meta} >> {shift});\n'
-                    else:
-                        classify_snippet += f'                meta.{q_meta} = (bit<{qbits}>)meta.{raw_meta};\n'
-
-            classify_snippet += f'\n                // Apply {pfx.upper()} transformations\n'
-            for i in range(1, self.n_components + 1):
-                classify_snippet += f'                {self.table_prefix}_component{i}.apply();\n'
+            if self.linear:
+                acc_w   = int(self.linear_params.get('acc_width', 64))
+                fp      = int(self.linear_params.get('fp_shift', 0))
+                maxcode = int(self.linear_params.get('maxcode', (1 << self.bits) - 1))
+                init    = self.linear_params.get('init', [0] * self.n_components)
+                classify_snippet += '\n                // PCA-linear: seed accumulators with INIT_j\n'
+                for j in range(1, self.n_components + 1):
+                    classify_snippet += f'                meta.{pfx}{j}_acc = (int<{acc_w}>)({int(init[j-1])});\n'
+                classify_snippet += '\n                // Add each feature\'s contribution\n'
+                for feat in TRANSFORM_KEY_FEATURES:
+                    meta_f = FEATURE_TO_META_Q[feat]
+                    classify_snippet += f'                featc_{meta_f}.apply();\n'
+                classify_snippet += '\n                // Shift back to code domain and clamp to [0, MAXCODE]\n'
+                for j in range(1, self.n_components + 1):
+                    classify_snippet += (
+                        f'                int<{acc_w}> {pfx}{j}_t = meta.{pfx}{j}_acc >> {fp};\n'
+                        f'                if ({pfx}{j}_t < (int<{acc_w}>)0) {{ {pfx}{j}_t = (int<{acc_w}>)0; }}\n'
+                        f'                if ({pfx}{j}_t > (int<{acc_w}>){maxcode}) {{ {pfx}{j}_t = (int<{acc_w}>){maxcode}; }}\n'
+                        # int<W> -> bit<W> (same width) -> pca_code_t (truncate); value is clamped to [0,MAXCODE]
+                        f'                meta.{pfx}{j}_code = (pca_code_t)(bit<{acc_w}>){pfx}{j}_t;\n')
+            else:
+                classify_snippet += f'\n                // Apply {pfx.upper()} transformations\n'
+                for i in range(1, self.n_components + 1):
+                    classify_snippet += f'                {self.table_prefix}_component{i}.apply();\n'
 
         # Classifier
         classify_snippet += '\n                // Apply classifier\n'

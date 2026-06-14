@@ -56,9 +56,34 @@ control_plane/pcaps/
 control_plane/tables/
 control_plane/combos/
 
-# PDFs (local reference only) — paper PDF below is intentionally tracked
+# PDFs — exclude large binaries except the compiled paper
 *.pdf
-!In_Network_Intrusion_Detection_Using_Principal_Component_Analysis_and_Machine_Learning_Models_on_P4_Programmable_Data_Planes.pdf
+!In_Network_Intrusion_Detection_Using_Principal_Component_Analysis_and_Machine_Learning_Models_on_P4_Programmable_Data_Planes/main.pdf
+!In_Network_Intrusion_Detection_Using_Principal_Component_Analysis_and_Machine_Learning_Models_on_P4_Programmable_Data_Planes/images/*.pdf
 
-# CIC-IoT dataset (~24 MB; users provide their own PCAPs)
+# LaTeX build artefacts
+*.aux
+*.bbl
+*.blg
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+*.out
+
+# drawio auto-backup files
+.*.drawio.bkp
+
+# Dataset PCAPs (users provide their own; too large for git)
 control_plane/CIC-IoT/
+control_plane/CICIoT/
+control_plane/Mu-IoT/
+control_plane/drain.pcap
+
+# Overleaf project (superseded by paper directory above)
+overleaf_project/
+
+# Results raw data (large pcap-level outputs; summary CSV is tracked)
+results/cic_iot/
+results/cross_dataset_ciciot_to_muiot/
+results/test_noports/
+results/logs/

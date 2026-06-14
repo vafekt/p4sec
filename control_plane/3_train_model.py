@@ -71,6 +71,14 @@ parser.add_argument('--max-depth',        type=int, default=None,
 parser.add_argument('--min-samples-leaf', type=int, default=1)
 
 # RF-specific
+parser.add_argument('--max-features', default='sqrt',
+                    help=(
+                        "RF per-split feature subset.  sklearn default = 'sqrt' "
+                        "(~4 of 18 features per split) weakens each tree.  "
+                        "Use 'all' / 'none' to consider every feature at each "
+                        "split (stronger trees, less variance reduction across "
+                        "trees), or a float fraction like 0.8.  default: sqrt"
+                    ))
 parser.add_argument('--n-estimators',     type=int, default=4,
                     help='Number of trees for RF (default: 4)')
 
@@ -144,12 +152,26 @@ def train_model(mt, X_train_in, y_train_in, X_test_in):
         )
     elif mt == 'rf':
         from sklearn.ensemble import RandomForestClassifier
+        # max_features: sklearn default is "sqrt".  For 18 features that limits
+        # each split to ~4 random features which weakens each tree heavily on
+        # this dataset, where the discriminative signal is concentrated in a
+        # handful of features (ports, packet counts).  Allow the user to widen
+        # via --max-features.
+        mf = getattr(args, "max_features", None)
+        if mf in (None, "default", "sqrt"):
+            mf = "sqrt"
+        elif mf in ("all", "none"):
+            mf = None
+        else:
+            try: mf = float(mf)
+            except: pass
         model_local = RandomForestClassifier(
             n_estimators=args.n_estimators,
             max_depth=args.max_depth,
             min_samples_leaf=args.min_samples_leaf,
             random_state=args.random_state,
             class_weight=tree_class_weight,
+            max_features=mf,
             n_jobs=-1,
         )
     else:

@@ -43,6 +43,23 @@ import p4runtime_lib.helper
 from p4runtime_lib.switch import ShutdownAllSwitchConnections
 from p4.v1 import p4runtime_pb2, p4runtime_pb2_grpc
 
+# gRPC keepalive so a long-idle digest StreamChannel (e.g. while waiting out the
+# 20s flow idle-timeout before a drain) is not dropped by the switch's grpc
+# server as an idle HTTP/2 connection. Without this the digest stream returns
+# UNAVAILABLE / "Socket closed" under the Mininet-spawned switch, which delivers
+# zero digests. Interval is kept >= the grpc server's default min ping interval
+# to avoid a "too_many_pings" GOAWAY.
+GRPC_KEEPALIVE_OPTS = [
+    ('grpc.keepalive_time_ms', 600000),                      # ping every 10min (BMv2 server min is 5min)
+    ('grpc.keepalive_timeout_ms', 20000),                    # wait 20s for ack
+    ('grpc.keepalive_permit_without_calls', 1),              # ping on an idle stream
+    ('grpc.http2.max_pings_without_data', 0),                # no cap on data-less pings
+    ('grpc.http2.min_time_between_pings_ms', 600000),
+    ('grpc.http2.min_ping_interval_without_data_ms', 600000),
+    ('grpc.max_connection_idle_ms', 2147483647),             # never treat as idle
+    ('grpc.max_connection_age_ms', 2147483647),
+]
+
 LOGO = """---------------------------------------------------------------------------
 ------PPPPPPPP------4444------SSSSSSSS------EEEEEEEE------CCCCCCCC---------
 ------PP-----PP----44--44----SS-------------EE------------CC---------------
@@ -528,7 +545,7 @@ class DigestClient:
 
     def start(self):
         self._stop = False
-        self.channel = grpc.insecure_channel(self.address)
+        self.channel = grpc.insecure_channel(self.address, options=GRPC_KEEPALIVE_OPTS)
         self.stub = p4runtime_pb2_grpc.P4RuntimeStub(self.channel)
         self.req_q = Queue()
         self.resp_it = self.stub.StreamChannel(self._req_iter())
@@ -808,25 +825,6 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path):
     s1.requests_stream.put(_force_arb)
     s1.dispatcher.arbitration_queue.get()  # wait for ack
 
-    # Re-set the forwarding pipeline config under our new election_id so the
-    # digest_entry Write succeeds.  BMv2 ties pipeline-config visibility to
-    # the master that installed it; after we override election_id=1 with 2,
-    # the device reports "No forwarding pipeline config set" until we set it
-    # again here.  We build the request manually because
-    # SwitchConnection.SetForwardingPipelineConfig hardcodes election_id=1.
-    try:
-        _dev_cfg = s1.buildDeviceConfig(bmv2_json_file_path=bmv2_file_path)
-        _sfpc_req = p4runtime_pb2.SetForwardingPipelineConfigRequest()
-        _sfpc_req.device_id = s1.device_id
-        _sfpc_req.election_id.low = 2
-        _sfpc_req.config.p4info.CopyFrom(p4info_helper.p4info)
-        _sfpc_req.config.p4_device_config = _dev_cfg.SerializeToString()
-        _sfpc_req.action = p4runtime_pb2.SetForwardingPipelineConfigRequest.VERIFY_AND_COMMIT
-        s1.client_stub.SetForwardingPipelineConfig(_sfpc_req)
-        print("Forwarding pipeline config re-installed under election_id=2.")
-    except Exception as e:
-        print(f"WARNING: SetForwardingPipelineConfig under election_id=2 failed: {e}")
-
     # Reset all flow-state registers so stale state from any previous run
     # (e.g. tcpreplay before the controller started) doesn't produce ghost flows.
     print("Resetting switch flow-state registers...")
@@ -924,15 +922,17 @@ def main(p4info_file_path, bmv2_file_path, runtime_cli_path):
         json.dump(_run_metadata, _mf, indent=2)
     print(f"Run metadata written to {_metadata_path}\n")
 
-    # Install digest configuration
-    install_digest(p4info_helper, s1, digest_name)
+    # Dedicated digest client first — make it primary BEFORE installing
+    # the DigestEntry so BMv2 routes digests to this stream.
+    dclient = DigestClient(address='127.0.0.1:50051', device_id=0, election_id=3)
+    dclient.start()
+    time.sleep(1.0)  # let arbitration settle
+
+    # Install digest configuration under the DigestClient's election_id
+    install_digest(p4info_helper, s1, digest_name, election_id=3)
 
     os.makedirs('logs', exist_ok=True)
     print("Listening for traffic digests...\n")
-
-    # Dedicated digest client
-    dclient = DigestClient(address='127.0.0.1:50051', device_id=0, election_id=3)
-    dclient.start()
 
     _digest_count_raw  = 0   # total DigestList messages received
     _digest_count_flow = 0   # flows actually printed

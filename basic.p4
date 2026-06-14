@@ -160,12 +160,46 @@ struct metadata {
     pca_code_t pc5_code;
     pca_code_t pc6_code;
     pca_code_t pc7_code;
+    pca_code_t pc8_code;
+    pca_code_t pc9_code;
+    pca_code_t pc10_code;
+    pca_code_t pc11_code;
+    pca_code_t pc12_code;
+    pca_code_t pc13_code;
+    pca_code_t pc14_code;
+    pca_code_t pc15_code;
+    pca_code_t pc16_code;
+    pca_code_t pc17_code;
+    pca_code_t pc18_code;
+
+    // PCA-linear signed accumulators (summed contributions)
+    int<64> pc1_acc;
+    int<64> pc2_acc;
+    int<64> pc3_acc;
+    int<64> pc4_acc;
+    int<64> pc5_acc;
+    int<64> pc6_acc;
+    int<64> pc7_acc;
+    int<64> pc8_acc;
+    int<64> pc9_acc;
+    int<64> pc10_acc;
+    int<64> pc11_acc;
+    int<64> pc12_acc;
+    int<64> pc13_acc;
+    int<64> pc14_acc;
+    int<64> pc15_acc;
+    int<64> pc16_acc;
+    int<64> pc17_acc;
+    int<64> pc18_acc;
 
     // Classification result
     inference_result_t ml_result;
 
     // Timestamp
     bit<48> ingress_timestamp;
+
+    // RF packed vote field (4 trees x 2 bits)
+    bit<8> rf_votes;
 }
 
 struct headers {
@@ -209,6 +243,17 @@ struct digest_t {
     pca_code_t pc5_code;
     pca_code_t pc6_code;
     pca_code_t pc7_code;
+    pca_code_t pc8_code;
+    pca_code_t pc9_code;
+    pca_code_t pc10_code;
+    pca_code_t pc11_code;
+    pca_code_t pc12_code;
+    pca_code_t pc13_code;
+    pca_code_t pc14_code;
+    pca_code_t pc15_code;
+    pca_code_t pc16_code;
+    pca_code_t pc17_code;
+    pca_code_t pc18_code;
 
     inference_result_t ml_result;
 }
@@ -745,232 +790,595 @@ control MyIngress(inout headers hdr,
     }
 
 
-    // PC component 1 transformation
-    action set_pc1_code(pca_code_t code) {
-        meta.pc1_code = code;
+    // Per-feature contribution: Protocol
+    action addc_protocol(int<64> d1, int<64> d2, int<64> d3, int<64> d4, int<64> d5, int<64> d6, int<64> d7, int<64> d8, int<64> d9, int<64> d10, int<64> d11, int<64> d12, int<64> d13, int<64> d14, int<64> d15, int<64> d16, int<64> d17, int<64> d18) {
+        meta.pc1_acc = meta.pc1_acc + (int<64>)d1;
+        meta.pc2_acc = meta.pc2_acc + (int<64>)d2;
+        meta.pc3_acc = meta.pc3_acc + (int<64>)d3;
+        meta.pc4_acc = meta.pc4_acc + (int<64>)d4;
+        meta.pc5_acc = meta.pc5_acc + (int<64>)d5;
+        meta.pc6_acc = meta.pc6_acc + (int<64>)d6;
+        meta.pc7_acc = meta.pc7_acc + (int<64>)d7;
+        meta.pc8_acc = meta.pc8_acc + (int<64>)d8;
+        meta.pc9_acc = meta.pc9_acc + (int<64>)d9;
+        meta.pc10_acc = meta.pc10_acc + (int<64>)d10;
+        meta.pc11_acc = meta.pc11_acc + (int<64>)d11;
+        meta.pc12_acc = meta.pc12_acc + (int<64>)d12;
+        meta.pc13_acc = meta.pc13_acc + (int<64>)d13;
+        meta.pc14_acc = meta.pc14_acc + (int<64>)d14;
+        meta.pc15_acc = meta.pc15_acc + (int<64>)d15;
+        meta.pc16_acc = meta.pc16_acc + (int<64>)d16;
+        meta.pc17_acc = meta.pc17_acc + (int<64>)d17;
+        meta.pc18_acc = meta.pc18_acc + (int<64>)d18;
     }
 
-    table pca_component1 {
+    table featc_protocol {
         key = {
             meta.protocol            : range;
-            meta.canon_src_port      : range;
-            meta.canon_dst_port      : range;
-            meta.duration_q          : range;
-            meta.max_iat_q           : range;
-            meta.fwd_pkt_count_q     : range;
-            meta.bwd_pkt_count_q     : range;
-            meta.fwd_bytes_q         : range;
-            meta.bwd_bytes_q         : range;
-            meta.fwd_max_pkt_len     : range;
-            meta.bwd_max_pkt_len     : range;
-            meta.flags_syn_q         : range;
-            meta.flags_ack_q         : range;
-            meta.flags_fin_q         : range;
-            meta.flags_rst_q         : range;
-            meta.flags_psh_q         : range;
-            meta.max_win_size        : range;
-            meta.init_fwd_win        : range;
         }
         actions = {
-            set_pc1_code;
+            addc_protocol;
             NoAction;
         }
         size = NB_ENTRIES;
     }
 
-    // PC component 2 transformation
-    action set_pc2_code(pca_code_t code) {
-        meta.pc2_code = code;
+    // Per-feature contribution: SrcPort
+    action addc_canon_src_port(int<64> d1, int<64> d2, int<64> d3, int<64> d4, int<64> d5, int<64> d6, int<64> d7, int<64> d8, int<64> d9, int<64> d10, int<64> d11, int<64> d12, int<64> d13, int<64> d14, int<64> d15, int<64> d16, int<64> d17, int<64> d18) {
+        meta.pc1_acc = meta.pc1_acc + (int<64>)d1;
+        meta.pc2_acc = meta.pc2_acc + (int<64>)d2;
+        meta.pc3_acc = meta.pc3_acc + (int<64>)d3;
+        meta.pc4_acc = meta.pc4_acc + (int<64>)d4;
+        meta.pc5_acc = meta.pc5_acc + (int<64>)d5;
+        meta.pc6_acc = meta.pc6_acc + (int<64>)d6;
+        meta.pc7_acc = meta.pc7_acc + (int<64>)d7;
+        meta.pc8_acc = meta.pc8_acc + (int<64>)d8;
+        meta.pc9_acc = meta.pc9_acc + (int<64>)d9;
+        meta.pc10_acc = meta.pc10_acc + (int<64>)d10;
+        meta.pc11_acc = meta.pc11_acc + (int<64>)d11;
+        meta.pc12_acc = meta.pc12_acc + (int<64>)d12;
+        meta.pc13_acc = meta.pc13_acc + (int<64>)d13;
+        meta.pc14_acc = meta.pc14_acc + (int<64>)d14;
+        meta.pc15_acc = meta.pc15_acc + (int<64>)d15;
+        meta.pc16_acc = meta.pc16_acc + (int<64>)d16;
+        meta.pc17_acc = meta.pc17_acc + (int<64>)d17;
+        meta.pc18_acc = meta.pc18_acc + (int<64>)d18;
     }
 
-    table pca_component2 {
+    table featc_canon_src_port {
         key = {
-            meta.protocol            : range;
             meta.canon_src_port      : range;
-            meta.canon_dst_port      : range;
-            meta.duration_q          : range;
-            meta.max_iat_q           : range;
-            meta.fwd_pkt_count_q     : range;
-            meta.bwd_pkt_count_q     : range;
-            meta.fwd_bytes_q         : range;
-            meta.bwd_bytes_q         : range;
-            meta.fwd_max_pkt_len     : range;
-            meta.bwd_max_pkt_len     : range;
-            meta.flags_syn_q         : range;
-            meta.flags_ack_q         : range;
-            meta.flags_fin_q         : range;
-            meta.flags_rst_q         : range;
-            meta.flags_psh_q         : range;
-            meta.max_win_size        : range;
-            meta.init_fwd_win        : range;
         }
         actions = {
-            set_pc2_code;
+            addc_canon_src_port;
             NoAction;
         }
         size = NB_ENTRIES;
     }
 
-    // PC component 3 transformation
-    action set_pc3_code(pca_code_t code) {
-        meta.pc3_code = code;
+    // Per-feature contribution: DstPort
+    action addc_canon_dst_port(int<64> d1, int<64> d2, int<64> d3, int<64> d4, int<64> d5, int<64> d6, int<64> d7, int<64> d8, int<64> d9, int<64> d10, int<64> d11, int<64> d12, int<64> d13, int<64> d14, int<64> d15, int<64> d16, int<64> d17, int<64> d18) {
+        meta.pc1_acc = meta.pc1_acc + (int<64>)d1;
+        meta.pc2_acc = meta.pc2_acc + (int<64>)d2;
+        meta.pc3_acc = meta.pc3_acc + (int<64>)d3;
+        meta.pc4_acc = meta.pc4_acc + (int<64>)d4;
+        meta.pc5_acc = meta.pc5_acc + (int<64>)d5;
+        meta.pc6_acc = meta.pc6_acc + (int<64>)d6;
+        meta.pc7_acc = meta.pc7_acc + (int<64>)d7;
+        meta.pc8_acc = meta.pc8_acc + (int<64>)d8;
+        meta.pc9_acc = meta.pc9_acc + (int<64>)d9;
+        meta.pc10_acc = meta.pc10_acc + (int<64>)d10;
+        meta.pc11_acc = meta.pc11_acc + (int<64>)d11;
+        meta.pc12_acc = meta.pc12_acc + (int<64>)d12;
+        meta.pc13_acc = meta.pc13_acc + (int<64>)d13;
+        meta.pc14_acc = meta.pc14_acc + (int<64>)d14;
+        meta.pc15_acc = meta.pc15_acc + (int<64>)d15;
+        meta.pc16_acc = meta.pc16_acc + (int<64>)d16;
+        meta.pc17_acc = meta.pc17_acc + (int<64>)d17;
+        meta.pc18_acc = meta.pc18_acc + (int<64>)d18;
     }
 
-    table pca_component3 {
+    table featc_canon_dst_port {
         key = {
-            meta.protocol            : range;
-            meta.canon_src_port      : range;
             meta.canon_dst_port      : range;
-            meta.duration_q          : range;
-            meta.max_iat_q           : range;
-            meta.fwd_pkt_count_q     : range;
-            meta.bwd_pkt_count_q     : range;
-            meta.fwd_bytes_q         : range;
-            meta.bwd_bytes_q         : range;
-            meta.fwd_max_pkt_len     : range;
-            meta.bwd_max_pkt_len     : range;
-            meta.flags_syn_q         : range;
-            meta.flags_ack_q         : range;
-            meta.flags_fin_q         : range;
-            meta.flags_rst_q         : range;
-            meta.flags_psh_q         : range;
-            meta.max_win_size        : range;
-            meta.init_fwd_win        : range;
         }
         actions = {
-            set_pc3_code;
+            addc_canon_dst_port;
             NoAction;
         }
         size = NB_ENTRIES;
     }
 
-    // PC component 4 transformation
-    action set_pc4_code(pca_code_t code) {
-        meta.pc4_code = code;
+    // Per-feature contribution: Duration
+    action addc_duration_q(int<64> d1, int<64> d2, int<64> d3, int<64> d4, int<64> d5, int<64> d6, int<64> d7, int<64> d8, int<64> d9, int<64> d10, int<64> d11, int<64> d12, int<64> d13, int<64> d14, int<64> d15, int<64> d16, int<64> d17, int<64> d18) {
+        meta.pc1_acc = meta.pc1_acc + (int<64>)d1;
+        meta.pc2_acc = meta.pc2_acc + (int<64>)d2;
+        meta.pc3_acc = meta.pc3_acc + (int<64>)d3;
+        meta.pc4_acc = meta.pc4_acc + (int<64>)d4;
+        meta.pc5_acc = meta.pc5_acc + (int<64>)d5;
+        meta.pc6_acc = meta.pc6_acc + (int<64>)d6;
+        meta.pc7_acc = meta.pc7_acc + (int<64>)d7;
+        meta.pc8_acc = meta.pc8_acc + (int<64>)d8;
+        meta.pc9_acc = meta.pc9_acc + (int<64>)d9;
+        meta.pc10_acc = meta.pc10_acc + (int<64>)d10;
+        meta.pc11_acc = meta.pc11_acc + (int<64>)d11;
+        meta.pc12_acc = meta.pc12_acc + (int<64>)d12;
+        meta.pc13_acc = meta.pc13_acc + (int<64>)d13;
+        meta.pc14_acc = meta.pc14_acc + (int<64>)d14;
+        meta.pc15_acc = meta.pc15_acc + (int<64>)d15;
+        meta.pc16_acc = meta.pc16_acc + (int<64>)d16;
+        meta.pc17_acc = meta.pc17_acc + (int<64>)d17;
+        meta.pc18_acc = meta.pc18_acc + (int<64>)d18;
     }
 
-    table pca_component4 {
+    table featc_duration_q {
         key = {
-            meta.protocol            : range;
-            meta.canon_src_port      : range;
-            meta.canon_dst_port      : range;
             meta.duration_q          : range;
-            meta.max_iat_q           : range;
-            meta.fwd_pkt_count_q     : range;
-            meta.bwd_pkt_count_q     : range;
-            meta.fwd_bytes_q         : range;
-            meta.bwd_bytes_q         : range;
-            meta.fwd_max_pkt_len     : range;
-            meta.bwd_max_pkt_len     : range;
-            meta.flags_syn_q         : range;
-            meta.flags_ack_q         : range;
-            meta.flags_fin_q         : range;
-            meta.flags_rst_q         : range;
-            meta.flags_psh_q         : range;
-            meta.max_win_size        : range;
-            meta.init_fwd_win        : range;
         }
         actions = {
-            set_pc4_code;
+            addc_duration_q;
             NoAction;
         }
         size = NB_ENTRIES;
     }
 
-    // PC component 5 transformation
-    action set_pc5_code(pca_code_t code) {
-        meta.pc5_code = code;
+    // Per-feature contribution: MaxIAT
+    action addc_max_iat_q(int<64> d1, int<64> d2, int<64> d3, int<64> d4, int<64> d5, int<64> d6, int<64> d7, int<64> d8, int<64> d9, int<64> d10, int<64> d11, int<64> d12, int<64> d13, int<64> d14, int<64> d15, int<64> d16, int<64> d17, int<64> d18) {
+        meta.pc1_acc = meta.pc1_acc + (int<64>)d1;
+        meta.pc2_acc = meta.pc2_acc + (int<64>)d2;
+        meta.pc3_acc = meta.pc3_acc + (int<64>)d3;
+        meta.pc4_acc = meta.pc4_acc + (int<64>)d4;
+        meta.pc5_acc = meta.pc5_acc + (int<64>)d5;
+        meta.pc6_acc = meta.pc6_acc + (int<64>)d6;
+        meta.pc7_acc = meta.pc7_acc + (int<64>)d7;
+        meta.pc8_acc = meta.pc8_acc + (int<64>)d8;
+        meta.pc9_acc = meta.pc9_acc + (int<64>)d9;
+        meta.pc10_acc = meta.pc10_acc + (int<64>)d10;
+        meta.pc11_acc = meta.pc11_acc + (int<64>)d11;
+        meta.pc12_acc = meta.pc12_acc + (int<64>)d12;
+        meta.pc13_acc = meta.pc13_acc + (int<64>)d13;
+        meta.pc14_acc = meta.pc14_acc + (int<64>)d14;
+        meta.pc15_acc = meta.pc15_acc + (int<64>)d15;
+        meta.pc16_acc = meta.pc16_acc + (int<64>)d16;
+        meta.pc17_acc = meta.pc17_acc + (int<64>)d17;
+        meta.pc18_acc = meta.pc18_acc + (int<64>)d18;
     }
 
-    table pca_component5 {
+    table featc_max_iat_q {
         key = {
-            meta.protocol            : range;
-            meta.canon_src_port      : range;
-            meta.canon_dst_port      : range;
-            meta.duration_q          : range;
             meta.max_iat_q           : range;
-            meta.fwd_pkt_count_q     : range;
-            meta.bwd_pkt_count_q     : range;
-            meta.fwd_bytes_q         : range;
-            meta.bwd_bytes_q         : range;
-            meta.fwd_max_pkt_len     : range;
-            meta.bwd_max_pkt_len     : range;
-            meta.flags_syn_q         : range;
-            meta.flags_ack_q         : range;
-            meta.flags_fin_q         : range;
-            meta.flags_rst_q         : range;
-            meta.flags_psh_q         : range;
-            meta.max_win_size        : range;
-            meta.init_fwd_win        : range;
         }
         actions = {
-            set_pc5_code;
+            addc_max_iat_q;
             NoAction;
         }
         size = NB_ENTRIES;
     }
 
-    // PC component 6 transformation
-    action set_pc6_code(pca_code_t code) {
-        meta.pc6_code = code;
+    // Per-feature contribution: FwdPktCount
+    action addc_fwd_pkt_count_q(int<64> d1, int<64> d2, int<64> d3, int<64> d4, int<64> d5, int<64> d6, int<64> d7, int<64> d8, int<64> d9, int<64> d10, int<64> d11, int<64> d12, int<64> d13, int<64> d14, int<64> d15, int<64> d16, int<64> d17, int<64> d18) {
+        meta.pc1_acc = meta.pc1_acc + (int<64>)d1;
+        meta.pc2_acc = meta.pc2_acc + (int<64>)d2;
+        meta.pc3_acc = meta.pc3_acc + (int<64>)d3;
+        meta.pc4_acc = meta.pc4_acc + (int<64>)d4;
+        meta.pc5_acc = meta.pc5_acc + (int<64>)d5;
+        meta.pc6_acc = meta.pc6_acc + (int<64>)d6;
+        meta.pc7_acc = meta.pc7_acc + (int<64>)d7;
+        meta.pc8_acc = meta.pc8_acc + (int<64>)d8;
+        meta.pc9_acc = meta.pc9_acc + (int<64>)d9;
+        meta.pc10_acc = meta.pc10_acc + (int<64>)d10;
+        meta.pc11_acc = meta.pc11_acc + (int<64>)d11;
+        meta.pc12_acc = meta.pc12_acc + (int<64>)d12;
+        meta.pc13_acc = meta.pc13_acc + (int<64>)d13;
+        meta.pc14_acc = meta.pc14_acc + (int<64>)d14;
+        meta.pc15_acc = meta.pc15_acc + (int<64>)d15;
+        meta.pc16_acc = meta.pc16_acc + (int<64>)d16;
+        meta.pc17_acc = meta.pc17_acc + (int<64>)d17;
+        meta.pc18_acc = meta.pc18_acc + (int<64>)d18;
     }
 
-    table pca_component6 {
+    table featc_fwd_pkt_count_q {
         key = {
-            meta.protocol            : range;
-            meta.canon_src_port      : range;
-            meta.canon_dst_port      : range;
-            meta.duration_q          : range;
-            meta.max_iat_q           : range;
             meta.fwd_pkt_count_q     : range;
-            meta.bwd_pkt_count_q     : range;
-            meta.fwd_bytes_q         : range;
-            meta.bwd_bytes_q         : range;
-            meta.fwd_max_pkt_len     : range;
-            meta.bwd_max_pkt_len     : range;
-            meta.flags_syn_q         : range;
-            meta.flags_ack_q         : range;
-            meta.flags_fin_q         : range;
-            meta.flags_rst_q         : range;
-            meta.flags_psh_q         : range;
-            meta.max_win_size        : range;
-            meta.init_fwd_win        : range;
         }
         actions = {
-            set_pc6_code;
+            addc_fwd_pkt_count_q;
             NoAction;
         }
         size = NB_ENTRIES;
     }
 
-    // PC component 7 transformation
-    action set_pc7_code(pca_code_t code) {
-        meta.pc7_code = code;
+    // Per-feature contribution: BwdPktCount
+    action addc_bwd_pkt_count_q(int<64> d1, int<64> d2, int<64> d3, int<64> d4, int<64> d5, int<64> d6, int<64> d7, int<64> d8, int<64> d9, int<64> d10, int<64> d11, int<64> d12, int<64> d13, int<64> d14, int<64> d15, int<64> d16, int<64> d17, int<64> d18) {
+        meta.pc1_acc = meta.pc1_acc + (int<64>)d1;
+        meta.pc2_acc = meta.pc2_acc + (int<64>)d2;
+        meta.pc3_acc = meta.pc3_acc + (int<64>)d3;
+        meta.pc4_acc = meta.pc4_acc + (int<64>)d4;
+        meta.pc5_acc = meta.pc5_acc + (int<64>)d5;
+        meta.pc6_acc = meta.pc6_acc + (int<64>)d6;
+        meta.pc7_acc = meta.pc7_acc + (int<64>)d7;
+        meta.pc8_acc = meta.pc8_acc + (int<64>)d8;
+        meta.pc9_acc = meta.pc9_acc + (int<64>)d9;
+        meta.pc10_acc = meta.pc10_acc + (int<64>)d10;
+        meta.pc11_acc = meta.pc11_acc + (int<64>)d11;
+        meta.pc12_acc = meta.pc12_acc + (int<64>)d12;
+        meta.pc13_acc = meta.pc13_acc + (int<64>)d13;
+        meta.pc14_acc = meta.pc14_acc + (int<64>)d14;
+        meta.pc15_acc = meta.pc15_acc + (int<64>)d15;
+        meta.pc16_acc = meta.pc16_acc + (int<64>)d16;
+        meta.pc17_acc = meta.pc17_acc + (int<64>)d17;
+        meta.pc18_acc = meta.pc18_acc + (int<64>)d18;
     }
 
-    table pca_component7 {
+    table featc_bwd_pkt_count_q {
         key = {
-            meta.protocol            : range;
-            meta.canon_src_port      : range;
-            meta.canon_dst_port      : range;
-            meta.duration_q          : range;
-            meta.max_iat_q           : range;
-            meta.fwd_pkt_count_q     : range;
             meta.bwd_pkt_count_q     : range;
+        }
+        actions = {
+            addc_bwd_pkt_count_q;
+            NoAction;
+        }
+        size = NB_ENTRIES;
+    }
+
+    // Per-feature contribution: FwdBytes
+    action addc_fwd_bytes_q(int<64> d1, int<64> d2, int<64> d3, int<64> d4, int<64> d5, int<64> d6, int<64> d7, int<64> d8, int<64> d9, int<64> d10, int<64> d11, int<64> d12, int<64> d13, int<64> d14, int<64> d15, int<64> d16, int<64> d17, int<64> d18) {
+        meta.pc1_acc = meta.pc1_acc + (int<64>)d1;
+        meta.pc2_acc = meta.pc2_acc + (int<64>)d2;
+        meta.pc3_acc = meta.pc3_acc + (int<64>)d3;
+        meta.pc4_acc = meta.pc4_acc + (int<64>)d4;
+        meta.pc5_acc = meta.pc5_acc + (int<64>)d5;
+        meta.pc6_acc = meta.pc6_acc + (int<64>)d6;
+        meta.pc7_acc = meta.pc7_acc + (int<64>)d7;
+        meta.pc8_acc = meta.pc8_acc + (int<64>)d8;
+        meta.pc9_acc = meta.pc9_acc + (int<64>)d9;
+        meta.pc10_acc = meta.pc10_acc + (int<64>)d10;
+        meta.pc11_acc = meta.pc11_acc + (int<64>)d11;
+        meta.pc12_acc = meta.pc12_acc + (int<64>)d12;
+        meta.pc13_acc = meta.pc13_acc + (int<64>)d13;
+        meta.pc14_acc = meta.pc14_acc + (int<64>)d14;
+        meta.pc15_acc = meta.pc15_acc + (int<64>)d15;
+        meta.pc16_acc = meta.pc16_acc + (int<64>)d16;
+        meta.pc17_acc = meta.pc17_acc + (int<64>)d17;
+        meta.pc18_acc = meta.pc18_acc + (int<64>)d18;
+    }
+
+    table featc_fwd_bytes_q {
+        key = {
             meta.fwd_bytes_q         : range;
+        }
+        actions = {
+            addc_fwd_bytes_q;
+            NoAction;
+        }
+        size = NB_ENTRIES;
+    }
+
+    // Per-feature contribution: BwdBytes
+    action addc_bwd_bytes_q(int<64> d1, int<64> d2, int<64> d3, int<64> d4, int<64> d5, int<64> d6, int<64> d7, int<64> d8, int<64> d9, int<64> d10, int<64> d11, int<64> d12, int<64> d13, int<64> d14, int<64> d15, int<64> d16, int<64> d17, int<64> d18) {
+        meta.pc1_acc = meta.pc1_acc + (int<64>)d1;
+        meta.pc2_acc = meta.pc2_acc + (int<64>)d2;
+        meta.pc3_acc = meta.pc3_acc + (int<64>)d3;
+        meta.pc4_acc = meta.pc4_acc + (int<64>)d4;
+        meta.pc5_acc = meta.pc5_acc + (int<64>)d5;
+        meta.pc6_acc = meta.pc6_acc + (int<64>)d6;
+        meta.pc7_acc = meta.pc7_acc + (int<64>)d7;
+        meta.pc8_acc = meta.pc8_acc + (int<64>)d8;
+        meta.pc9_acc = meta.pc9_acc + (int<64>)d9;
+        meta.pc10_acc = meta.pc10_acc + (int<64>)d10;
+        meta.pc11_acc = meta.pc11_acc + (int<64>)d11;
+        meta.pc12_acc = meta.pc12_acc + (int<64>)d12;
+        meta.pc13_acc = meta.pc13_acc + (int<64>)d13;
+        meta.pc14_acc = meta.pc14_acc + (int<64>)d14;
+        meta.pc15_acc = meta.pc15_acc + (int<64>)d15;
+        meta.pc16_acc = meta.pc16_acc + (int<64>)d16;
+        meta.pc17_acc = meta.pc17_acc + (int<64>)d17;
+        meta.pc18_acc = meta.pc18_acc + (int<64>)d18;
+    }
+
+    table featc_bwd_bytes_q {
+        key = {
             meta.bwd_bytes_q         : range;
+        }
+        actions = {
+            addc_bwd_bytes_q;
+            NoAction;
+        }
+        size = NB_ENTRIES;
+    }
+
+    // Per-feature contribution: FwdMaxPktLen
+    action addc_fwd_max_pkt_len(int<64> d1, int<64> d2, int<64> d3, int<64> d4, int<64> d5, int<64> d6, int<64> d7, int<64> d8, int<64> d9, int<64> d10, int<64> d11, int<64> d12, int<64> d13, int<64> d14, int<64> d15, int<64> d16, int<64> d17, int<64> d18) {
+        meta.pc1_acc = meta.pc1_acc + (int<64>)d1;
+        meta.pc2_acc = meta.pc2_acc + (int<64>)d2;
+        meta.pc3_acc = meta.pc3_acc + (int<64>)d3;
+        meta.pc4_acc = meta.pc4_acc + (int<64>)d4;
+        meta.pc5_acc = meta.pc5_acc + (int<64>)d5;
+        meta.pc6_acc = meta.pc6_acc + (int<64>)d6;
+        meta.pc7_acc = meta.pc7_acc + (int<64>)d7;
+        meta.pc8_acc = meta.pc8_acc + (int<64>)d8;
+        meta.pc9_acc = meta.pc9_acc + (int<64>)d9;
+        meta.pc10_acc = meta.pc10_acc + (int<64>)d10;
+        meta.pc11_acc = meta.pc11_acc + (int<64>)d11;
+        meta.pc12_acc = meta.pc12_acc + (int<64>)d12;
+        meta.pc13_acc = meta.pc13_acc + (int<64>)d13;
+        meta.pc14_acc = meta.pc14_acc + (int<64>)d14;
+        meta.pc15_acc = meta.pc15_acc + (int<64>)d15;
+        meta.pc16_acc = meta.pc16_acc + (int<64>)d16;
+        meta.pc17_acc = meta.pc17_acc + (int<64>)d17;
+        meta.pc18_acc = meta.pc18_acc + (int<64>)d18;
+    }
+
+    table featc_fwd_max_pkt_len {
+        key = {
             meta.fwd_max_pkt_len     : range;
+        }
+        actions = {
+            addc_fwd_max_pkt_len;
+            NoAction;
+        }
+        size = NB_ENTRIES;
+    }
+
+    // Per-feature contribution: BwdMaxPktLen
+    action addc_bwd_max_pkt_len(int<64> d1, int<64> d2, int<64> d3, int<64> d4, int<64> d5, int<64> d6, int<64> d7, int<64> d8, int<64> d9, int<64> d10, int<64> d11, int<64> d12, int<64> d13, int<64> d14, int<64> d15, int<64> d16, int<64> d17, int<64> d18) {
+        meta.pc1_acc = meta.pc1_acc + (int<64>)d1;
+        meta.pc2_acc = meta.pc2_acc + (int<64>)d2;
+        meta.pc3_acc = meta.pc3_acc + (int<64>)d3;
+        meta.pc4_acc = meta.pc4_acc + (int<64>)d4;
+        meta.pc5_acc = meta.pc5_acc + (int<64>)d5;
+        meta.pc6_acc = meta.pc6_acc + (int<64>)d6;
+        meta.pc7_acc = meta.pc7_acc + (int<64>)d7;
+        meta.pc8_acc = meta.pc8_acc + (int<64>)d8;
+        meta.pc9_acc = meta.pc9_acc + (int<64>)d9;
+        meta.pc10_acc = meta.pc10_acc + (int<64>)d10;
+        meta.pc11_acc = meta.pc11_acc + (int<64>)d11;
+        meta.pc12_acc = meta.pc12_acc + (int<64>)d12;
+        meta.pc13_acc = meta.pc13_acc + (int<64>)d13;
+        meta.pc14_acc = meta.pc14_acc + (int<64>)d14;
+        meta.pc15_acc = meta.pc15_acc + (int<64>)d15;
+        meta.pc16_acc = meta.pc16_acc + (int<64>)d16;
+        meta.pc17_acc = meta.pc17_acc + (int<64>)d17;
+        meta.pc18_acc = meta.pc18_acc + (int<64>)d18;
+    }
+
+    table featc_bwd_max_pkt_len {
+        key = {
             meta.bwd_max_pkt_len     : range;
+        }
+        actions = {
+            addc_bwd_max_pkt_len;
+            NoAction;
+        }
+        size = NB_ENTRIES;
+    }
+
+    // Per-feature contribution: FlagsSyn
+    action addc_flags_syn_q(int<64> d1, int<64> d2, int<64> d3, int<64> d4, int<64> d5, int<64> d6, int<64> d7, int<64> d8, int<64> d9, int<64> d10, int<64> d11, int<64> d12, int<64> d13, int<64> d14, int<64> d15, int<64> d16, int<64> d17, int<64> d18) {
+        meta.pc1_acc = meta.pc1_acc + (int<64>)d1;
+        meta.pc2_acc = meta.pc2_acc + (int<64>)d2;
+        meta.pc3_acc = meta.pc3_acc + (int<64>)d3;
+        meta.pc4_acc = meta.pc4_acc + (int<64>)d4;
+        meta.pc5_acc = meta.pc5_acc + (int<64>)d5;
+        meta.pc6_acc = meta.pc6_acc + (int<64>)d6;
+        meta.pc7_acc = meta.pc7_acc + (int<64>)d7;
+        meta.pc8_acc = meta.pc8_acc + (int<64>)d8;
+        meta.pc9_acc = meta.pc9_acc + (int<64>)d9;
+        meta.pc10_acc = meta.pc10_acc + (int<64>)d10;
+        meta.pc11_acc = meta.pc11_acc + (int<64>)d11;
+        meta.pc12_acc = meta.pc12_acc + (int<64>)d12;
+        meta.pc13_acc = meta.pc13_acc + (int<64>)d13;
+        meta.pc14_acc = meta.pc14_acc + (int<64>)d14;
+        meta.pc15_acc = meta.pc15_acc + (int<64>)d15;
+        meta.pc16_acc = meta.pc16_acc + (int<64>)d16;
+        meta.pc17_acc = meta.pc17_acc + (int<64>)d17;
+        meta.pc18_acc = meta.pc18_acc + (int<64>)d18;
+    }
+
+    table featc_flags_syn_q {
+        key = {
             meta.flags_syn_q         : range;
+        }
+        actions = {
+            addc_flags_syn_q;
+            NoAction;
+        }
+        size = NB_ENTRIES;
+    }
+
+    // Per-feature contribution: FlagsAck
+    action addc_flags_ack_q(int<64> d1, int<64> d2, int<64> d3, int<64> d4, int<64> d5, int<64> d6, int<64> d7, int<64> d8, int<64> d9, int<64> d10, int<64> d11, int<64> d12, int<64> d13, int<64> d14, int<64> d15, int<64> d16, int<64> d17, int<64> d18) {
+        meta.pc1_acc = meta.pc1_acc + (int<64>)d1;
+        meta.pc2_acc = meta.pc2_acc + (int<64>)d2;
+        meta.pc3_acc = meta.pc3_acc + (int<64>)d3;
+        meta.pc4_acc = meta.pc4_acc + (int<64>)d4;
+        meta.pc5_acc = meta.pc5_acc + (int<64>)d5;
+        meta.pc6_acc = meta.pc6_acc + (int<64>)d6;
+        meta.pc7_acc = meta.pc7_acc + (int<64>)d7;
+        meta.pc8_acc = meta.pc8_acc + (int<64>)d8;
+        meta.pc9_acc = meta.pc9_acc + (int<64>)d9;
+        meta.pc10_acc = meta.pc10_acc + (int<64>)d10;
+        meta.pc11_acc = meta.pc11_acc + (int<64>)d11;
+        meta.pc12_acc = meta.pc12_acc + (int<64>)d12;
+        meta.pc13_acc = meta.pc13_acc + (int<64>)d13;
+        meta.pc14_acc = meta.pc14_acc + (int<64>)d14;
+        meta.pc15_acc = meta.pc15_acc + (int<64>)d15;
+        meta.pc16_acc = meta.pc16_acc + (int<64>)d16;
+        meta.pc17_acc = meta.pc17_acc + (int<64>)d17;
+        meta.pc18_acc = meta.pc18_acc + (int<64>)d18;
+    }
+
+    table featc_flags_ack_q {
+        key = {
             meta.flags_ack_q         : range;
+        }
+        actions = {
+            addc_flags_ack_q;
+            NoAction;
+        }
+        size = NB_ENTRIES;
+    }
+
+    // Per-feature contribution: FlagsFin
+    action addc_flags_fin_q(int<64> d1, int<64> d2, int<64> d3, int<64> d4, int<64> d5, int<64> d6, int<64> d7, int<64> d8, int<64> d9, int<64> d10, int<64> d11, int<64> d12, int<64> d13, int<64> d14, int<64> d15, int<64> d16, int<64> d17, int<64> d18) {
+        meta.pc1_acc = meta.pc1_acc + (int<64>)d1;
+        meta.pc2_acc = meta.pc2_acc + (int<64>)d2;
+        meta.pc3_acc = meta.pc3_acc + (int<64>)d3;
+        meta.pc4_acc = meta.pc4_acc + (int<64>)d4;
+        meta.pc5_acc = meta.pc5_acc + (int<64>)d5;
+        meta.pc6_acc = meta.pc6_acc + (int<64>)d6;
+        meta.pc7_acc = meta.pc7_acc + (int<64>)d7;
+        meta.pc8_acc = meta.pc8_acc + (int<64>)d8;
+        meta.pc9_acc = meta.pc9_acc + (int<64>)d9;
+        meta.pc10_acc = meta.pc10_acc + (int<64>)d10;
+        meta.pc11_acc = meta.pc11_acc + (int<64>)d11;
+        meta.pc12_acc = meta.pc12_acc + (int<64>)d12;
+        meta.pc13_acc = meta.pc13_acc + (int<64>)d13;
+        meta.pc14_acc = meta.pc14_acc + (int<64>)d14;
+        meta.pc15_acc = meta.pc15_acc + (int<64>)d15;
+        meta.pc16_acc = meta.pc16_acc + (int<64>)d16;
+        meta.pc17_acc = meta.pc17_acc + (int<64>)d17;
+        meta.pc18_acc = meta.pc18_acc + (int<64>)d18;
+    }
+
+    table featc_flags_fin_q {
+        key = {
             meta.flags_fin_q         : range;
+        }
+        actions = {
+            addc_flags_fin_q;
+            NoAction;
+        }
+        size = NB_ENTRIES;
+    }
+
+    // Per-feature contribution: FlagsRst
+    action addc_flags_rst_q(int<64> d1, int<64> d2, int<64> d3, int<64> d4, int<64> d5, int<64> d6, int<64> d7, int<64> d8, int<64> d9, int<64> d10, int<64> d11, int<64> d12, int<64> d13, int<64> d14, int<64> d15, int<64> d16, int<64> d17, int<64> d18) {
+        meta.pc1_acc = meta.pc1_acc + (int<64>)d1;
+        meta.pc2_acc = meta.pc2_acc + (int<64>)d2;
+        meta.pc3_acc = meta.pc3_acc + (int<64>)d3;
+        meta.pc4_acc = meta.pc4_acc + (int<64>)d4;
+        meta.pc5_acc = meta.pc5_acc + (int<64>)d5;
+        meta.pc6_acc = meta.pc6_acc + (int<64>)d6;
+        meta.pc7_acc = meta.pc7_acc + (int<64>)d7;
+        meta.pc8_acc = meta.pc8_acc + (int<64>)d8;
+        meta.pc9_acc = meta.pc9_acc + (int<64>)d9;
+        meta.pc10_acc = meta.pc10_acc + (int<64>)d10;
+        meta.pc11_acc = meta.pc11_acc + (int<64>)d11;
+        meta.pc12_acc = meta.pc12_acc + (int<64>)d12;
+        meta.pc13_acc = meta.pc13_acc + (int<64>)d13;
+        meta.pc14_acc = meta.pc14_acc + (int<64>)d14;
+        meta.pc15_acc = meta.pc15_acc + (int<64>)d15;
+        meta.pc16_acc = meta.pc16_acc + (int<64>)d16;
+        meta.pc17_acc = meta.pc17_acc + (int<64>)d17;
+        meta.pc18_acc = meta.pc18_acc + (int<64>)d18;
+    }
+
+    table featc_flags_rst_q {
+        key = {
             meta.flags_rst_q         : range;
+        }
+        actions = {
+            addc_flags_rst_q;
+            NoAction;
+        }
+        size = NB_ENTRIES;
+    }
+
+    // Per-feature contribution: FlagsPsh
+    action addc_flags_psh_q(int<64> d1, int<64> d2, int<64> d3, int<64> d4, int<64> d5, int<64> d6, int<64> d7, int<64> d8, int<64> d9, int<64> d10, int<64> d11, int<64> d12, int<64> d13, int<64> d14, int<64> d15, int<64> d16, int<64> d17, int<64> d18) {
+        meta.pc1_acc = meta.pc1_acc + (int<64>)d1;
+        meta.pc2_acc = meta.pc2_acc + (int<64>)d2;
+        meta.pc3_acc = meta.pc3_acc + (int<64>)d3;
+        meta.pc4_acc = meta.pc4_acc + (int<64>)d4;
+        meta.pc5_acc = meta.pc5_acc + (int<64>)d5;
+        meta.pc6_acc = meta.pc6_acc + (int<64>)d6;
+        meta.pc7_acc = meta.pc7_acc + (int<64>)d7;
+        meta.pc8_acc = meta.pc8_acc + (int<64>)d8;
+        meta.pc9_acc = meta.pc9_acc + (int<64>)d9;
+        meta.pc10_acc = meta.pc10_acc + (int<64>)d10;
+        meta.pc11_acc = meta.pc11_acc + (int<64>)d11;
+        meta.pc12_acc = meta.pc12_acc + (int<64>)d12;
+        meta.pc13_acc = meta.pc13_acc + (int<64>)d13;
+        meta.pc14_acc = meta.pc14_acc + (int<64>)d14;
+        meta.pc15_acc = meta.pc15_acc + (int<64>)d15;
+        meta.pc16_acc = meta.pc16_acc + (int<64>)d16;
+        meta.pc17_acc = meta.pc17_acc + (int<64>)d17;
+        meta.pc18_acc = meta.pc18_acc + (int<64>)d18;
+    }
+
+    table featc_flags_psh_q {
+        key = {
             meta.flags_psh_q         : range;
+        }
+        actions = {
+            addc_flags_psh_q;
+            NoAction;
+        }
+        size = NB_ENTRIES;
+    }
+
+    // Per-feature contribution: MaxWinSize
+    action addc_max_win_size(int<64> d1, int<64> d2, int<64> d3, int<64> d4, int<64> d5, int<64> d6, int<64> d7, int<64> d8, int<64> d9, int<64> d10, int<64> d11, int<64> d12, int<64> d13, int<64> d14, int<64> d15, int<64> d16, int<64> d17, int<64> d18) {
+        meta.pc1_acc = meta.pc1_acc + (int<64>)d1;
+        meta.pc2_acc = meta.pc2_acc + (int<64>)d2;
+        meta.pc3_acc = meta.pc3_acc + (int<64>)d3;
+        meta.pc4_acc = meta.pc4_acc + (int<64>)d4;
+        meta.pc5_acc = meta.pc5_acc + (int<64>)d5;
+        meta.pc6_acc = meta.pc6_acc + (int<64>)d6;
+        meta.pc7_acc = meta.pc7_acc + (int<64>)d7;
+        meta.pc8_acc = meta.pc8_acc + (int<64>)d8;
+        meta.pc9_acc = meta.pc9_acc + (int<64>)d9;
+        meta.pc10_acc = meta.pc10_acc + (int<64>)d10;
+        meta.pc11_acc = meta.pc11_acc + (int<64>)d11;
+        meta.pc12_acc = meta.pc12_acc + (int<64>)d12;
+        meta.pc13_acc = meta.pc13_acc + (int<64>)d13;
+        meta.pc14_acc = meta.pc14_acc + (int<64>)d14;
+        meta.pc15_acc = meta.pc15_acc + (int<64>)d15;
+        meta.pc16_acc = meta.pc16_acc + (int<64>)d16;
+        meta.pc17_acc = meta.pc17_acc + (int<64>)d17;
+        meta.pc18_acc = meta.pc18_acc + (int<64>)d18;
+    }
+
+    table featc_max_win_size {
+        key = {
             meta.max_win_size        : range;
+        }
+        actions = {
+            addc_max_win_size;
+            NoAction;
+        }
+        size = NB_ENTRIES;
+    }
+
+    // Per-feature contribution: InitFwdWinBytes
+    action addc_init_fwd_win(int<64> d1, int<64> d2, int<64> d3, int<64> d4, int<64> d5, int<64> d6, int<64> d7, int<64> d8, int<64> d9, int<64> d10, int<64> d11, int<64> d12, int<64> d13, int<64> d14, int<64> d15, int<64> d16, int<64> d17, int<64> d18) {
+        meta.pc1_acc = meta.pc1_acc + (int<64>)d1;
+        meta.pc2_acc = meta.pc2_acc + (int<64>)d2;
+        meta.pc3_acc = meta.pc3_acc + (int<64>)d3;
+        meta.pc4_acc = meta.pc4_acc + (int<64>)d4;
+        meta.pc5_acc = meta.pc5_acc + (int<64>)d5;
+        meta.pc6_acc = meta.pc6_acc + (int<64>)d6;
+        meta.pc7_acc = meta.pc7_acc + (int<64>)d7;
+        meta.pc8_acc = meta.pc8_acc + (int<64>)d8;
+        meta.pc9_acc = meta.pc9_acc + (int<64>)d9;
+        meta.pc10_acc = meta.pc10_acc + (int<64>)d10;
+        meta.pc11_acc = meta.pc11_acc + (int<64>)d11;
+        meta.pc12_acc = meta.pc12_acc + (int<64>)d12;
+        meta.pc13_acc = meta.pc13_acc + (int<64>)d13;
+        meta.pc14_acc = meta.pc14_acc + (int<64>)d14;
+        meta.pc15_acc = meta.pc15_acc + (int<64>)d15;
+        meta.pc16_acc = meta.pc16_acc + (int<64>)d16;
+        meta.pc17_acc = meta.pc17_acc + (int<64>)d17;
+        meta.pc18_acc = meta.pc18_acc + (int<64>)d18;
+    }
+
+    table featc_init_fwd_win {
+        key = {
             meta.init_fwd_win        : range;
         }
         actions = {
-            set_pc7_code;
+            addc_init_fwd_win;
             NoAction;
         }
         size = NB_ENTRIES;
@@ -981,8 +1389,11 @@ control MyIngress(inout headers hdr,
         meta.ml_result = val;
     }
 
-    // Decision Tree classification
-    table ml_code {
+    action set_rf_tree_0_vote(bit<2> vote) {
+        meta.rf_votes[1:0] = vote;
+    }
+
+    table rf_tree_0 {
         key = {
             meta.pc1_code                 : range;
             meta.pc2_code                 : range;
@@ -991,12 +1402,130 @@ control MyIngress(inout headers hdr,
             meta.pc5_code                 : range;
             meta.pc6_code                 : range;
             meta.pc7_code                 : range;
+            meta.pc8_code                 : range;
+            meta.pc9_code                 : range;
+            meta.pc10_code                : range;
+            meta.pc11_code                : range;
+            meta.pc12_code                : range;
+            meta.pc13_code                : range;
+            meta.pc14_code                : range;
+            meta.pc15_code                : range;
+            meta.pc16_code                : range;
+            meta.pc17_code                : range;
+            meta.pc18_code                : range;
+        }
+        actions = {
+            set_rf_tree_0_vote;
+            NoAction;
+        }
+        size = NB_ENTRIES;
+    }
+
+    action set_rf_tree_1_vote(bit<2> vote) {
+        meta.rf_votes[3:2] = vote;
+    }
+
+    table rf_tree_1 {
+        key = {
+            meta.pc1_code                 : range;
+            meta.pc2_code                 : range;
+            meta.pc3_code                 : range;
+            meta.pc4_code                 : range;
+            meta.pc5_code                 : range;
+            meta.pc6_code                 : range;
+            meta.pc7_code                 : range;
+            meta.pc8_code                 : range;
+            meta.pc9_code                 : range;
+            meta.pc10_code                : range;
+            meta.pc11_code                : range;
+            meta.pc12_code                : range;
+            meta.pc13_code                : range;
+            meta.pc14_code                : range;
+            meta.pc15_code                : range;
+            meta.pc16_code                : range;
+            meta.pc17_code                : range;
+            meta.pc18_code                : range;
+        }
+        actions = {
+            set_rf_tree_1_vote;
+            NoAction;
+        }
+        size = NB_ENTRIES;
+    }
+
+    action set_rf_tree_2_vote(bit<2> vote) {
+        meta.rf_votes[5:4] = vote;
+    }
+
+    table rf_tree_2 {
+        key = {
+            meta.pc1_code                 : range;
+            meta.pc2_code                 : range;
+            meta.pc3_code                 : range;
+            meta.pc4_code                 : range;
+            meta.pc5_code                 : range;
+            meta.pc6_code                 : range;
+            meta.pc7_code                 : range;
+            meta.pc8_code                 : range;
+            meta.pc9_code                 : range;
+            meta.pc10_code                : range;
+            meta.pc11_code                : range;
+            meta.pc12_code                : range;
+            meta.pc13_code                : range;
+            meta.pc14_code                : range;
+            meta.pc15_code                : range;
+            meta.pc16_code                : range;
+            meta.pc17_code                : range;
+            meta.pc18_code                : range;
+        }
+        actions = {
+            set_rf_tree_2_vote;
+            NoAction;
+        }
+        size = NB_ENTRIES;
+    }
+
+    action set_rf_tree_3_vote(bit<2> vote) {
+        meta.rf_votes[7:6] = vote;
+    }
+
+    table rf_tree_3 {
+        key = {
+            meta.pc1_code                 : range;
+            meta.pc2_code                 : range;
+            meta.pc3_code                 : range;
+            meta.pc4_code                 : range;
+            meta.pc5_code                 : range;
+            meta.pc6_code                 : range;
+            meta.pc7_code                 : range;
+            meta.pc8_code                 : range;
+            meta.pc9_code                 : range;
+            meta.pc10_code                : range;
+            meta.pc11_code                : range;
+            meta.pc12_code                : range;
+            meta.pc13_code                : range;
+            meta.pc14_code                : range;
+            meta.pc15_code                : range;
+            meta.pc16_code                : range;
+            meta.pc17_code                : range;
+            meta.pc18_code                : range;
+        }
+        actions = {
+            set_rf_tree_3_vote;
+            NoAction;
+        }
+        size = NB_ENTRIES;
+    }
+
+    table rf_vote_classify {
+        key = {
+            meta.rf_votes : exact;
         }
         actions = {
             set_result;
             NoAction;
         }
-        size = NB_ENTRIES;
+        size = 256;
     }
 
     // Amortized drain: each packet scans one extra register slot for stale
@@ -1176,17 +1705,127 @@ control MyIngress(inout headers hdr,
                 meta.flags_rst_q = (bit<8>)meta.flags_rst;
                 meta.flags_psh_q = (bit<16>)meta.flags_psh;
 
-                // Apply PC transformations
-                pca_component1.apply();
-                pca_component2.apply();
-                pca_component3.apply();
-                pca_component4.apply();
-                pca_component5.apply();
-                pca_component6.apply();
-                pca_component7.apply();
+                // PCA-linear: seed accumulators with INIT_j
+                meta.pc1_acc = (int<64>)(23029346662083);
+                meta.pc2_acc = (int<64>)(96761353482198);
+                meta.pc3_acc = (int<64>)(1946626920399900);
+                meta.pc4_acc = (int<64>)(2571931650592493);
+                meta.pc5_acc = (int<64>)(1211132384349969);
+                meta.pc6_acc = (int<64>)(2621676807283005);
+                meta.pc7_acc = (int<64>)(2028286069123806);
+                meta.pc8_acc = (int<64>)(1982347575614687);
+                meta.pc9_acc = (int<64>)(572014357653205);
+                meta.pc10_acc = (int<64>)(1525719190602255);
+                meta.pc11_acc = (int<64>)(1447930250444152);
+                meta.pc12_acc = (int<64>)(2299882656739678);
+                meta.pc13_acc = (int<64>)(1406632726159406);
+                meta.pc14_acc = (int<64>)(1971216900218846);
+                meta.pc15_acc = (int<64>)(2352510993575701);
+                meta.pc16_acc = (int<64>)(1295877188851044);
+                meta.pc17_acc = (int<64>)(1367003330509271);
+                meta.pc18_acc = (int<64>)(2319408472331418);
+
+                // Add each feature's contribution
+                featc_protocol.apply();
+                featc_canon_src_port.apply();
+                featc_canon_dst_port.apply();
+                featc_duration_q.apply();
+                featc_max_iat_q.apply();
+                featc_fwd_pkt_count_q.apply();
+                featc_bwd_pkt_count_q.apply();
+                featc_fwd_bytes_q.apply();
+                featc_bwd_bytes_q.apply();
+                featc_fwd_max_pkt_len.apply();
+                featc_bwd_max_pkt_len.apply();
+                featc_flags_syn_q.apply();
+                featc_flags_ack_q.apply();
+                featc_flags_fin_q.apply();
+                featc_flags_rst_q.apply();
+                featc_flags_psh_q.apply();
+                featc_max_win_size.apply();
+                featc_init_fwd_win.apply();
+
+                // Shift back to code domain and clamp to [0, MAXCODE]
+                int<64> pc1_t = meta.pc1_acc >> 20;
+                if (pc1_t < (int<64>)0) { pc1_t = (int<64>)0; }
+                if (pc1_t > (int<64>)4294967295) { pc1_t = (int<64>)4294967295; }
+                meta.pc1_code = (pca_code_t)(bit<64>)pc1_t;
+                int<64> pc2_t = meta.pc2_acc >> 20;
+                if (pc2_t < (int<64>)0) { pc2_t = (int<64>)0; }
+                if (pc2_t > (int<64>)4294967295) { pc2_t = (int<64>)4294967295; }
+                meta.pc2_code = (pca_code_t)(bit<64>)pc2_t;
+                int<64> pc3_t = meta.pc3_acc >> 20;
+                if (pc3_t < (int<64>)0) { pc3_t = (int<64>)0; }
+                if (pc3_t > (int<64>)4294967295) { pc3_t = (int<64>)4294967295; }
+                meta.pc3_code = (pca_code_t)(bit<64>)pc3_t;
+                int<64> pc4_t = meta.pc4_acc >> 20;
+                if (pc4_t < (int<64>)0) { pc4_t = (int<64>)0; }
+                if (pc4_t > (int<64>)4294967295) { pc4_t = (int<64>)4294967295; }
+                meta.pc4_code = (pca_code_t)(bit<64>)pc4_t;
+                int<64> pc5_t = meta.pc5_acc >> 20;
+                if (pc5_t < (int<64>)0) { pc5_t = (int<64>)0; }
+                if (pc5_t > (int<64>)4294967295) { pc5_t = (int<64>)4294967295; }
+                meta.pc5_code = (pca_code_t)(bit<64>)pc5_t;
+                int<64> pc6_t = meta.pc6_acc >> 20;
+                if (pc6_t < (int<64>)0) { pc6_t = (int<64>)0; }
+                if (pc6_t > (int<64>)4294967295) { pc6_t = (int<64>)4294967295; }
+                meta.pc6_code = (pca_code_t)(bit<64>)pc6_t;
+                int<64> pc7_t = meta.pc7_acc >> 20;
+                if (pc7_t < (int<64>)0) { pc7_t = (int<64>)0; }
+                if (pc7_t > (int<64>)4294967295) { pc7_t = (int<64>)4294967295; }
+                meta.pc7_code = (pca_code_t)(bit<64>)pc7_t;
+                int<64> pc8_t = meta.pc8_acc >> 20;
+                if (pc8_t < (int<64>)0) { pc8_t = (int<64>)0; }
+                if (pc8_t > (int<64>)4294967295) { pc8_t = (int<64>)4294967295; }
+                meta.pc8_code = (pca_code_t)(bit<64>)pc8_t;
+                int<64> pc9_t = meta.pc9_acc >> 20;
+                if (pc9_t < (int<64>)0) { pc9_t = (int<64>)0; }
+                if (pc9_t > (int<64>)4294967295) { pc9_t = (int<64>)4294967295; }
+                meta.pc9_code = (pca_code_t)(bit<64>)pc9_t;
+                int<64> pc10_t = meta.pc10_acc >> 20;
+                if (pc10_t < (int<64>)0) { pc10_t = (int<64>)0; }
+                if (pc10_t > (int<64>)4294967295) { pc10_t = (int<64>)4294967295; }
+                meta.pc10_code = (pca_code_t)(bit<64>)pc10_t;
+                int<64> pc11_t = meta.pc11_acc >> 20;
+                if (pc11_t < (int<64>)0) { pc11_t = (int<64>)0; }
+                if (pc11_t > (int<64>)4294967295) { pc11_t = (int<64>)4294967295; }
+                meta.pc11_code = (pca_code_t)(bit<64>)pc11_t;
+                int<64> pc12_t = meta.pc12_acc >> 20;
+                if (pc12_t < (int<64>)0) { pc12_t = (int<64>)0; }
+                if (pc12_t > (int<64>)4294967295) { pc12_t = (int<64>)4294967295; }
+                meta.pc12_code = (pca_code_t)(bit<64>)pc12_t;
+                int<64> pc13_t = meta.pc13_acc >> 20;
+                if (pc13_t < (int<64>)0) { pc13_t = (int<64>)0; }
+                if (pc13_t > (int<64>)4294967295) { pc13_t = (int<64>)4294967295; }
+                meta.pc13_code = (pca_code_t)(bit<64>)pc13_t;
+                int<64> pc14_t = meta.pc14_acc >> 20;
+                if (pc14_t < (int<64>)0) { pc14_t = (int<64>)0; }
+                if (pc14_t > (int<64>)4294967295) { pc14_t = (int<64>)4294967295; }
+                meta.pc14_code = (pca_code_t)(bit<64>)pc14_t;
+                int<64> pc15_t = meta.pc15_acc >> 20;
+                if (pc15_t < (int<64>)0) { pc15_t = (int<64>)0; }
+                if (pc15_t > (int<64>)4294967295) { pc15_t = (int<64>)4294967295; }
+                meta.pc15_code = (pca_code_t)(bit<64>)pc15_t;
+                int<64> pc16_t = meta.pc16_acc >> 20;
+                if (pc16_t < (int<64>)0) { pc16_t = (int<64>)0; }
+                if (pc16_t > (int<64>)4294967295) { pc16_t = (int<64>)4294967295; }
+                meta.pc16_code = (pca_code_t)(bit<64>)pc16_t;
+                int<64> pc17_t = meta.pc17_acc >> 20;
+                if (pc17_t < (int<64>)0) { pc17_t = (int<64>)0; }
+                if (pc17_t > (int<64>)4294967295) { pc17_t = (int<64>)4294967295; }
+                meta.pc17_code = (pca_code_t)(bit<64>)pc17_t;
+                int<64> pc18_t = meta.pc18_acc >> 20;
+                if (pc18_t < (int<64>)0) { pc18_t = (int<64>)0; }
+                if (pc18_t > (int<64>)4294967295) { pc18_t = (int<64>)4294967295; }
+                meta.pc18_code = (pca_code_t)(bit<64>)pc18_t;
 
                 // Apply classifier
-                ml_code.apply();
+                meta.rf_votes = 8w0;
+                rf_tree_0.apply();
+                rf_tree_1.apply();
+                rf_tree_2.apply();
+                rf_tree_3.apply();
+                rf_vote_classify.apply();
 
                 // Send digest
                 digest<digest_t>(1, {
@@ -1219,6 +1858,17 @@ control MyIngress(inout headers hdr,
                     meta.pc5_code,
                     meta.pc6_code,
                     meta.pc7_code,
+                    meta.pc8_code,
+                    meta.pc9_code,
+                    meta.pc10_code,
+                    meta.pc11_code,
+                    meta.pc12_code,
+                    meta.pc13_code,
+                    meta.pc14_code,
+                    meta.pc15_code,
+                    meta.pc16_code,
+                    meta.pc17_code,
+                    meta.pc18_code,
                     meta.ml_result
                 });
 
