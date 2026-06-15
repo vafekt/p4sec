@@ -120,7 +120,7 @@ The system operates in two phases. An \emph{offline training phase} (Fig.~\ref{f
 \begin{figure}[!t]
 \centering
 \includegraphics[width=0.7\columnwidth]{images/offline_pipeline.pdf}
-\caption{Offline training pipeline. Five Python scripts convert raw PCAPs into a compiled P4 program with pre-populated range-match tables for the additive PCA projection and the downstream classifier.}
+\caption{Offline training pipeline. Five offline stages convert raw PCAPs into a compiled P4 program with pre-populated range-match tables for the additive PCA projection and the downstream classifier.}
 \label{fig:pipeline}
 \end{figure}
 
@@ -192,6 +192,7 @@ The $18$ quantized features form a composite range-match key of $256$ bits (Tabl
 \begin{equation}\label{eq:quantize}
 \textit{code}_j = \mathrm{clamp}\!\Bigl(\mathrm{round}\!\Bigl(\frac{pc_j - \min_j}{\textit{range}_j}\,(2^b{-}1)\Bigr),\;0,\;2^b{-}1\Bigr).
 \end{equation}
+Here $\min_j$ and $\textit{range}_j$ are the minimum and the min--max range of $PC_j$ observed on the training set, so $\textit{code}_j$ is an unsigned $b$-bit integer in $[0, 2^b{-}1]$.
 
 A linear PCA projection $PC_j = \sum_{i=1}^{18} A_{j,i}\, x_i + \mathrm{init}_j$ with quantized integer coefficients requires $18{\cdot}K$ multiply-accumulates per packet ($126$ at $K{=}7$), which are not natively expressible inside a v1model match-action unit on the BMv2 target used in this work. The pipeline therefore exploits the additivity of the projection over features to obtain an \emph{exact} (not approximated) range-match implementation. Step~2 fits sklearn PCA on the quantized features to obtain the rotation matrix $A\!\in\!\mathbb{R}^{K\times 18}$ and the per-component intercept; it then expands $A$ into one single-field range table per input feature whose action fires the $K$ scaled contributions $d_j(i, v) = A_{j,i}\,v\,\mathit{SCALE\_FP}$ as accumulator increments $\mathrm{PC}_j \mathrel{+}= d_j$. With $K$ accumulators initialized to the quantized intercept and the $18$ feature tables traversed once per flow, the data plane produces the same integer PCA codes that sklearn would produce offline, modulo fixed-point rounding at the chosen $b$-bit width. Each feature contributes one short range table whose entry count is bounded by the number of distinct quantized values for that feature, and the $K$ codes share the same encoding as the downstream classifier. The step writes four artifacts: table-entry commands, a universal pipeline configuration file, quantization parameters, and a CSV of quantized codes with labels.
 
