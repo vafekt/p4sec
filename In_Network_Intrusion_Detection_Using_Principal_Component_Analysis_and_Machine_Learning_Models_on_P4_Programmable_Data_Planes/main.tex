@@ -124,13 +124,6 @@ The system operates in two phases. An \emph{offline training phase} (Fig.~\ref{f
 \label{fig:pipeline}
 \end{figure}
 
-\begin{figure}[!ht]
-\centering
-\includegraphics[width=0.7\columnwidth]{images/Framework.pdf}
-\caption{In-network inference pipeline. Each finalized flow is canonicalized, accumulated into $18$ bidirectional flow features, projected through the additive PCA range tables into $K$ quantized codes, classified by a Decision Tree or 4-tree Random Forest, and emitted as a digest to the controller.}
-\label{fig:framework}
-\end{figure}
-
 %──────────────────────────────────────────────────────────────────────
 \subsection{Offline Training Phase}\label{sec:pipeline}
 %──────────────────────────────────────────────────────────────────────
@@ -188,7 +181,7 @@ The features align with the flow-level statistics used by Zeek~\cite{Paxson1998}
 
 \noindent\textbf{Step~2: PCA dimensionality reduction}
 
-The $18$ quantized features form a composite range-match key of $256$ bits (Table~\ref{tab:features}), which is the operating point of the raw range-match DT baseline. PCA gives the deployer a tunable match-key dial: choosing $k\!\in\!\{1,\dots,18\}$ components and a $b$-bit quantization produces a projected key of $k\!\cdot\!b$ bits. Each component is computed by projecting the standardized feature vector and quantizing the result to a $b$-bit integer:
+The $18$ quantized features form a composite range-match key of $256$ bits (Table~\ref{tab:features}), which is the operating point of the raw range-match DT baseline. PCA gives the deployer a tunable match-key dial: choosing $k\!\in\!\{1,\dots,18\}$ components and a $b$-bit quantization produces a projected key of $k\!\cdot\!b$ bits. Each component is computed by projecting the standardized $18$-dimensional feature vector onto its principal axis and quantizing the projected value to an unsigned $b$-bit integer as follows:
 \begin{equation}\label{eq:quantize}
 \textit{code}_j = \mathrm{clamp}\!\Bigl(\mathrm{round}\!\Bigl(\frac{pc_j - \min_j}{\textit{range}_j}\,(2^b{-}1)\Bigr),\;0,\;2^b{-}1\Bigr).
 \end{equation}
@@ -213,6 +206,13 @@ A code generator reads the pipeline configuration and model parameters and emits
 %──────────────────────────────────────────────────────────────────────
 \subsection{In-Network Inference Phase}\label{sec:inference}
 %──────────────────────────────────────────────────────────────────────
+
+\begin{figure}[!ht]
+\centering
+\includegraphics[width=0.7\columnwidth]{images/Framework.pdf}
+\caption{In-network inference pipeline. Each finalized flow is canonicalized, accumulated into $18$ bidirectional flow features, projected through the additive PCA range tables into $K$ quantized codes, classified by a Decision Tree or 4-tree Random Forest, and emitted as a digest to the controller.}
+\label{fig:framework}
+\end{figure}
 
 Once the runtime controller loads the compiled program and table entries into the switch via gRPC, packet processing proceeds entirely in the data plane. The pipeline shown in Fig.~\ref{fig:framework} uses only addition, min/max, and conditional increments. A flow is finalized when a TCP FIN or RST flag is observed (with at least one packet) or after an idle timeout of $20$\,s. The finalized $18$-feature vector feeds the pre-installed range-match tables: in the raw variant, a single range-match table \texttt{ml\_code} keyed on the $256$-bit composite feature vector returns the label directly; in the PCA variant, the projection tables first emit the $K$ quantized PCA codes that key a second range-match classifier table, and for RF each of the $T$ trees votes through its own range-match table into a packed vote register that an exact-match table \texttt{rf\_vote\_classify} resolves to the majority class. The class label, 5-tuple, PCA codes (or raw features), and per-flow metadata are then sent as a digest to the controller; the switch forwards benign traffic and drops or alerts on any attack class. The entire inference path completes in a single pipeline pass without recirculation.
 
