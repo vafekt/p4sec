@@ -121,7 +121,7 @@ The system operates in two phases. An \emph{offline training phase} (Fig.~\ref{f
 \begin{figure}[!t]
 \centering
 \includegraphics[width=0.85\columnwidth]{images/offline_pipeline.pdf}
-\caption{Offline training pipeline. Five offline stages convert raw PCAPs into a compiled P4 program with pre-populated range-match tables for the additive PCA projection and the downstream classifier.}
+\caption{Offline training pipeline: five stages from raw PCAPs to a compiled P4 program with pre-populated range-match tables.}
 \label{fig:pipeline}
 \end{figure}
 
@@ -137,7 +137,7 @@ Raw PCAP files are parsed to extract bidirectional flow features into a CSV data
 
 \begin{table}[!t]
 \centering
-\caption{Eighteen bidirectional flow features extracted in the data plane, grouped by category. The \textbf{Bits} column lists the quantized width used by the deployed P4 classifier; the per-feature widths sum to $256$ bits (the raw range-match DT match-key width).}
+\caption{Eighteen bidirectional flow features extracted in the data plane, grouped by category. The \textbf{Bits} column gives each feature's quantized width; the widths sum to $256$ bits.}
 \label{tab:features}
 \renewcommand{\arraystretch}{1.1}
 \setlength{\tabcolsep}{4pt}
@@ -211,7 +211,7 @@ A code generator reads the pipeline configuration and model parameters and emits
 \begin{figure}[!ht]
 \centering
 \includegraphics[width=0.85\columnwidth]{images/Framework.pdf}
-\caption{In-network inference pipeline. Each finalized flow is canonicalized, accumulated into $18$ bidirectional flow features, projected through the additive PCA range tables into $K$ quantized codes, classified by a DT or 4-tree RF, and emitted as a digest to the controller.}
+\caption{In-network inference pipeline: 18-feature accumulation, additive PCA projection, range-match classification, and digest reporting to the controller.}
 \label{fig:framework}
 \end{figure}
 
@@ -236,21 +236,21 @@ In distribution, the raw range-match DT dominates with macro F1 $98.47\%$ (overa
     \label{fig:acc_vs_k}
 \end{figure}
 
-The macro F1 aggregates four distinct per-class behaviors; Fig.~\ref{fig:perclass_indist} therefore reports per-class F1 for the DT and RF families. The raw DT approaches saturation on every attack class (BruteForce $99.07\%$, DoS $99.57\%$, Reconnaissance $99.51\%$) with Benign at $95.72\%$, so the reduction from PCA is not a per-class collapse but a roughly uniform decrease as $k$ varies. PCA $+$ DT recovers substantially: at $k{=}4$, BruteForce, DoS, and Reconnaissance reach $95.57\%$, $95.85\%$, and $95.31\%$ respectively; at the recommended $k{=}7$, BruteForce and DoS further climb to $96.99\%$ and $96.53\%$. PCA $+$ RF performs poorly on Reconnaissance, where its best F1 across $k\!\in\!\{1,\dots,15\}$ is $79.61\%$, because the four-tree majority vote misclassifies rare scanning patterns as neighboring benign codes once the feature space is compressed.
+The macro F1 aggregates four distinct per-class behaviors; Fig.~\ref{fig:perclass_indist} therefore reports per-class F1 for the DT and RF families, with the $k{=}\mathrm{Raw}$ column as the no-PCA baseline and the remaining columns spanning $k\!\in\!\{1,\dots,15\}$. The raw DT approaches saturation on every attack class (BruteForce $99.07\%$, DoS $99.57\%$, Reconnaissance $99.51\%$) with Benign at $95.72\%$, so the reduction from PCA is not a per-class collapse but a roughly uniform decrease as $k$ varies. PCA $+$ DT recovers substantially: at $k{=}4$, BruteForce, DoS, and Reconnaissance reach $95.57\%$, $95.85\%$, and $95.31\%$ respectively; at the recommended $k{=}7$, BruteForce and DoS further climb to $96.99\%$ and $96.53\%$. PCA $+$ RF performs poorly on Reconnaissance, where its best F1 across $k\!\in\!\{1,\dots,15\}$ is $79.61\%$, because the four-tree majority vote misclassifies rare scanning patterns as neighboring benign codes once the feature space is compressed.
 
 \begin{figure}[!t]
     \centering
     \includegraphics[width=0.95\textwidth]{images/fig_perclass_indist.pdf}
-    \caption{Per-class F1 on the CIC-IoT 2023 test partition for the Decision Tree (top) and the 4-tree Random Forest (bottom). The first column ($k{=}\mathrm{Raw}$) is the no-PCA baseline; the remaining columns are PCA settings $k\!\in\!\{1,\dots,15\}$.}
+    \caption{Per-class F1 on the CIC-IoT 2023 test partition: DT (top) and 4-tree RF (bottom). The $k{=}\mathrm{Raw}$ column is the no-PCA baseline.}
     \label{fig:perclass_indist}
 \end{figure}
 
-The P4 footprint of the PCA configurations is dominated by the additive PCA transform tables. PCA $+$ DT entries stay between $10\,200$ and $10\,510$ for $k\!\in\!\{2,\dots,15\}$; PCA $+$ RF entries range from $10\,900$ to $12\,100$ over the same $k$---both well above $5\,119$ for the raw DT and $6\,769$ for the raw RF (Fig.~\ref{fig:p4_footprint}, right). The PCA $+$ DT footprint is therefore about twice the raw DT footprint, and the PCA $+$ RF footprint is about $1.6$ times the raw RF baseline. The relative overhead of adding the projection stage is therefore moderate and decreases for the RF family, where the per-tree classifier tables already account for a larger share of the entry budget. The classifier match-key grows linearly with $k$ at $b{=}32$, from $32$ bits at $k{=}1$ to $480$ bits at $k{=}15$, and equals the raw DT baseline of $256$ bits exactly at $k{=}8$, exceeding it for $k\!\geq\!9$ (Fig.~\ref{fig:p4_footprint}, left). PCA therefore narrows the match-key for $k\!\leq\!7$, equals the raw DT baseline at $k{=}8$, and widens it for $k\!\geq\!9$, so the recommended operating point at $k{=}7$ yields a narrower key than the raw DT baseline.
+The P4 footprint of the PCA configurations is dominated by the additive PCA transform tables. PCA $+$ DT entries stay between $10\,200$ and $10\,510$ for $k\!\in\!\{2,\dots,15\}$; PCA $+$ RF entries range from $10\,900$ to $12\,100$ over the same $k$, both well above $5\,119$ for the raw DT and $6\,769$ for the raw RF (Fig.~\ref{fig:p4_footprint}, right). The PCA $+$ DT footprint is therefore about twice the raw DT footprint, and the PCA $+$ RF footprint is about $1.6$ times the raw RF baseline. The relative overhead of adding the projection stage is therefore moderate and decreases for the RF family, where the per-tree classifier tables already account for a larger share of the entry budget. The classifier match-key grows linearly with $k$ at $b{=}32$, from $32$ bits at $k{=}1$ to $480$ bits at $k{=}15$, and equals the raw DT baseline of $256$ bits exactly at $k{=}8$, exceeding it for $k\!\geq\!9$ (Fig.~\ref{fig:p4_footprint}, left). PCA therefore narrows the match-key for $k\!\leq\!7$, equals the raw DT baseline at $k{=}8$, and widens it for $k\!\geq\!9$, so the recommended operating point at $k{=}7$ yields a narrower key than the raw DT baseline.
 
 \begin{figure}[!t]
     \centering
     \includegraphics[width=0.95\textwidth]{images/fig_p4_footprint.pdf}
-    \caption{Classifier match-key width (left) and total P4 table entries (right) versus the number of PCA components $k$.}
+    \caption{Classifier match-key width (left) and total table entries (right) vs.\ the number of PCA components $k$.}
     \label{fig:p4_footprint}
 \end{figure}
 
@@ -263,19 +263,19 @@ Under cross-dataset evaluation, the same trained models process the disjoint Mu-
     \label{fig:xds_overall}
 \end{figure}
 
-The two regimes prefer different pipelines, so the deployable operating point is selected through the standard Pareto-efficiency criterion: a configuration is Pareto-efficient when no other configuration improves it on every objective simultaneously, with in-distribution macro F1 and cross-dataset macro F1 as the two objectives. Fig.~\ref{fig:pareto} plots all $32$ configurations; four lie on the Pareto front: raw DT ($98.47\%$, $15.57\%$), PCA $+$ DT at $k{=}8$ ($96.16\%$, $47.24\%$), PCA $+$ DT at $k{=}7$ ($95.79\%$, $48.31\%$), and PCA $+$ RF at $k{=}6$ ($88.32\%$, $49.18\%$). PCA $+$ DT at $k{=}7$ is the recommended operating point: it achieves the highest cross-dataset F1 among DT-family Pareto configurations ($48.31\%$ versus $47.24\%$ at $k{=}8$), so $k{=}8$ trades $1.07$ percentage points of cross-dataset performance for only $0.37$ percentage points more in-distribution — an unfavorable exchange for deployment. The only Pareto configuration with higher cross-dataset F1 is PCA $+$ RF at $k{=}6$ ($49.18\%$), but its $0.87$ percentage-point cross-dataset advantage comes at the cost of $7.47$ percentage points of in-distribution F1 ($88.32\%$ versus $95.79\%$). Additionally, $k{=}7$ has a narrower classifier key than $k{=}8$ ($224$ versus $256$ bits). Table~\ref{tab:vs_raw} summarizes this operating point against the raw DT baseline.
+The two regimes prefer different pipelines, so the deployable operating point is selected through the standard Pareto-efficiency criterion: a configuration is Pareto-efficient when no other configuration improves it on every objective simultaneously, with in-distribution macro F1 and cross-dataset macro F1 as the two objectives. Fig.~\ref{fig:pareto} plots all $32$ configurations; four lie on the Pareto front: raw DT ($98.47\%$, $15.57\%$), PCA $+$ DT at $k{=}8$ ($96.16\%$, $47.24\%$), PCA $+$ DT at $k{=}7$ ($95.79\%$, $48.31\%$), and PCA $+$ RF at $k{=}6$ ($88.32\%$, $49.18\%$). PCA $+$ DT at $k{=}7$ is the recommended operating point: it achieves the highest cross-dataset F1 among DT-family Pareto configurations ($48.31\%$ versus $47.24\%$ at $k{=}8$), so $k{=}8$ trades $1.07$ percentage points of cross-dataset performance for only $0.37$ percentage points more in-distribution, which is an unfavorable exchange for deployment. The only Pareto configuration with higher cross-dataset F1 is PCA $+$ RF at $k{=}6$ ($49.18\%$), but its $0.87$ percentage-point cross-dataset advantage comes at the cost of $7.47$ percentage points of in-distribution F1 ($88.32\%$ versus $95.79\%$). Additionally, $k{=}7$ has a narrower classifier key than $k{=}8$ ($224$ versus $256$ bits). Table~\ref{tab:vs_raw} summarizes this operating point against the raw DT baseline.
 
 \begin{figure}[!t]
     \centering
     \includegraphics[width=0.75\textwidth]{images/fig_pareto.pdf}
-    \caption{Configurations plotted on the two objective axes used for operating-point selection: in-distribution macro F1 (CIC-IoT 2023) on the $x$ axis and cross-dataset macro F1 (Mu-IoT testbed) on the $y$ axis. Filled markers lie on the Pareto front; the highlighted point is the recommended PCA $+$ DT at $k{=}7$.}
+    \caption{All 32 configurations on the in-distribution (x-axis) vs.\ cross-dataset (y-axis) macro F1 plane. Filled markers are Pareto-efficient; the highlighted point is the recommended PCA $+$ DT at $k{=}7$.}
     \label{fig:pareto}
 \end{figure}
 
 \begin{table}[t]
 \centering
 \setlength{\tabcolsep}{4pt}
-\caption{Recommended PCA $+$ DT operating point ($k{=}7$, $b{=}32$) compared with the raw range-match DT baseline. All figures are measured on the Raspberry Pi~4 testbed on the CIC-IoT 2023 test partition and the Mu-IoT cross-dataset capture.}
+\caption{Recommended PCA $+$ DT ($k{=}7$, $b{=}32$) vs.\ the raw DT baseline; all metrics from the Raspberry Pi~4 testbed.}
 \label{tab:vs_raw}
 \begin{tabular}{l r r l}
 \toprule
@@ -302,7 +302,7 @@ The raw range-match DT keys on an $18$-feature composite vector of $256$ bits (T
 \centering
 \setlength{\tabcolsep}{4pt}
 \renewcommand{\arraystretch}{1.0}
-\caption{Illustrative grouping of the $18$ deployed features into eight $32$-bit PHV slots for a Tofino port. Each row represents one $32$-bit slot containing two $16$-bit fields (row~1 instead packs four $8$-bit flag counters). The total is $256$ bits, the same as the BMv2 raw classifier key.}
+\caption{Illustrative Tofino-1 PHV grouping of the 18 features into eight 32-bit slots (row~1: four 8-bit flag counters; others: two 16-bit fields); total $256$ bits.}
 \label{tab:feature_bits}
 \begin{tabular}{lcclc}
 \toprule
