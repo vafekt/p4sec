@@ -82,6 +82,9 @@ control_plane/drain.pcap
 # Overleaf project (superseded by paper directory above)
 overleaf_project/
 
+# Reference PDFs (large binaries; not needed in the repo)
+references/
+
 # Results raw data (large pcap-level outputs; summary CSV is tracked)
 results/cic_iot/
 results/cross_dataset_ciciot_to_muiot/
