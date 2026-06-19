@@ -45,7 +45,7 @@ Centre for Tactile Internet with Human-in-the-Loop (CeTI), TU Dresden, Germany
 
 \maketitle
 \begin{abstract}
-IoT gateways are vital to the scalability and security of IoT networks. P4 programmable switches let these gateways parse, track, and classify traffic directly in the forwarding pipeline at line rate, avoiding the latency and bandwidth cost of offloading intrusion detection to the control plane or an external controller. Tree-based models that detect malicious IoT traffic already run entirely in this pipeline, but dimensionality reduction via Principal Component Analysis (PCA) has so far been deployed as a standalone module, never integrated with the downstream model under a single range-match encoding. This paper presents the first P4 intrusion-detection pipeline that combines PCA projection and tree-based Machine Learning (ML) models under a single range-match abstraction, evaluated on a Raspberry Pi~4 running P4Pi. Across $32$ deployed configurations (Decision Tree and 4-tree Random Forest, with and without PCA), the raw range-match model achieves the highest in-distribution macro F1 on CIC-IoT 2023 dataset ($98.47\%$) but degrades to $15.57\%$ on a disjoint Mu-IoT dataset capture, as the model fails to generalize to the new traffic distribution. The recommended PCA $+$ Decision Tree at $k{=}7$ achieves $95.79\%$ macro F1 in distribution and $48.31\%$ on the disjoint capture, a $32.74$ percentage-point cross-dataset gain at the cost of only $2.68$ percentage points in distribution, making strong in-distribution accuracy and cross-dataset robustness jointly attainable. The recommended operating point clears the Tofino-1 per-stage match-key budget; stage-count compaction is the identified path to full Tofino-1 deployment.
+IoT gateways are vital to the scalability and security of IoT networks. P4 programmable switches let these gateways parse, track, and classify traffic directly in the forwarding pipeline at line rate, avoiding the latency and bandwidth cost of offloading intrusion detection to the control plane or an external controller. Tree-based models that detect malicious IoT traffic already run entirely in this pipeline, but dimensionality reduction via Principal Component Analysis (PCA) has never been integrated with the downstream model in the data plane. This paper presents the first P4 intrusion-detection pipeline that combines PCA projection and tree-based Machine Learning (ML) models under a single range-match abstraction, evaluated on a Raspberry Pi~4 running P4Pi. Across $32$ deployed configurations (Decision Tree and 4-tree Random Forest, with and without PCA), the raw range-match model achieves the highest in-distribution macro F1 on CIC-IoT 2023 dataset ($98.47\%$) but degrades to $15.57\%$ on a disjoint Mu-IoT dataset capture, as the model fails to generalize to the new traffic distribution. The recommended PCA $+$ Decision Tree at $k{=}7$ achieves $95.79\%$ macro F1 in distribution and $48.31\%$ on the disjoint capture, a $32.74$ percentage-point cross-dataset gain at the cost of only $2.68$ percentage points in distribution, making strong in-distribution accuracy and cross-dataset robustness jointly attainable. The recommended operating point clears the Tofino-1 per-stage match-key budget; stage-count compaction is the identified path to full Tofino-1 deployment.
 
 
 \keywords{P4 programmable data plane \and In-network machine learning \and IoT \and Intrusion detection system \and Principal Component Analysis \and Decision tree \and Random forest \and Range match tables \and Bidirectional flow features \and Line-rate classification}
@@ -80,12 +80,12 @@ Prior work is analyzed along five dimensions: inference location, table encoding
 \textbf{Encoding and dimensionality reduction:} Exact-match encoding~\cite{Lee202523143,Zheng20242} requires one entry per discretized value and scales with the discretization grid; range/ternary encoding~\cite{Akem2024,Ganesan2025,Zheng20242} collapses contiguous intervals into single rules by exploiting axis-aligned tree splits. The proposed pipeline is the first to adopt range match for both the PCA projection and the downstream classifier, yielding a compact $5\,119$-entry raw DT and a tunable PCA ladder ($k\!\in\!\{1,\dots,15\}$) under a single encoding. Range and exact match consume different on-chip resources on programmable ASICs (range tables compile to TCAM after prefix expansion, while exact-match tables are placed in SRAM hash banks), so the entry-count comparison is on the logical rule set, not a direct TCAM saving over exact match.
 
 \begin{table}[t]
-\centering
-\caption{Comparison of P4 based ML approaches. DP = Data Plane, Hy = Hybrid, B = Binary, M = Multiclass. DP~Red. = in-data-plane dimensionality reduction.}
+\centering\footnotesize
+\caption{Comparison of P4 based ML approaches. DP - Data Plane, Hy - Hybrid, B - Binary, M - Multiclass. DP~Red. - in-data-plane dimensionality reduction.}
 \label{tab:comparison}
 \renewcommand{\arraystretch}{1.15}
-\setlength{\tabcolsep}{3pt}
-\begin{tabular}{l c c c c c}
+\setlength{\tabcolsep}{1pt}
+\begin{tabular}{@{}l c c c c c@{}}
 \toprule
 \textbf{Work} & \textbf{Inference} & \textbf{Match Type} & \textbf{Bidir.\ Flow} & \textbf{Classes} & \textbf{DP~Red.} \\
 \midrule
@@ -93,22 +93,22 @@ Xiong~\cite{Xiong201925}          & DP & Exact/Ternary & \ding{55} & M & \ding{5
 IIsy~\cite{Zheng20242555}         & Hy & Exact/Ternary & \ding{55} & B & \ding{55} \\
 Planter~\cite{Zheng20242}         & DP & Exact/Ternary & \ding{55} & M & PCA\textsuperscript{a} \\
 Euclid~\cite{Ilha20213121}        & DP & Ternary       & \ding{55} & B & \ding{55} \\
-CD2P~\cite{Wang20241480}          & Hy & Not applied   & \ding{55} & B & \ding{55} \\
-HISTA~\cite{Li2024}               & Hy & Not applied   & \ding{55} & B & \ding{55} \\
-CO-STOP~\cite{El-Sayed2025}       & Hy & Not applied   & \ding{55} & M & \ding{55} \\
-Musumeci~\cite{Musumeci2022}      & Hy & Not applied   & \ding{55} & B & \ding{55} \\
+CD2P~\cite{Wang20241480}          & Hy & N/A   & \ding{55} & B & \ding{55} \\
+HISTA~\cite{Li2024}               & Hy & N/A   & \ding{55} & B & \ding{55} \\
+CO-STOP~\cite{El-Sayed2025}       & Hy & N/A   & \ding{55} & M & \ding{55} \\
+Musumeci~\cite{Musumeci2022}      & Hy & N/A   & \ding{55} & B & \ding{55} \\
 SwitchTree~\cite{Lee202523143}    & DP & Exact         & \ding{51} & B & \ding{55} \\
 Akem~\cite{Akem2024}              & DP & Ternary/Range & \ding{55} & M & \ding{55} \\
-P4DDLe~\cite{Doriguzzi-Corin2024} & Hy & Not applied   & \ding{51} & B & \ding{55} \\
+P4DDLe~\cite{Doriguzzi-Corin2024} & Hy & N/A   & \ding{51} & B & \ding{55} \\
 P4Pir~\cite{Zang20249244}         & DP & Ternary       & \ding{55} & B & \ding{55} \\
 Ganesan~\cite{Ganesan2025}        & DP & Range\textsuperscript{c} & \ding{55} & B & \ding{55} \\
 \midrule
 \rowcolor{gray!15}
 \textbf{Ours} & \textbf{DP} & \textbf{Range} & \ding{51} & \textbf{M} & \textbf{PCA\textsuperscript{b}} \\
 \bottomrule
-\multicolumn{6}{l}{\textsuperscript{a}Standalone module, not integrated with classifier.} \\
-\multicolumn{6}{l}{\textsuperscript{b}Integrated with downstream classifier via range match.} \\
-\multicolumn{6}{l}{\textsuperscript{c}Range match for the DT members; the LR members use register-held conditional arithmetic, not table match.} \\
+\multicolumn{6}{@{}p{\linewidth}@{}}{\footnotesize\textsuperscript{a}Standalone module, not integrated with classifier.} \\
+\multicolumn{6}{@{}p{\linewidth}@{}}{\footnotesize\textsuperscript{b}Integrated with downstream classifier via range match.} \\
+\multicolumn{6}{@{}p{\linewidth}@{}}{\footnotesize\textsuperscript{c}DT members: range-match tables; LR members: register arithmetic, not table match.} \\
 \end{tabular}
 \end{table}
 
@@ -227,7 +227,7 @@ For training and in-distribution testing, the four CIC-IoT 2023~\cite{Neto2023} 
 
 \subsection{Results}\label{sec:results}
 
-In distribution, the raw range-match DT dominates with macro F1 $98.47\%$ (overall accuracy $99.04\%$) using only $5\,119$ entries and a $256$-bit composite key. None of the $30$ PCA configurations matches this number, because PCA is a lossy projection and the $18$ raw features are already individually discriminative on CIC-IoT. Within the PCA family the DT curve rises steeply between $k{=}1$ (macro F1 $80.82\%$) and $k{=}4$ ($95.47\%$) and plateaus across $k\!\in\!\{4,\dots,9\}$ at $94.79\%$ to $96.16\%$ (Fig.~\ref{fig:acc_vs_k}). PCA $+$ RF lies approximately $5$ percentage points below PCA $+$ DT on average and stays at or below the raw RF baseline ($90.44\%$) for every $k$.
+In distribution, the raw range-match DT dominates with macro F1 $98.47\%$ (overall accuracy $99.04\%$) using only $5\,119$ entries and a $256$-bit composite key. None of the $30$ PCA configurations matches this number, because PCA is a lossy projection and the $18$ raw features are already individually discriminative on CIC-IoT. Within the PCA family the DT curve rises steeply between $k{=}1$ (macro F1 $80.82\%$) and $k{=}4$ ($95.47\%$) and plateaus across $k\!\in\!\{4,\dots,9\}$ at $94.79\%$ to $96.16\%$ (Fig.~\ref{fig:acc_vs_k}). PCA $+$ RF lies approximately $5$ percentage points below PCA $+$ DT on average and generally stays at or below the raw RF baseline ($90.44\%$), with $k{=}7$ ($91.01\%$) the sole exception.
 
 \begin{figure}[!t]
     \centering
@@ -236,7 +236,7 @@ In distribution, the raw range-match DT dominates with macro F1 $98.47\%$ (overa
     \label{fig:acc_vs_k}
 \end{figure}
 
-The macro F1 aggregates four distinct per-class behaviors; Fig.~\ref{fig:perclass_indist} therefore reports per-class F1 for the DT and RF families. The raw DT approaches saturation on every attack class (BruteForce $99.07\%$, DoS $99.57\%$, Reconnaissance $99.51\%$) with Benign at $95.72\%$, so the reduction from PCA is not a per-class collapse but a roughly uniform decrease as $k$ varies. PCA $+$ DT recovers substantially: BruteForce and DoS exceed $97\%$ at $k{=}5$ and Reconnaissance reaches $95.31\%$ at the same $k$. PCA $+$ RF performs poorly on Reconnaissance, where its best F1 across $k\!\in\!\{1,\dots,15\}$ is $79.61\%$, because the four-tree majority vote misclassifies rare scanning patterns as neighboring benign codes once the feature space is compressed.
+The macro F1 aggregates four distinct per-class behaviors; Fig.~\ref{fig:perclass_indist} therefore reports per-class F1 for the DT and RF families. The raw DT approaches saturation on every attack class (BruteForce $99.07\%$, DoS $99.57\%$, Reconnaissance $99.51\%$) with Benign at $95.72\%$, so the reduction from PCA is not a per-class collapse but a roughly uniform decrease as $k$ varies. PCA $+$ DT recovers substantially: at $k{=}4$, BruteForce, DoS, and Reconnaissance reach $95.57\%$, $95.85\%$, and $95.31\%$ respectively; at the recommended $k{=}7$, BruteForce and DoS further climb to $96.99\%$ and $96.53\%$. PCA $+$ RF performs poorly on Reconnaissance, where its best F1 across $k\!\in\!\{1,\dots,15\}$ is $79.61\%$, because the four-tree majority vote misclassifies rare scanning patterns as neighboring benign codes once the feature space is compressed.
 
 \begin{figure}[!t]
     \centering
