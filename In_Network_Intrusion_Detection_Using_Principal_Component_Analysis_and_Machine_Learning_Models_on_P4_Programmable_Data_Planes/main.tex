@@ -14,38 +14,38 @@
 
 \begin{document}
 
-\title{In-Network IoT Attack Detection Using Principal Component Analysis and Machine Learning Models on P4 Programmable Data Planes}
+\title{In-Network IoT Intrusion Detection Using Principal Component Analysis and Machine Learning Models on P4 Programmable Data Planes}
 \titlerunning{In-Network IoT Attack Detection Using PCA and ML Models on P4}
 
-\author{
-Viet Anh Phan\inst{1}\orcidID{0009-0003-1787-8063}\textsuperscript{\Letter} \and
-Mingyu Ma\inst{2,4}\orcidID{0009-0005-7045-4096} \and 
-Tung V. Doan\inst{2,4} \and
-Giang T. Nguyen\inst{2,4}\orcidID{0000-0001-7008-1537} \and \\
-Frank H.P. Fitzek\inst{3,4}\orcidID{0000-0001-8469-9573} \and
-Jan Jerabek\inst{1}\orcidID{0000-0001-9487-5024} \and 
-Lukas Malina\inst{1}\orcidID{0000-0002-7208-2514} \and
-Jiri Hosek\inst{1}\orcidID{0000-0002-8382-9185}
-}
+% \author{
+% Viet Anh Phan\inst{1}\orcidID{0009-0003-1787-8063}\textsuperscript{\Letter} \and
+% Mingyu Ma\inst{2,4}\orcidID{0009-0005-7045-4096} \and 
+% Tung V. Doan\inst{2,4} \and
+% Giang T. Nguyen\inst{2,4}\orcidID{0000-0001-7008-1537} \and \\
+% Frank H.P. Fitzek\inst{3,4}\orcidID{0000-0001-8469-9573} \and
+% Jan Jerabek\inst{1}\orcidID{0000-0001-9487-5024} \and 
+% Lukas Malina\inst{1}\orcidID{0000-0002-7208-2514} \and
+% Jiri Hosek\inst{1}\orcidID{0000-0002-8382-9185}
+% }
 
-\authorrunning{Phan et al.}
+% \authorrunning{Phan et al.}
 
-\institute{
-Department of Telecommunications,
-Brno University of Technology, Czech Republic \\
-\email{\{243760, jerabekj, malina, hosek\}@vut.cz}
-\and
-Haptic Communication Systems, TU Dresden, Germany \\
-\and
-Deutsche Telekom Chair of Communication Networks, TU Dresden, Germany \\
-\and
-Centre for Tactile Internet with Human-in-the-Loop (CeTI), TU Dresden, Germany
-\email{\{mingyu.ma, tung.doan\_van, giang.nguyen, frank.fitzek\}@tu-dresden.de}
-}
+% \institute{
+% Department of Telecommunications,
+% Brno University of Technology, Czech Republic \\
+% \email{\{243760, jerabekj, malina, hosek\}@vut.cz}
+% \and
+% Haptic Communication Systems, TU Dresden, Germany \\
+% \and
+% Deutsche Telekom Chair of Communication Networks, TU Dresden, Germany \\
+% \and
+% Centre for Tactile Internet with Human-in-the-Loop (CeTI), TU Dresden, Germany
+% \email{\{mingyu.ma, tung.doan\_van, giang.nguyen, frank.fitzek\}@tu-dresden.de}
+% }
 
 \maketitle
 \begin{abstract}
-IoT gateways are vital to the scalability and security of IoT networks. P4 programmable switches let these gateways parse, track, and classify traffic directly in the forwarding pipeline at line rate, avoiding the latency and bandwidth cost of offloading detection to an external controller or server. Tree-based models that detect malicious IoT traffic already run entirely in this pipeline, but dimensionality reduction via Principal Component Analysis (PCA) has so far been deployed as a standalone module, never integrated with the downstream model under a single range-match encoding. This calls for an integrated solution. This paper presents the first P4 intrusion-detection pipeline that combines PCA projection and tree-based attack detection under a single range-match abstraction, evaluated on a Raspberry Pi~4 running BMv2 (\texttt{simple\_switch\_grpc}). Across $32$ deployed configurations (Decision Tree and 4-tree Random Forest, with and without PCA), the raw range-match model achieves the highest in-distribution macro F1 on CIC-IoT 2023 ($98.47\%$) but degrades to $15.57\%$ on a disjoint Mu-IoT capture, as the model fails to generalize to the new traffic distribution. The recommended PCA $+$ Decision Tree at $k{=}7$ achieves $95.79\%$ macro F1 in distribution and $48.31\%$ on the disjoint capture, a $32.74$ percentage-point cross-dataset gain at the cost of only $2.68$ percentage points in distribution, making strong in-distribution accuracy and cross-dataset robustness jointly attainable. The recommended operating point clears the Tofino-1 per-stage match-key budget; stage-count compaction is the identified path to full Tofino-1 deployment.
+IoT gateways are vital to the scalability and security of IoT networks. P4 programmable switches let these gateways parse, track, and classify traffic directly in the forwarding pipeline at line rate, avoiding the latency and bandwidth cost of offloading detection to an external controller or server. Tree-based models that detect malicious IoT traffic already run entirely in this pipeline, but dimensionality reduction via Principal Component Analysis (PCA) has so far been deployed as a standalone module, never integrated with the downstream model under a single range-match encoding. This calls for an integrated solution. This paper presents the first P4 intrusion-detection pipeline that combines PCA projection and tree-based attack detection under a single range-match abstraction, evaluated on a Raspberry Pi~4 running P4Pi. Across $32$ deployed configurations (Decision Tree and 4-tree Random Forest, with and without PCA), the raw range-match model achieves the highest in-distribution macro F1 on CIC-IoT 2023 ($98.47\%$) but degrades to $15.57\%$ on a disjoint Mu-IoT capture, as the model fails to generalize to the new traffic distribution. The recommended PCA $+$ Decision Tree at $k{=}7$ achieves $95.79\%$ macro F1 in distribution and $48.31\%$ on the disjoint capture, a $32.74$ percentage-point cross-dataset gain at the cost of only $2.68$ percentage points in distribution, making strong in-distribution accuracy and cross-dataset robustness jointly attainable. The recommended operating point clears the Tofino-1 per-stage match-key budget; stage-count compaction is the identified path to full Tofino-1 deployment.
 
 
 \keywords{P4 programmable data plane \and In-network machine learning \and IoT \and Intrusion detection system \and Principal Component Analysis \and Decision tree \and Random forest \and Range match tables \and Bidirectional flow features \and Line-rate classification}
@@ -56,7 +56,7 @@ IoT gateways are vital to the scalability and security of IoT networks. P4 progr
 \section{Introduction}\label{sec:intro}
 The Internet of Things (IoT) connects an increasing number of resource-con\-strained devices through gateway switches that aggregate heterogeneous traffic before it enters the wider network. These gateways are a natural defensive vantage point because every flow from the protected segment passes through them, and they are also a critical bottleneck: an intrusion-detection system (IDS) that mirrors traffic off the forwarding path, or delegates the classification decision to an external controller, introduces latency and bandwidth overhead that traditional middlebox and SDN deployments cannot eliminate~\cite{Gao2021,Wang20241480}. P4 programmable data planes lift this restriction by letting the switch parse, track, and classify flows in the pipeline at line rate, without recirculation or controller round trips. In-network ML detection has therefore become an active research area~\cite{Xiong201925,Lee202523143,Zheng20242,Akem2024}.
 
-The same pipeline must run on two very different targets. At the IoT-gateway tier, P4 has reached small-footprint hardware through P4Pi~\cite{Laki2021p4pi}, a Raspberry-Pi-based BMv2 platform on which P4Pir~\cite{Zang20249244} has shown that DT and RF classifiers are feasible. All experiments in this paper are conducted on the same platform tier, a Raspberry Pi~4 running BMv2 (\texttt{simple\_switch\_grpc}) with the v1model architecture. At higher tiers, where industrial IoT and cyber-physical workloads require deterministic latency, programmable ASICs such as Intel Tofino are the target~\cite{Akem2024}. Both tiers expose the same constraint: limited on-chip memory and a fixed number of pipeline stages restrict how expressive the classifier can be, so a P4 IDS pipeline that scales gracefully must keep its match-action footprint small.
+The same pipeline must run on two very different targets. At the IoT-gateway tier, P4 has reached small-footprint hardware through P4Pi~\cite{Laki2021p4pi}, a Raspberry Pi-based BMv2 code on which P4Pir~\cite{Zang20249244} has shown that DT and RF classifiers are feasible. All experiments in this paper are conducted on the same platform tier, a Raspberry Pi~4 (8 GB) running BMv2 code on P4Pi. At higher tiers, where industrial IoT and cyber-physical workloads require deterministic latency, programmable ASICs such as Intel Tofino are the target~\cite{Akem2024}. Both tiers expose the same constraint: limited on-chip memory and a fixed number of pipeline stages restrict how expressive the classifier can be, so a P4 IDS pipeline that scales gracefully must keep its match-action footprint small.
 
 Despite this progress, the existing body of work reveals five persistent gaps. \emph{First}, most in-network ML systems rely on exact-match encoding, where the classifier table stores one entry per unique discretized training feature vector~\cite{Lee202523143,Zheng20242,Zheng20242555}. Coverage is therefore restricted to feature combinations actually observed during training, and the number of entries scales with the granularity of the discretization grid and the size of the training set $N$, so adding training samples or refining feature granularity grows the table proportionally and stresses on-chip memory budgets~\cite{Bosshart2013}. \emph{Second}, the majority of P4-based detection systems perform only binary classification, which limits their utility for security teams that must triage diverse threats. \emph{Third}, extracting bidirectional flow statistics entirely in the data plane remains underexplored; most systems rely on unidirectional or packet-level features, or offload feature computation to an external server. \emph{Fourth}, dimensionality reduction has been treated in isolation from the downstream classifier: although Planter~\cite{Zheng20242} supports PCA as a standalone module, no prior work integrates PCA with a downstream classifier under a single range-match encoding, and no prior work makes the trade-off between a raw-feature classifier and a PCA-projected one explicit on hardware-relevant axes (per-entry match-key width, classifier-table size, and pipeline-stage placement). \emph{Fifth}, translating a trained ML model into a deployable P4 program typically requires significant manual effort across separate tools for training, feature selection, table generation, and code synthesis.
 
@@ -119,7 +119,7 @@ The system operates in two phases. An \emph{offline training phase} (Fig.~\ref{f
 
 \begin{figure}[!t]
 \centering
-\includegraphics[width=0.7\columnwidth]{images/offline_pipeline.pdf}
+\includegraphics[width=0.85\columnwidth]{images/offline_pipeline.pdf}
 \caption{Offline training pipeline. Five offline stages convert raw PCAPs into a compiled P4 program with pre-populated range-match tables for the additive PCA projection and the downstream classifier.}
 \label{fig:pipeline}
 \end{figure}
@@ -201,7 +201,7 @@ The RF classifier extends this to $T$ trees, each encoded as a separate range-ma
 
 \noindent\textbf{Step~5: P4 code generation}
 
-A code generator reads the pipeline configuration and model parameters and emits the complete P4 program: parser, register declarations, canonical hash actions (CRC16 for indexing, CRC32 for Bloom-filter collision detection), PCA transform tables, classifier tables, digest logic, and deparser. The current implementation targets the v1model architecture and is compiled and deployed on a Raspberry Pi~4 via BMv2 (\texttt{simple\_switch\_grpc}); a Tofino (TNA) extension is discussed in Section~\ref{sec:tofino}. The outputs are passed to the runtime controller, which compiles the P4 program and installs the rules.
+A code generator reads the pipeline configuration and model parameters and emits the complete P4 program: parser, register declarations, canonical hash actions (CRC16 for indexing, CRC32 for Bloom-filter collision detection), PCA transform tables, classifier tables, digest logic, and deparser. The current implementation targets the v1model architecture and is compiled and deployed on a Raspberry Pi~4 via BMv2 (\texttt{simple\_switch\_grpc}) code within P4Pi; a Tofino (TNA) extension is discussed in Section~\ref{sec:tofino}. The outputs are passed to the runtime controller, which compiles the P4 program and installs the rules.
 
 %──────────────────────────────────────────────────────────────────────
 \subsection{In-Network Inference Phase}\label{sec:inference}
@@ -209,8 +209,8 @@ A code generator reads the pipeline configuration and model parameters and emits
 
 \begin{figure}[!ht]
 \centering
-\includegraphics[width=0.7\columnwidth]{images/Framework.pdf}
-\caption{In-network inference pipeline. Each finalized flow is canonicalized, accumulated into $18$ bidirectional flow features, projected through the additive PCA range tables into $K$ quantized codes, classified by a Decision Tree or 4-tree Random Forest, and emitted as a digest to the controller.}
+\includegraphics[width=0.85\columnwidth]{images/Framework.pdf}
+\caption{In-network inference pipeline. Each finalized flow is canonicalized, accumulated into $18$ bidirectional flow features, projected through the additive PCA range tables into $K$ quantized codes, classified by a DT or 4-tree RF, and emitted as a digest to the controller.}
 \label{fig:framework}
 \end{figure}
 
@@ -222,7 +222,7 @@ Once the runtime controller loads the compiled program and table entries into th
 
 \subsection{Experimental Setup}\label{sec:setup}
 
-For training and in-distribution testing, the four CIC-IoT 2023~\cite{Neto2023} categories that match the four target classes (Benign, DoS, Brute Force, Reconnaissance) are split flow-stratified $80$/$20$, and the $20\%$ test partition is injected through the deployed pipeline and scored against ground-truth labels, rather than evaluated offline. Cross-dataset evaluation uses a disjoint capture from the Mu-IoT~\cite{Clinton2024muiot} testbed with the same four class labels, processed through the same pipeline without retraining. Mu-IoT is chosen as the cross-dataset partner because it was independently constructed on a different physical IoT testbed with a different device population, while sharing the four-way attack taxonomy; the datasets therefore differ in distribution but not in task formulation, isolating distribution shift from task change. Within-class protocol coverage also differs: the BruteForce class in CIC-IoT 2023 is concentrated on FTP (port 21), whereas Mu-IoT BruteForce spans HTTPS, SSH, and IRC traffic, so cross-dataset BruteForce performance directly measures generalization beyond source-specific protocols. The testbed is a Raspberry Pi~4 running BMv2 (\texttt{simple\_switch\_grpc}) with the v1model architecture; two network-namespace hosts on the same board inject and receive traffic via veth pairs, and labeled PCAPs are replayed with \texttt{tcpreplay}. The switch extracts the $18$ bidirectional flow features, applies the additive PCA transform when enabled, and classifies in the data plane; finalized flows are sent as gRPC digests to a Python control plane that scores them against ground-truth class labels. Porting to a production ASIC such as Intel Tofino requires rewriting against the TNA architecture and the stage-packing work outlined in Section~\ref{sec:tofino}. Across both datasets, $32$ configurations are deployed: a raw-feature baseline for the Decision Tree and a 4-tree Random Forest, plus $30$ PCA settings spanning $k\!\in\!\{1,\dots,15\}$ at $b{=}32$ for both classifiers. Macro F1 is used as the primary classification metric because both partitions are class-imbalanced (Reconnaissance contributes far fewer flows than the other classes on Mu-IoT), and macro F1 weights every class equally while penalizing both false negatives and false positives, which matches the operational concern of an IDS. Alongside macro F1, total range-match entries and classifier match-key width are reported as the P4 deployment cost. All percentages are quoted with two decimals.
+For training and in-distribution testing, the four CIC-IoT 2023~\cite{Neto2023} categories that match the four target classes (Benign, DoS, Brute Force, Reconnaissance) are split flow-stratified $80$/$20$, and the $20\%$ test partition is injected through the deployed pipeline and scored against ground-truth labels, rather than evaluated offline. Cross-dataset evaluation uses a disjoint capture from the Mu-IoT~\cite{Clinton2024muiot} testbed with the same four class labels, processed through the same pipeline without retraining. Mu-IoT is chosen as the cross-dataset partner because it was independently constructed on a different physical IoT testbed with a different device population, while sharing the four-way attack taxonomy; the datasets therefore differ in distribution but not in task formulation, isolating distribution shift from task change. Within-class protocol coverage also differs: the BruteForce class in CIC-IoT 2023 is concentrated on FTP (port 21), whereas Mu-IoT BruteForce spans HTTPS, SSH, and IRC traffic, so cross-dataset BruteForce performance directly measures generalization beyond source-specific protocols. The testbed is a Raspberry Pi~4 with 8 GB running BMv2 code on the P4Pi platform; two network-namespace hosts on the same board inject and receive traffic via veth pairs, and labeled PCAPs are replayed with \texttt{tcpreplay}. The switch extracts the $18$ bidirectional flow features, applies the additive PCA transform when enabled, and classifies in the data plane; finalized flows are sent as gRPC digests to a Python control plane that scores them against ground-truth class labels. Porting to a production ASIC such as Intel Tofino requires rewriting against the TNA architecture and the stage-packing work outlined in Section~\ref{sec:tofino}. Across both datasets, $32$ configurations are deployed: a raw-feature baseline for the Decision Tree and a 4-tree Random Forest, plus $30$ PCA settings spanning $k\!\in\!\{1,\dots,15\}$ at $b{=}32$ for both classifiers. Macro F1 is used as the primary classification metric because both partitions are class-imbalanced (Reconnaissance contributes far fewer flows than the other classes on Mu-IoT), and macro F1 weights every class equally while penalizing both false negatives and false positives, which matches the operational concern of an IDS. Alongside macro F1, total range-match entries and classifier match-key width are reported as the P4 deployment cost. All percentages are quoted with two decimals.
 
 \subsection{Results}\label{sec:results}
 
@@ -253,7 +253,7 @@ The P4 footprint of the PCA configurations is dominated by the additive PCA tran
     \label{fig:p4_footprint}
 \end{figure}
 
-Under cross-dataset evaluation, the same trained models process the disjoint Mu-IoT capture through the identical pipeline without any retraining. The raw DT degrades from $98.47\%$ macro F1 in distribution to $15.57\%$ on Mu-IoT, while PCA $+$ DT in the $k\!\in\!\{4,\dots,8\}$ band sustains $44.68\%$ to $48.31\%$ (Fig.~\ref{fig:xds_overall}), a gain of $29$ to $33$ percentage points. The improvement is attributable primarily to DoS detection: the raw DT fails to transfer DoS because the CIC-IoT DoS class is concentrated on a single destination port absent from the Mu-IoT testbed, while the additive PCA projection combines the $18$ features into composite components before quantization, breaking the classifier's dependence on any single feature and producing multi-feature combinations whose decision boundaries prove more stable under distribution shift.
+Under cross-dataset evaluation, the same trained models process the disjoint Mu-IoT capture through the identical pipeline without any retraining. The raw DT degrades from $98.47\%$ macro F1 in distribution to $15.57\%$ on Mu-IoT, while PCA $+$ DT in the $k\!\in\!\{4,\dots,8\}$ band sustains $44.68\%$ to $48.31\%$ (Fig.~\ref{fig:xds_overall}), a gain of $29$ to $33$ percentage points. The improvement is attributable primarily to DoS detection: the raw DT fails to transfer DoS because the CIC-IoT DoS class is concentrated on a single destination port absent from the Mu-IoT testbed, a pattern consistent with the documented role of port-dependent features as dataset-specific spurious correlates in network intrusion detection~\cite{Cao2022encode,Cantone2024}. The additive PCA projection combines the $18$ features into composite components before quantization, breaking the classifier's dependence on any single feature and producing multi-feature combinations whose decision boundaries prove more stable under distribution shift.
 
 \begin{figure}[!t]
     \centering
@@ -329,9 +329,9 @@ The binding constraint is therefore pipeline depth, not match-key width. An offl
 
 This paper has presented an automated pipeline for tree-based multiclass IoT attack detection entirely inside a P4 data plane. The classifier is encoded on $18$ bidirectional flow features as a range-match table with one entry per tree leaf, and an optional additive PCA stage is itself encoded as one single-field range table per input feature. Across $32$ configurations deployed on a Raspberry Pi~4, the in-distribution and cross-dataset regimes prefer different pipelines. In distribution on CIC-IoT 2023 the raw DT achieves the highest macro F1 ($98.47\%$, $5\,119$ entries, $256$-bit key); on the disjoint Mu-IoT capture it degrades to $15.57\%$ because the model fails to generalize to the new traffic distribution. PCA + DT at $k{=}7$ trades $2.68$ percentage points of in-distribution macro F1 ($95.79\%$, $10\,222$ entries) for a $+32.74$ percentage-point gain in cross-dataset macro F1 ($48.31\%$), and is therefore the recommended deployable operating point. A Tofino-1 resource analysis confirms that both pipelines fit the per-stage match-key budget; stage-count compaction through the directions described in Section~\ref{sec:tofino} is the identified path to full ASIC deployment. Future work will validate the pipeline on a Tofino testbed, extend the cross-dataset evaluation to UNSW-NB15, CIC-IDS 2017, and EDGE-IIoTset, and add controller-driven incremental rule updates.
 
-\begin{credits}
-\subsubsection{\ackname} This work was supported by the Ministry of Industry and Trade of the Czech Republic under Grant No.~CZ.01.01.01/01/24\_062/0007470. It was also funded in part by the German Research Foundation (DFG, Deutsche Forschungsgemeinschaft) under Germany’s Excellence Strategy-EXC 2050/2, Project ID 390696704 (Cluster of Excellence “Centre for Tactile Internet with Human-in-the-Loop” (CeTI), TU Dresden), and by the Federal Ministry of Education and Research of Germany in the programme of "Souverän. Digital. Vernetzt.". Joint project 6G-life, project identification number: 16KIS2413K.
-\end{credits}
+% \begin{credits}
+% \subsubsection{\ackname} This work was supported by the Ministry of Industry and Trade of the Czech Republic under Grant No.~CZ.01.01.01/01/24\_062/0007470. It was also funded in part by the German Research Foundation (DFG, Deutsche Forschungsgemeinschaft) under Germany’s Excellence Strategy-EXC 2050/2, Project ID 390696704 (Cluster of Excellence “Centre for Tactile Internet with Human-in-the-Loop” (CeTI), TU Dresden), and by the Federal Ministry of Education and Research of Germany in the programme of "Souverän. Digital. Vernetzt.". Joint project 6G-life, project identification number: 16KIS2413K.
+% \end{credits}
 
 \bibliographystyle{splncs04}
 \bibliography{references}
